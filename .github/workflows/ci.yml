@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  backend:
+    name: 后端构建与测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          # 直接读 go.mod，避免与其中声明的版本不一致导致编译器拒绝构建
+          go-version-file: go.mod
+          cache: true
+
+      - name: 检查代码格式
+        run: |
+          files=$(gofmt -l ./backend)
+          if [ -n "$files" ]; then
+            echo "以下文件未格式化："
+            echo "$files"
+            exit 1
+          fi
+
+      - name: 静态检查 (go vet)
+        run: go vet ./backend/...
+
+      # go vet 不检查被丢弃的错误返回值，此前 service/repository 层因此
+      # 长期存在静默吞掉写库失败的代码。errcheck 等检查由 golangci-lint 覆盖。
+      - name: 静态检查 (golangci-lint)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.6.2
+          args: --timeout=5m ./backend/...
+
+      - name: 构建
+        run: go build -v ./backend/api
+
+      - name: 测试（含竞态检测）
+        run: go test -race -cover ./backend/...
+
+  conventions:
+    name: 开发规范校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 校验 AGENTS.md / backend/AGENTS.md / frontend/AGENTS.md 中可机检的条款：
+      # SQL 分层、goctl 生成物完好、logic 层日志用法、前端主题 token、skill 路径。
+      # 存量违规记录在 scripts/conventions-baseline.txt，只拦新增。
+      - name: 校验开发规范
+        run: python scripts/check-conventions.py --baseline scripts/conventions-baseline.txt
+
+  frontend:
+    name: 前端构建与类型检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/package.json
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 类型检查
+        working-directory: frontend
+        run: npx vue-tsc --noEmit -p tsconfig.app.json
+
+      # 此前 CI 未跑 lint，导致「禁止 any」等规范从未被强制，
+      # 积累了 87 处违规。存量已冻结在 eslint-suppressions.json，
+      # 新增的 any 会在此处失败。修完存量后用
+      # `npx eslint . --prune-suppressions` 收紧该文件。
+      - name: 代码规范检查 (eslint)
+        working-directory: frontend
+        run: npx eslint . --no-fix
+
+      # 回归测试，重点覆盖两类曾导致数据丢失的路径（配置被空值覆盖、
+      # 编辑器空文本清空高级参数）与弹窗/提示的无障碍行为。
+      - name: 单元测试
+        working-directory: frontend
+        run: npm test
+
+      - name: 构建
+        working-directory: frontend
+        run: npm run build
+
+  docker:
+    name: 多架构镜像构建验证
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: 配置 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 只构建不推送，确保 Dockerfile 在两种架构下都能编译通过
+      - name: 构建 amd64 / arm64 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,26 @@
+# 构建产物与依赖（容器内会重新安装/编译，宿主机产物架构不同）
+node_modules/
+**/node_modules/
+frontend/dist/
+public/
+*.exe
+auroramihomo
+
+# 运行时数据（含数据库、密码、备份、下载的内核）
+data/
+*.db
+*.db-journal
+*.db-wal
+
+# 版本控制与 IDE
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.zcode/
+
+# 日志与临时文件
+logs/
+*.log
+tmp/

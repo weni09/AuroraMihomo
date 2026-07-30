@@ -1,0 +1,358 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * 主题语义色 token。
+ *
+ * 变量值是裸 RGB 分量（"255 255 255"），不是完整的 rgb() 函数：
+ * tailwind.config.js 里以 `rgb(var(--c-x) / <alpha-value>)` 引用，
+ * 只有裸分量才能让 bg-surface/50 这类透明度语法生效。
+ *
+ * 深色值取 slate 色阶而非纯黑：纯黑配浅色文字对比过强，长时间看容易疲劳，
+ * 且卡片与页底之间需要留出可辨的层次差。
+ */
+@layer base {
+  :root {
+    /* color-scheme 让原生滚动条、下拉箭头、日期选择器等 UA 控件跟随主题，
+       这些控件无法用 CSS 直接改色 */
+    color-scheme: light;
+
+    --c-canvas: 248 250 252; /* slate-50，页面底色 */
+    --c-surface: 255 255 255; /* white，卡片面 */
+    --c-elevated: 248 250 252; /* slate-50，卡片内的次级块 */
+
+    --c-fg: 30 41 59; /* slate-800，正文 */
+    --c-fg-muted: 100 116 139; /* slate-500，次要说明 */
+    --c-fg-subtle: 148 163 184; /* slate-400，最弱的提示 */
+
+    --c-line: 226 232 240; /* slate-200 */
+    --c-line-strong: 203 213 225; /* slate-300 */
+
+    /**
+     * 日志终端配色。
+     *
+     * 刻意不随浅色/深色主题变化：日志流在两种主题下都保持深底等宽，
+     * 浅底的等宽日志反而更难扫读。因此这几个值在 .dark 里不再覆盖，
+     * 与上面那些会切换的 --c-* 是不同性质的量，故单独一组前缀。
+     */
+    --c-term-bg: 15 23 42; /* slate-900 */
+    --c-term-fg: 241 245 249; /* slate-100 */
+    --c-term-meta: 148 163 184; /* slate-400，时间戳 */
+    --c-term-dim: 100 116 139; /* slate-500，调用位置与空态 */
+
+    /**
+     * shadcn-vue 主题变量。
+     *
+     * shadcn 的组件源码写死了 bg-background / text-muted-foreground /
+     * border-border 这类类名，它们依赖下面这组变量名。项目原本已有一套
+     * --c-* token，若各自定义就会出现两套并存的配色，深色模式下尤其容易
+     * 对不上。因此这里不给新值，只把 shadcn 的变量名接到既有 token 上——
+     * 配色仍只有一个来源，改 --c-* 两边同时生效。
+     *
+     * 格式同为裸 RGB 分量，与 tailwind.config.js 的 rgb(var(...)) 引用一致。
+     */
+    --background: var(--c-canvas);
+    --foreground: var(--c-fg);
+    --card: var(--c-surface);
+    --card-foreground: var(--c-fg);
+    --popover: var(--c-surface);
+    --popover-foreground: var(--c-fg);
+    --muted: var(--c-elevated);
+    --muted-foreground: var(--c-fg-muted);
+    --accent: var(--c-elevated);
+    --accent-foreground: var(--c-fg);
+    --border: var(--c-line);
+    --input: var(--c-line-strong);
+    --ring: 37 99 235; /* shadcn 官方 Blue 主题预设：与 --primary 同色 */
+
+    /* primary / secondary / destructive 沿用按钮体系的语义色，
+       其中 primary/ring 对齐 shadcn 官方 Blue 主题预设 */
+    --primary: 37 99 235; /* blue-600，shadcn 官方 Blue 主题预设 */
+    --primary-foreground: 255 255 255;
+    --secondary: var(--c-elevated);
+    --secondary-foreground: var(--c-fg);
+    --destructive: 225 29 72; /* rose-600 */
+    --destructive-foreground: 255 255 255;
+
+    /**
+     * 语义色扩展：success / warning / accent。
+     *
+     * primary/destructive 之外，项目里还有大量「刷新缓存有代价」「独立管道」
+     * 这类既非主操作也非破坏性操作的场景，此前靠各处散落的 emerald-/amber-/
+     * indigo- 硬编码类名表达，深浅两色要各写一遍、还容易在不同页面选出不同
+     * 色阶。这三个 token 走与 primary/destructive 相同的模式（实色+前景色，
+     * 深浅两侧各调一次），供 Button 变体与 tint-* / Badge 共同复用。
+     *
+     * warning 的前景刻意用深色而非白色：amber 明度高，配白字对比度不到 3:1，
+     * 配深色文字才能过 WCAG AA（4.5:1），success/accent/destructive 明度较低，
+     * 配白字即可达标，此处不强行统一。
+     */
+    --success: 5 150 105; /* emerald-600 */
+    --success-foreground: 255 255 255;
+    --warning: 217 119 6; /* amber-600 */
+    --warning-foreground: 15 23 42; /* slate-900，见上方对比度说明 */
+    --accent-solid: 79 70 229; /* indigo-600 */
+    --accent-solid-foreground: 255 255 255;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    --c-canvas: 15 23 42; /* slate-900 */
+    --c-surface: 30 41 59; /* slate-800 */
+    --c-elevated: 51 65 85; /* slate-700 */
+
+    --c-fg: 226 232 240; /* slate-200 */
+    --c-fg-muted: 148 163 184; /* slate-400 */
+    --c-fg-subtle: 100 116 139; /* slate-500 */
+
+    --c-line: 51 65 85; /* slate-700 */
+    --c-line-strong: 71 85 105; /* slate-600 */
+
+    /* 深色侧只需覆写那些不能简单跟随 token 的项：
+       实色按钮底色要调亮一档才压得住深背景，其余仍指向 --c-* */
+    --primary: 59 130 246; /* blue-500，shadcn 官方 Blue 主题预设 */
+    --destructive: 244 63 94; /* rose-500 */
+    --ring: 29 78 216; /* shadcn 官方 Blue 主题预设（比 primary 略深，深底上更清晰） */
+
+    /* 同 --primary/--destructive 的调整逻辑：深底下调亮一档才压得住背景，
+       warning 前景仍是深色文字，理由同 light 侧 */
+    --success: 16 185 129; /* emerald-500 */
+    --warning: 245 158 11; /* amber-500 */
+    --accent-solid: 99 102 241; /* indigo-500 */
+  }
+
+  /**
+   * 表单控件统一跟随主题。
+   *
+   * 项目里约六十处 input / select / textarea 只写了 `border rounded px-3 py-2`，
+   * 没有背景色，浅色下靠 body 底色透出、深色下会变成白底黑字。
+   * 在 base 层一次性处理，避免逐个视图追加 dark: 变体。
+   *
+   * 排除 checkbox / radio / range：它们的外观由 UA 绘制，
+   * 强加背景色会让勾选框变成一个纯色方块。
+   */
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    @apply bg-surface text-fg;
+  }
+
+  ::placeholder {
+    @apply text-fg-subtle;
+  }
+
+  body {
+    @apply bg-canvas text-fg;
+    font-family:
+      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/**
+ * 状态徽标。
+ *
+ * 全项目有四十余处「浅色底 + 深色字」的状态标签（生效中 / 待处理 / 已过期 …），
+ * 深色模式下浅色底会刺眼。深色侧统一用 `色/15` 半透明底叠在卡片面上，
+ * 比另挑一档实色更容易与周围层次协调。
+ * 只封装配色，尺寸与圆角仍由调用处决定——各处大小差异较大。
+ */
+@layer components {
+  .tint-ok {
+    @apply bg-success/10 text-success dark:bg-success/15;
+  }
+  .tint-err {
+    @apply bg-destructive/10 text-destructive dark:bg-destructive/15;
+  }
+  .tint-warn {
+    @apply bg-warning/15 text-amber-700 dark:bg-warning/15 dark:text-amber-300;
+  }
+  .tint-info {
+    @apply bg-primary/10 text-primary dark:bg-primary/15;
+  }
+  .tint-accent {
+    @apply bg-accent-solid/10 text-accent-solid dark:bg-accent-solid/15;
+  }
+  .tint-neutral {
+    @apply bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200;
+  }
+
+  /**
+   * 日志终端。
+   *
+   * 日志流在两种主题下都保持深底等宽——浅底的等宽日志反而更难扫读。
+   * 这一点与状态徽标不同：徽标要融入周围层次，日志区要的是终端观感。
+   * 所以这里用固定色而非主题 token（token 在浅色主题下会变浅，
+   * 落在深底上就看不清了）。固定色收敛在此，避免散落进模板。
+   */
+  .log-terminal {
+    @apply bg-term text-term-fg;
+  }
+  /* 次要信息：时间戳 */
+  .log-meta {
+    @apply text-term-meta;
+  }
+  /* 更次要：调用位置、空态提示、debug/stat 级别 */
+  .log-meta-dim {
+    @apply text-term-dim;
+  }
+
+  /**
+   * 触控热区下限。
+   *
+   * 指针设备能精确点到 24px 的目标，手指不行——WCAG 2.5.5 与 iOS/Android
+   * 的人机界面指南都把 44px 定为下限。按钮类操作已全部迁移到 shadcn
+   * Button（见下方 [data-slot='button']），这里只需再补齐 .tap-target
+   * 覆盖的纯图标按钮。
+   *
+   * 用 pointer: coarse 而非无条件放大，是为了不牺牲桌面端的信息密度：
+   * 同一套类在鼠标下保持紧凑，在触屏下才撑到 44px。
+   *
+   * 也没有用「伪元素透明外扩」那种常见做法：列表操作行的按钮间距只有
+   * gap-1.5(6px)，各自向外扩 10px 会互相重叠，后面的元素盖住前面的热区，
+   * 反而更难点中。这里占用真实布局空间，间距由 flex gap 如实保证。
+   */
+  @media (pointer: coarse) {
+    /* 图标按钮：没有文字撑开尺寸，只靠 p-1/p-1.5 会停在 28~32px。
+       用法是在按钮上加 .tap-target（多用在无背景边框的纯图标 Button 上）。 */
+    .tap-target {
+      @apply min-h-11 min-w-11;
+    }
+    /* shadcn Button（[data-slot="button"]）默认尺寸 h-9/h-10/h-11，
+       在鼠标下已经够用，但触屏下同样低于 44px 下限。Button 组件本身
+       不感知指针类型，这条规则统一在此补齐，业务代码无需逐处加 class。 */
+    [data-slot='button'] {
+      @apply min-h-11 min-w-11;
+    }
+  }
+
+  /**
+   * 安全区让位。
+   *
+   * index.html 用了 viewport-fit=cover，页面会延伸到刘海与底部手势条
+   * 之下。贴边的 fixed/sticky 元素若不补偿，内容就会被刘海遮住或压在
+   * 手势条上（横屏时左右同样有 inset）。
+   *
+   * 每条都在原有内边距之上叠加 env()，而不是直接替换：竖屏无刘海机型上
+   * env() 为 0，此时仍需保留设计上的内边距。
+   */
+  .safe-pt {
+    padding-top: calc(env(safe-area-inset-top, 0px));
+  }
+  .safe-pb {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px));
+  }
+  /* 抽屉这类顶天立地的元素，上下两侧都要让位 */
+  .safe-py {
+    padding-top: calc(env(safe-area-inset-top, 0px));
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px));
+  }
+  /* 左侧抽屉在横屏刘海一侧需要额外内缩 */
+  .safe-pl {
+    padding-left: calc(env(safe-area-inset-left, 0px));
+  }
+  /* 右上角浮层（toast）需要同时避开顶部与右侧 */
+  .safe-inset-tr {
+    top: calc(1rem + env(safe-area-inset-top, 0px));
+    right: calc(1rem + env(safe-area-inset-right, 0px));
+  }
+
+  /**
+   * 全屏遮罩内的居中浮层（弹窗）。
+   *
+   * 遮罩是 fixed inset-0，弹窗靠 flex 居中。弹窗自身限高 85dvh 时通常
+   * 够不到刘海，但小屏横屏下可用高度被压缩，面板会顶到边缘。
+   * 这里在遮罩的四向内边距上叠加安全区，面板的可用区域随之内收。
+   */
+  .safe-overlay {
+    padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(0.75rem + env(safe-area-inset-left, 0px));
+    padding-right: calc(0.75rem + env(safe-area-inset-right, 0px));
+  }
+  @media (min-width: 640px) {
+    .safe-overlay {
+      padding-top: calc(1.5rem + env(safe-area-inset-top, 0px));
+      padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+      padding-left: calc(1.5rem + env(safe-area-inset-left, 0px));
+      padding-right: calc(1.5rem + env(safe-area-inset-right, 0px));
+    }
+  }
+
+  /* 说明性提示块，比徽标多一道边框 */
+  .note-warn {
+    @apply bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-500/10 dark:border-amber-500/30 dark:text-amber-200;
+  }
+  .note-err {
+    @apply bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-500/10 dark:border-rose-500/30 dark:text-rose-200;
+  }
+  .note-ok {
+    @apply bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-500/10 dark:border-emerald-500/30 dark:text-emerald-200;
+  }
+  .note-neutral {
+    @apply bg-elevated border-line text-fg-muted;
+  }
+}
+
+/**
+ * 宽表格的窄屏形态：每行变成一张卡片，单元格纵向排列并在左侧显示列名。
+ *
+ * 选择 CSS 翻转而非在模板里写两套（表格 + 卡片列表）：订阅表的单元格内含
+ * 分享格式下拉、流量进度条、多个操作按钮，复制一份意味着此后每次改动都要
+ * 同步两处，很快就会不一致。这里模板只有一份，列名取 td 的 data-label。
+ *
+ * 用法：table 加 .responsive-table，每个 td 加 data-label="列名"。
+ */
+@media (max-width: 1023px) {
+  .responsive-table,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td {
+    display: block;
+  }
+
+  /* 表头在卡片形态下没有意义，列名已经由每个单元格自己带上 */
+  .responsive-table thead {
+    display: none;
+  }
+
+  .responsive-table tr {
+    @apply border border-line rounded-xl p-3 mb-3 bg-surface;
+  }
+
+  .responsive-table td {
+    @apply flex gap-3 items-start px-0 py-1.5 border-0;
+  }
+
+  /* 列名固定宽度，右侧内容自适应，纵向对齐后仍像一张信息表 */
+  .responsive-table td[data-label]::before {
+    content: attr(data-label);
+    @apply w-20 shrink-0 text-xs font-semibold text-fg-muted pt-0.5;
+  }
+
+  /* 空态那一行是单个跨列单元格，不需要列名与卡片内边距 */
+  .responsive-table td[colspan]::before {
+    content: none;
+  }
+}
+
+/* 横向滚动容器（移动端的分组导航、标签栏）不显示滚动条，
+   否则窄屏上那条滚动条会压掉本就紧张的垂直空间 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

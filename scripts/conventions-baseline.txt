@@ -1,0 +1,7 @@
+# 规范检查基线：记录接受现状的存量违规，格式为「规则 文件 数量」。
+# 由 scripts/check-conventions.py --update-baseline 生成。
+# 只减不增：修好存量后请同步下调数字，新代码不得写进这里。
+FE1 frontend/src/App.vue 1
+FE1 frontend/src/assets/main.css 4
+FE1 frontend/src/views/DashboardView.vue 4
+FE1 frontend/src/views/MihomoView.vue 4

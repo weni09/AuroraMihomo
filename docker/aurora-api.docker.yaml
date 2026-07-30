@@ -1,0 +1,60 @@
+# 容器专用配置：数据路径统一指向 /data 卷。
+# 敏感项（如 JWT 密钥）请用环境变量注入，见 AURORA_JWT_SECRET。
+Name: aurora-api
+Host: 0.0.0.0
+Port: 8899
+# 合并配置、刷新订阅、下载内核等操作远超默认 3 秒，需放宽
+Timeout: 300000
+
+# 连接层超时。上面的 Timeout 只约束单请求处理阶段，不限制读写报文，
+# 缺少这些值时慢速连接（Slowloris）可长期占用连接不被回收。
+Server:
+  ReadHeaderTimeoutSec: 10
+  ReadTimeoutSec: 60
+  # 必须大于上面的 Timeout，否则长耗时请求会在写响应阶段被连接层掐断
+  WriteTimeoutSec: 360
+  IdleTimeoutSec: 120
+  MaxHeaderBytes: 1048576
+
+# 可信反向代理的 IP/CIDR 白名单，仅命中时才采信 X-Forwarded-For / X-Real-IP
+# 作为登录限流的计数依据。容器默认直连暴露，故留空使用真实 RemoteAddr。
+# 若前置 Nginx/Traefik，请填其地址，例如 ["172.17.0.0/16"]。
+# 切勿填 0.0.0.0/0，那等于允许任何人伪造头部绕过登录限流。
+TrustedProxies: []
+
+Log:
+  Mode: console
+  Level: info
+
+DataSource: "/data/aurora.db"
+
+Mihomo:
+  BinaryPath: ""
+  ConfigDir: "/data"
+
+SubStore:
+  NodePath: "node"
+  SubStoreScript: "/data/substore/substore.js"
+
+Bootstrap:
+  EnsureOnStart: true
+  FailOnEnsureError: false
+
+AutoUpdate:
+  Enabled: false
+  Cron: "0 0 4 * * *"
+
+Updater:
+  MihomoRepo: "MetaCubeX/mihomo"
+  ZashboardRepo: "Zephyruso/zashboard"
+  GitHubAPI: "https://api.github.com"
+  TimeoutSec: 180
+  CDNProviders:
+    - ghproxy.com
+    - mirror.ghproxy.com
+    - gh.ddlc.top
+    - ghproxy.net
+    - gitdl.cn
+    - gh.llkk.cc
+    - ghp.ci
+    - github

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="fa" x1="32" y1="8" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c084fc"/>
+      <stop offset="0.55" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="fb" x1="32" y1="8" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <!-- 深色圆底：浅色与深色标签栏上都能看清 -->
+  <circle cx="32" cy="32" r="32" fill="#0f172a"/>
+  <!-- 两道极光帷幕：小尺寸下三道会糊，这里只留两道并加粗 -->
+  <path d="M23 46C18 33 24 21 32 12" fill="none" stroke="url(#fb)" stroke-width="9" stroke-linecap="round"/>
+  <path d="M40 45C36 33 41 23 48 16" fill="none" stroke="url(#fa)" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="30" cy="53" r="4.5" fill="#22d3ee"/>
+</svg>

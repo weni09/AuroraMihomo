@@ -1,0 +1,727 @@
+syntax = "v1"
+
+info (
+	title:   "AuroraMihomo API"
+	desc:    "Mihomo management platform"
+	version: "0.2"
+)
+
+// 本文件与 backend/api/internal/{types,handler} 下的生成物保持一致。
+// 改接口时两侧需同步：规格是唯一的对外契约描述，落后于代码会误导调用方。
+type Status {
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	Pid     int    `json:"pid"`
+}
+
+type Result {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type IdPathReq {
+	Id int64 `path:"id"`
+}
+
+// ---------- 订阅 ----------
+type TrafficInfo {
+	Upload   int64  `json:"upload"`
+	Download int64  `json:"download"`
+	Used     int64  `json:"used"`
+	Total    int64  `json:"total"`
+	Expire   int64  `json:"expire"`
+	ExpireAt string `json:"expireAt"`
+}
+
+type Subscription {
+	Id      int64  `json:"id"`
+	Name    string `json:"name"`
+	Url     string `json:"url"`
+	Content string `json:"content"`
+	Enabled bool   `json:"enabled"`
+	// Interval 已不再由界面使用：订阅不再各自定时回源，
+	// 刷新时机统一由配置中心的定时拉取决定。保留以兼容旧客户端。
+	Interval     int                `json:"interval"`
+	Status       string             `json:"status"`
+	ErrorMessage string             `json:"errorMessage"`
+	LastUpdate   string             `json:"lastUpdate"`
+	NodeCount    int                `json:"nodeCount"`
+	UserAgent    string             `json:"userAgent"`
+	Operators    []PipelineOperator `json:"operators"`
+	ShareToken   string             `json:"shareToken"`
+	Traffic      *TrafficInfo       `json:"traffic"`
+}
+
+type CreateSubscriptionReq {
+	Name string `json:"name"`
+	// Url 与 Content 二选一：远程订阅填 Url，手动粘贴节点填 Content
+	Url       string             `json:"url,optional"`
+	Content   string             `json:"content,optional"`
+	UserAgent string             `json:"userAgent,optional"`
+	Enabled   bool               `json:"enabled,optional,default=true"`
+	Interval  int                `json:"interval,optional,default=3600"`
+	Operators []PipelineOperator `json:"operators,optional"`
+}
+
+type UpdateSubscriptionReq {
+	Id   int64  `path:"id"`
+	Name string `json:"name,optional"`
+	// Url 用指针以支持显式清空：用户把订阅从「远程地址」改成「手动粘贴节点」时
+	// 必须能清掉旧地址，否则拉取时仍会按原地址回源并覆盖手填的节点
+	Url       *string            `json:"url,optional"`
+	Content   *string            `json:"content,optional"`
+	UserAgent *string            `json:"userAgent,optional"`
+	Enabled   *bool              `json:"enabled,optional"`
+	Interval  int                `json:"interval,optional"`
+	Operators []PipelineOperator `json:"operators,optional"`
+}
+
+// ---------- 配置中心 ----------
+type ConfigContent {
+	Content string `json:"content"`
+}
+
+type UpdateBaseConfigReq {
+	Content string `json:"content"`
+}
+
+type ConfigVersionItem {
+	Id        int64  `json:"id"`
+	Hash      string `json:"hash"`
+	Note      string `json:"note"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type DiffItem {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	From string `json:"from,optional"`
+	To   string `json:"to,optional"`
+}
+
+type DiffReport {
+	Added   []DiffItem `json:"added"`
+	Removed []DiffItem `json:"removed"`
+	Changed []DiffItem `json:"changed"`
+}
+
+type MergeResultEx {
+	Success       bool   `json:"success"`
+	Message       string `json:"message"`
+	ConflictCount int    `json:"conflictCount"`
+}
+
+// ---------- 远程配置来源 ----------
+// RemoteSourceReq 设置远程配置来源。
+// SourceType 留空或为 none 时不使用远程配置；
+// none/all 无需 SourceId；url 类型需填 SourceUrl。
+// all（聚合全部订阅）已从界面移除，仅为存量数据保留。
+type RemoteSourceReq {
+	SourceType string `json:"sourceType,optional"`
+	SourceId   int64  `json:"sourceId,optional"`
+	SourceUrl  string `json:"sourceUrl,optional"`
+	// Cron 定时拉取的调度表达式，留空表示不修改沿用现值。
+	// 支持 5 段（分 时 日 月 周）或 6 段（含秒）
+	Cron string `json:"cron,optional"`
+	// CronEnabled 是否启用定时拉取，nil 表示不修改
+	CronEnabled *bool `json:"cronEnabled,optional"`
+}
+
+type RemoteSourceOption {
+	// Type 为 subscription|collection|file
+	Type string `json:"type"`
+	Id   int64  `json:"id"`
+	Name string `json:"name"`
+	// Disabled 为 true 时该项不可选（如订阅被停用），并由 Reason 说明原因
+	Disabled bool   `json:"disabled"`
+	Reason   string `json:"reason"`
+}
+
+type RemoteSourceResp {
+	SourceType string `json:"sourceType"`
+	SourceId   int64  `json:"sourceId"`
+	SourceUrl  string `json:"sourceUrl"`
+	// Cron 定时拉取的调度表达式（6 段，含秒）
+	Cron        string               `json:"cron"`
+	CronEnabled bool                 `json:"cronEnabled"`
+	Options     []RemoteSourceOption `json:"options"`
+}
+
+// ---------- 冲突 ----------
+type ConflictItem {
+	Id          int64  `json:"id"`
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	Path        string `json:"path"`
+	LocalValue  string `json:"localValue"`
+	RemoteValue string `json:"remoteValue"`
+	ManualValue string `json:"manualValue"`
+	Resolution  string `json:"resolution"`
+	Resolved    bool   `json:"resolved"`
+}
+
+type ResolveConflictReq {
+	Id          int64  `path:"id"`
+	Resolution  string `json:"resolution"`
+	ManualValue string `json:"manualValue,optional"`
+}
+
+type MergePolicyResp {
+	ProxyPriority   string `json:"proxyPriority"`
+	RulePriority    string `json:"rulePriority"`
+	DNSPriority     string `json:"dnsPriority"`
+	TUNPriority     string `json:"tunPriority"`
+	GeneralPriority string `json:"generalPriority"`
+}
+
+type MergePolicyReq {
+	ProxyPriority   string `json:"proxyPriority,optional"`
+	RulePriority    string `json:"rulePriority,optional"`
+	DNSPriority     string `json:"dnsPriority,optional"`
+	TUNPriority     string `json:"tunPriority,optional"`
+	GeneralPriority string `json:"generalPriority,optional"`
+}
+
+// ---------- 透明代理 ----------
+// 让局域网设备无需各自设置代理即可分流。两种实现：
+//
+// tun     虚拟网卡，mihomo 自管路由与防火墙规则，Linux/macOS 均可
+// tproxy  TPROXY 转发，需面板配置策略路由与 mangle 规则，仅 Linux
+//
+// 环境不具备条件时开关强制关闭且不可更改（后端校验拒绝写入）。
+// 启用后必须在时限内确认网络正常，否则自动回滚——规则配错会让操作者
+// 失去对机器的访问，而那时他已无法通过面板关掉开关。
+// 单个模式的可用性结论
+type TransparentModeStatus {
+	Mode      string `json:"mode"`
+	Available bool   `json:"available"`
+	// Reason 不可用的原因，面向用户，可直接展示
+	Reason string `json:"reason"`
+	// Missing 缺失的依赖（命令名或内核特性）
+	Missing []string `json:"missing"`
+	// InstallHint 补齐依赖的具体命令，用户可复制执行
+	InstallHint string `json:"installHint"`
+}
+
+// 环境检测报告
+type TransparentEnvReport {
+	OS             string `json:"os"`
+	Arch           string `json:"arch"`
+	Kernel         string `json:"kernel"`
+	Distro         string `json:"distro"`
+	PackageManager string `json:"packageManager"`
+	Root           bool   `json:"root"`
+	CapNetAdmin    bool   `json:"capNetAdmin"`
+	CapNetRaw      bool   `json:"capNetRaw"`
+	// CapNetAdminBounding 为 true 而 CapNetAdmin 为 false，说明容器
+	// cap_add 给了权限但当前进程拿不到（非 root 且二进制无 file capability）
+	CapNetAdminBounding bool `json:"capNetAdminBounding"`
+	InContainer         bool `json:"inContainer"`
+	HostNetwork         bool `json:"hostNetwork"`
+	// TunDevice /dev/net/tun 的实际路径，不存在时为空
+	TunDevice string                  `json:"tunDevice"`
+	Modes     []TransparentModeStatus `json:"modes"`
+	// Warnings 不阻止启用但需要用户知道的问题
+	Warnings []string `json:"warnings"`
+}
+
+type TransparentStatusResp {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"`
+	// PendingConfirm 刚启用、等待确认网络正常；超时未确认会自动回滚
+	PendingConfirm bool `json:"pendingConfirm"`
+	// SecondsLeft 距自动回滚的剩余秒数
+	SecondsLeft int                  `json:"secondsLeft"`
+	TProxyPort  int                  `json:"tproxyPort"`
+	TUNStack    string               `json:"tunStack"`
+	Env         TransparentEnvReport `json:"env"`
+}
+
+type TransparentUpdateReq {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"`
+	// TProxyPort 仅 tproxy 模式使用，0 表示用默认端口
+	TProxyPort int `json:"tproxyPort,optional"`
+	// TUNStack system / gvisor / mixed，空表示 mixed
+	TUNStack string `json:"tunStack,optional"`
+}
+
+// ---------- 转换与预览 ----------
+type ConvertReq {
+	Url      string `json:"url,optional"`
+	Content  string `json:"content,optional"`
+	Template string `json:"template,optional"`
+}
+
+type ConvertResp {
+	Format string `json:"format"`
+	Yaml   string `json:"yaml"`
+	Links  string `json:"links"`
+	Count  int    `json:"count"`
+}
+
+// PreviewReq 预览「当前正在编辑的表单」，无需先保存，且不写库。
+// 与 /convert 的区别：本接口接收完整表单形态（含处理管道、组合成员、
+// 文件的多来源配置），因此新建时也能预览。
+type PreviewReq {
+	// Kind 为 subscription|collection|file
+	Kind      string             `json:"kind"`
+	Target    string             `json:"target,optional"`
+	Operators []PipelineOperator `json:"operators,optional"`
+	// subscription
+	Url       string `json:"url,optional"`
+	Content   string `json:"content,optional"`
+	UserAgent string `json:"userAgent,optional"`
+	// collection：取所选订阅的已缓存节点，不逐条回源
+	SubIds []int64 `json:"subIds,optional"`
+	// file
+	ConfigType         string `json:"configType,optional"`
+	SourceMode         string `json:"sourceMode,optional"`
+	SyncUrl            string `json:"syncUrl,optional"`
+	MergeSources       string `json:"mergeSources,optional"`
+	IgnoreFailedRemote string `json:"ignoreFailedRemote,optional"`
+	SourceType         string `json:"sourceType,optional"`
+	SourceId           int64  `json:"sourceId,optional"`
+	// TemplateLang 决定 ConfigType=mihomo 时正文按什么语言解释：
+	// gotemplate（默认）/ yaml（覆写深合并）/ javascript（脚本覆写）
+	TemplateLang string `json:"templateLang,optional"`
+}
+
+// PreviewResp 处理前后的对照结果
+type PreviewResp {
+	Format    string `json:"format"`
+	Original  string `json:"original"`
+	Processed string `json:"processed"`
+	// Count 为处理后的可用节点数；文件原样输出时为 0
+	Count int `json:"count"`
+	// Warnings 记录被跳过的远程地址等非致命问题
+	Warnings []string `json:"warnings"`
+}
+
+// ---------- 处理管道 ----------
+type PipelineOperator {
+	Type    string `json:"type"`
+	Enabled bool   `json:"enabled"`
+	Payload string `json:"payload"` // Raw JSON string to bypass map[string]interface{} limits in goctl
+}
+
+// ---------- 组合订阅 ----------
+// Template 字段（组合的输出格式模板）已移除：组合统一按 mihomo-yaml 渲染，
+// 想要其它格式请通过分享链接的 ?target= 临时指定。
+type Collection {
+	Id         int64              `json:"id"`
+	Name       string             `json:"name"`
+	Enabled    bool               `json:"enabled"`
+	Operators  []PipelineOperator `json:"operators"`
+	ShareToken string             `json:"shareToken"`
+	SubIds     []int64            `json:"subIds"`
+}
+
+type CollectionReq {
+	Name      string             `json:"name"`
+	Enabled   bool               `json:"enabled,optional,default=true"`
+	Operators []PipelineOperator `json:"operators,optional"`
+	SubIds    []int64            `json:"subIds"`
+}
+
+type CollectionUpdateReq {
+	Id        int64              `path:"id"`
+	Name      string             `json:"name,optional"`
+	Enabled   *bool              `json:"enabled,optional"`
+	Operators []PipelineOperator `json:"operators,optional"`
+	SubIds    []int64            `json:"subIds,optional"`
+}
+
+// ---------- 文件托管 ----------
+type SubFile {
+	Id      int64  `json:"id"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Type    string `json:"type"`
+	// SyncUrl 为远程正文地址，支持多行、每行一个
+	SyncUrl string `json:"syncUrl"`
+	// SourceMode 为 local（正文取自编辑器）或 remote（取自 SyncUrl）
+	SourceMode string `json:"sourceMode"`
+	// MergeSources 为空表示不合并；localFirst / remoteFirst 决定拼接顺序
+	MergeSources string `json:"mergeSources"`
+	// IgnoreFailedRemote 空串=失败即报错，enabled=跳过并提示，quiet=静默跳过
+	IgnoreFailedRemote string `json:"ignoreFailedRemote"`
+	UserAgent          string `json:"userAgent"`
+	// ShareToken 直链凭据，前端据此拼出 /api/v1/file/{token}
+	ShareToken string `json:"shareToken"`
+	// ConfigType 为 file（原样输出）或 mihomo（作为模板渲染节点）
+	ConfigType string `json:"configType"`
+	// SourceType/SourceId 指定 mihomo 类型下的节点来源（subscription|collection）
+	SourceType string `json:"sourceType"`
+	SourceId   int64  `json:"sourceId"`
+	// TemplateLang 决定 ConfigType=mihomo 时正文按什么语言解释：
+	// gotemplate（默认，Go text/template）/ yaml（覆写深合并）/ javascript（脚本覆写）
+	TemplateLang string `json:"templateLang"`
+	// TrafficUrl 流量显示链接，供客户端读取 subscription-userinfo
+	TrafficUrl string `json:"trafficUrl"`
+	ShareName  string `json:"shareName"`
+	// ExpiresAt 为 RFC3339 时间串，空串表示永不过期
+	ExpiresAt string `json:"expiresAt"`
+}
+
+type SubFileReq {
+	Name string `json:"name"`
+	// Content 与 SyncUrl 的取用由 SourceMode 与 MergeSources 决定，
+	// 故 Content 非必填
+	Content            string `json:"content,optional"`
+	Type               string `json:"type,optional,default=raw"`
+	SyncUrl            string `json:"syncUrl,optional"`
+	SourceMode         string `json:"sourceMode,optional,default=local"`
+	MergeSources       string `json:"mergeSources,optional"`
+	IgnoreFailedRemote string `json:"ignoreFailedRemote,optional"`
+	UserAgent          string `json:"userAgent,optional"`
+	ConfigType         string `json:"configType,optional,default=file"`
+	SourceType         string `json:"sourceType,optional"`
+	SourceId           int64  `json:"sourceId,optional"`
+	TemplateLang       string `json:"templateLang,optional,default=gotemplate"`
+	TrafficUrl         string `json:"trafficUrl,optional"`
+}
+
+type SubFileUpdateReq {
+	Id int64 `path:"id"`
+	// 指针类型用于区分「未传该字段」与「显式传空串以清空」
+	Name               *string `json:"name,optional"`
+	Content            *string `json:"content,optional"`
+	Type               *string `json:"type,optional"`
+	SyncUrl            *string `json:"syncUrl,optional"`
+	SourceMode         *string `json:"sourceMode,optional"`
+	MergeSources       *string `json:"mergeSources,optional"`
+	IgnoreFailedRemote *string `json:"ignoreFailedRemote,optional"`
+	UserAgent          *string `json:"userAgent,optional"`
+	ConfigType         *string `json:"configType,optional"`
+	SourceType         *string `json:"sourceType,optional"`
+	SourceId           *int64  `json:"sourceId,optional"`
+	TemplateLang       *string `json:"templateLang,optional"`
+	TrafficUrl         *string `json:"trafficUrl,optional"`
+}
+
+// FileTokenReq 文件直链请求。用随机 token 而非文件名寻址，
+// 避免未认证者按名枚举读取全部文件内容。
+type FileTokenReq {
+	Token string `path:"token"`
+}
+
+// ---------- 分享管理 ----------
+type ShareTokenReq {
+	Token  string `path:"token"`
+	Target string `form:"target,optional"`
+	Filter string `form:"filter,optional"`
+}
+
+// ShareItem 聚合订阅/组合/文件三类分享
+type ShareItem {
+	// Kind 为 subscription|collection|file
+	Kind string `json:"kind"`
+	Id   int64  `json:"id"`
+	// SourceName 是所属实体的名称（订阅名/组合名/文件名）
+	SourceName string `json:"sourceName"`
+	// ShareName 是分享的自定义展示名，留空时前端回落到 SourceName
+	ShareName  string `json:"shareName"`
+	ShareToken string `json:"shareToken"`
+	// Url 为分享地址的相对路径，前端拼上 origin
+	Url string `json:"url"`
+	// ExpiresAt 为 RFC3339 时间串，空串表示永不过期
+	ExpiresAt string `json:"expiresAt"`
+	Expired   bool   `json:"expired"`
+	// Enabled 反映所属实体是否启用（停用后分享链接也会失效）
+	Enabled bool `json:"enabled"`
+	// Revoked 表示分享已被撤销（无 token）
+	Revoked bool `json:"revoked"`
+}
+
+type ShareListResp {
+	Items []ShareItem `json:"items"`
+}
+
+// ShareUpdateReq 修改分享的展示名与有效期。ExpiresAt 传空串表示永不过期。
+type ShareUpdateReq {
+	Kind      string `path:"kind"`
+	Id        int64  `path:"id"`
+	ShareName string `json:"shareName,optional"`
+	ExpiresAt string `json:"expiresAt,optional"`
+}
+
+// ShareActionReq 用于重置/撤销分享凭据
+type ShareActionReq {
+	Kind string `path:"kind"`
+	Id   int64  `path:"id"`
+}
+
+// ---------- 更新与设置 ----------
+type UpdateSettings {
+	AutoUpdateEnabled bool   `json:"autoUpdateEnabled"`
+	AutoUpdateCron    string `json:"autoUpdateCron"`
+	// CDNProviders 为 GitHub Release 资产（内核/面板二进制）的下载源。
+	// 仅这一类需要镜像：没有镜像代理 GitHub REST API，
+	// 因此版本查询一律直连官方，网络不通时由 mihomo 代理兜底。
+	CDNProviders []string `json:"cdnProviders"`
+	// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理
+	UseMihomoProxy bool `json:"useMihomoProxy"`
+	// MihomoProxyUrl 为当前探测到的代理地址，未就绪时为空串
+	MihomoProxyUrl   string `json:"mihomoProxyUrl"`
+	MihomoPath       string `json:"mihomoPath"`
+	ZashboardDir     string `json:"zashboardDir"`
+	MihomoPresent    bool   `json:"mihomoPresent"`
+	ZashboardPresent bool   `json:"zashboardPresent"`
+	// MihomoVersion 由 mihomo -v 探测，未知时为空串
+	MihomoVersion string `json:"mihomoVersion"`
+	// ZashboardVersion 为上次更新记录的 release tag，历史安装为空串
+	ZashboardVersion string   `json:"zashboardVersion"`
+	DefaultCDN       []string `json:"defaultCDN"`
+	// LogRetentionDays 应用日志文件的保留天数（只影响轮转归档）
+	LogRetentionDays int `json:"logRetentionDays"`
+	// LogCleanupCron 清理任务的调度表达式（6 段，含秒）
+	LogCleanupCron string `json:"logCleanupCron"`
+	// LogCleanupEnabled 是否启用定时清理；关闭后仅靠大小轮转限制磁盘占用
+	LogCleanupEnabled bool `json:"logCleanupEnabled"`
+}
+
+type UpdateSettingsReq {
+	AutoUpdateEnabled *bool    `json:"autoUpdateEnabled,optional"`
+	AutoUpdateCron    string   `json:"autoUpdateCron,optional"`
+	CDNProviders      []string `json:"cdnProviders,optional"`
+	UseMihomoProxy    *bool    `json:"useMihomoProxy,optional"`
+	// LogRetentionDays 日志保留天数，取值夹到 [1, 365]
+	LogRetentionDays *int `json:"logRetentionDays,optional"`
+	// LogCleanupCron 清理调度，空串表示不修改
+	LogCleanupCron string `json:"logCleanupCron,optional"`
+	// LogCleanupEnabled 是否启用定时清理，nil 表示不修改
+	LogCleanupEnabled *bool `json:"logCleanupEnabled,optional"`
+}
+
+// ---------- 其他 ----------
+type TaskItem {
+	Id      int64  `json:"id"`
+	Name    string `json:"name"`
+	Cron    string `json:"cron"`
+	Enabled bool   `json:"enabled"`
+	LastRun string `json:"lastRun"`
+	NextRun string `json:"nextRun"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+type LogLine {
+	Time    string `json:"time"`
+	Stream  string `json:"stream"`
+	Message string `json:"message"`
+}
+
+// DashboardEntryResp 内置 zashboard 面板的免手填入口。
+// Available 为 false 时 Message 说明原因（如未启用 external-controller）。
+type DashboardEntryResp {
+	Available bool   `json:"available"`
+	Url       string `json:"url"`
+	Host      string `json:"host"`
+	Port      string `json:"port"`
+	Message   string `json:"message"`
+}
+
+type LoginReq {
+	Password string `json:"password"`
+}
+
+type LoginResp {
+	Token string `json:"token"`
+}
+
+type ChangePasswordReq {
+	OldPassword string `json:"oldPassword"`
+	NewPassword string `json:"newPassword"`
+}
+
+// Public routes
+@server (
+	group: public
+)
+service aurora-api {
+	@handler login
+	post /api/v1/auth/login (LoginReq) returns (LoginResp)
+
+	@handler serveFile
+	get /api/v1/file/:token (FileTokenReq)
+
+	@handler shareByToken
+	get /api/v1/share/:token (ShareTokenReq)
+}
+
+// Protected routes
+@server (
+	jwt:   Auth
+	group: protected
+)
+service aurora-api {
+	@handler changePassword
+	post /api/v1/auth/password (ChangePasswordReq) returns (Result)
+
+	@handler systemStatus
+	get /api/v1/system/status returns (Status)
+
+	@handler dashboardEntry
+	get /api/v1/dashboard/entry returns (DashboardEntryResp)
+
+	@handler mihomoStart
+	post /api/v1/mihomo/start returns (Result)
+
+	@handler mihomoStop
+	post /api/v1/mihomo/stop returns (Result)
+
+	@handler mihomoRestart
+	post /api/v1/mihomo/restart returns (Result)
+
+	@handler mihomoReload
+	post /api/v1/mihomo/reload returns (Result)
+
+	@handler getMihomoLogs
+	get /api/v1/mihomo/logs returns ([]LogLine)
+
+	@handler listSubscriptions
+	get /api/v1/subscriptions returns ([]Subscription)
+
+	@handler createSubscription
+	post /api/v1/subscriptions (CreateSubscriptionReq) returns (Subscription)
+
+	@handler updateSubscription
+	put /api/v1/subscriptions/:id (UpdateSubscriptionReq) returns (Subscription)
+
+	@handler deleteSubscription
+	delete /api/v1/subscriptions/:id (IdPathReq) returns (Result)
+
+	@handler updateSubscriptionNow
+	post /api/v1/subscriptions/:id/update (IdPathReq) returns (Result)
+
+	@handler getBaseConfig
+	get /api/v1/config/base returns (ConfigContent)
+
+	@handler updateBaseConfig
+	put /api/v1/config/base (UpdateBaseConfigReq) returns (Result)
+
+	// final 是最近一次合并生成的最终配置（mihomo 内核实际加载的内容）。
+	// 尚未合并过时返回空字符串，而非报错。
+	@handler getFinalConfig
+	get /api/v1/config/final returns (ConfigContent)
+
+	// remote 是当前远程来源拉取后的原始层内容，供与本地/最终配置对照。
+	// 未配置远程来源或尚未拉取过时返回空字符串，而非报错。
+	@handler getRemoteConfig
+	get /api/v1/config/remote returns (ConfigContent)
+
+	// merge 只用已缓存的远程层重新生成最终配置，不回源
+	@handler mergeConfig
+	post /api/v1/config/merge returns (MergeResultEx)
+
+	// pull-merge 会拉取远程来源后再合并
+	@handler pullMergeConfig
+	post /api/v1/config/pull-merge returns (MergeResultEx)
+
+	@handler getConfigDiff
+	get /api/v1/config/diff returns (DiffReport)
+
+	@handler listConfigVersions
+	get /api/v1/config/versions returns ([]ConfigVersionItem)
+
+	@handler restoreConfigVersion
+	post /api/v1/config/versions/:id/restore (IdPathReq) returns (Result)
+
+	@handler getConflicts
+	get /api/v1/conflicts returns ([]ConflictItem)
+
+	@handler resolveConflict
+	post /api/v1/conflicts/:id/resolve (ResolveConflictReq) returns (Result)
+
+	@handler convertSubscription
+	post /api/v1/convert (ConvertReq) returns (ConvertResp)
+
+	@handler preview
+	post /api/v1/preview (PreviewReq) returns (PreviewResp)
+
+	@handler listCollections
+	get /api/v1/collections returns ([]Collection)
+
+	@handler createCollection
+	post /api/v1/collections (CollectionReq) returns (Collection)
+
+	@handler updateCollection
+	put /api/v1/collections/:id (CollectionUpdateReq) returns (Collection)
+
+	@handler deleteCollection
+	delete /api/v1/collections/:id (IdPathReq) returns (Result)
+
+	@handler buildCollection
+	post /api/v1/collections/:id/build (IdPathReq) returns (ConvertResp)
+
+	@handler listFiles
+	get /api/v1/files returns ([]SubFile)
+
+	@handler createFile
+	post /api/v1/files (SubFileReq) returns (SubFile)
+
+	@handler updateFile
+	put /api/v1/files/:id (SubFileUpdateReq) returns (SubFile)
+
+	@handler deleteFile
+	delete /api/v1/files/:id (IdPathReq) returns (Result)
+
+	// sync 把远程地址的内容固化进本地正文
+	@handler syncFile
+	post /api/v1/files/:id/sync (IdPathReq) returns (SubFile)
+
+	@handler listShares
+	get /api/v1/shares returns (ShareListResp)
+
+	@handler updateShare
+	put /api/v1/shares/:kind/:id (ShareUpdateReq) returns (ShareListResp)
+
+	@handler resetShare
+	post /api/v1/shares/:kind/:id/reset (ShareActionReq) returns (ShareListResp)
+
+	@handler revokeShare
+	post /api/v1/shares/:kind/:id/revoke (ShareActionReq) returns (ShareListResp)
+
+	@handler getMergePolicy
+	get /api/v1/settings/merge-policy returns (MergePolicyResp)
+
+	@handler putMergePolicy
+	put /api/v1/settings/merge-policy (MergePolicyReq) returns (MergePolicyResp)
+
+	// 透明代理：状态含环境检测结论，前端据此决定开关是否可操作
+	@handler getTransparentStatus
+	get /api/v1/transparent/status returns (TransparentStatusResp)
+
+	@handler putTransparent
+	put /api/v1/transparent (TransparentUpdateReq) returns (TransparentStatusResp)
+
+	// 确认网络正常，取消自动回滚。不调用则超时后规则被拆除、开关关闭。
+	@handler confirmTransparent
+	post /api/v1/transparent/confirm returns (TransparentStatusResp)
+
+	@handler getRemoteSource
+	get /api/v1/settings/remote-source returns (RemoteSourceResp)
+
+	@handler putRemoteSource
+	put /api/v1/settings/remote-source (RemoteSourceReq) returns (RemoteSourceResp)
+
+	@handler getUpdateSettings
+	get /api/v1/settings/update returns (UpdateSettings)
+
+	@handler putUpdateSettings
+	put /api/v1/settings/update (UpdateSettingsReq) returns (UpdateSettings)
+
+	@handler updateCheck
+	get /api/v1/update/check returns (Result)
+
+	@handler updateMihomo
+	post /api/v1/update/mihomo returns (Result)
+
+	@handler updateZashboard
+	post /api/v1/update/zashboard returns (Result)
+
+	@handler listTasks
+	get /api/v1/tasks returns ([]TaskItem)
+}
+
