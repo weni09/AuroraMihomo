@@ -219,12 +219,19 @@ Expected: 备份目录列出 `aurora.db`。
 
 - [ ] **Step 2: 停旧进程**
 
+用 `[a]` 括号技巧让模式不匹配自身。直接写 `pkill -f 'auroramihomo -f'` 会匹配到
+承载这条命令的 shell（它的 cmdline 里就含该字符串），pkill 杀掉自己的父进程、
+通道断开，返回 rc=-1 且输出为空 —— 随后的残留判定也会数到那个即将自尽的 shell，
+结论不可信。
+
 ```python
-h.run("pkill -TERM -f 'auroramihomo -f' ; sleep 5; "
-      "ps -ef|grep -E 'auroramihomo|mihomo'|grep -v grep || echo '已全部退出'")
+h.run("pkill -TERM -f '[a]uroramihomo -f' ; sleep 5; "
+      "pgrep -af '[a]uroramihomo' || echo 'NO-AURORA-PROC'; "
+      "pgrep -af '[m]ihomo' || echo 'NO-MIHOMO-PROC'")
 ```
 
-Expected: 输出「已全部退出」。若仍有残留，追加 `pkill -KILL -f auroramihomo` 并记录。
+Expected: 两行 `NO-*-PROC`。若仍有残留，再发 `pkill -KILL -f '[a]uroramihomo'`
+并**记录是否需要 KILL**（这是「优雅关停在该形态下是否有效」的证据，不要含糊）。
 
 - [ ] **Step 3: 确认端口释放**
 
@@ -274,11 +281,25 @@ Expected: 记录实际决定（加了/没加）与理由到报告。加了 swap 
 
 ```bash
 cd D:/goWork/AuroraMihomo
-tar --exclude=.git --exclude=data --exclude=node_modules --exclude=frontend/node_modules `
-    --exclude=frontend/dist --exclude=public --exclude='*.exe' `
+# 注意：不要用未锚定的 --exclude=public / --exclude=dist —— tar 的 --exclude
+# 对任意层级生效，会连带吞掉 backend/api/internal/handler/public 与
+# logic/public 这两个 Go 包（含 loginLogic.go），构建时报
+# "package ... is not in std"（Go 找不到模块内包时会退回 GOROOT 找，
+# 错误信息极具误导性）。
+# 仓库根的 public/ 与 frontend/dist/ 已由 .dockerignore 排除，
+# 且 Docker 的忽略模式锚定于上下文根，不会误伤嵌套同名目录。
+tar --exclude=.git --exclude=./data --exclude=node_modules `
+    --exclude=frontend/node_modules --exclude='*.exe' `
     --exclude=auroramihomo-linux-amd64 --exclude=dist-frontend.tar.gz `
     -czf ../aurora-src.tar.gz .
 ```
+
+验证包内两个 Go 包都在（这一步不能省）：
+
+```bash
+tar -tzf ../aurora-src.tar.gz | Select-String 'handler/public|logic/public'
+```
+Expected: 至少 7 个文件，含 `logic/public/loginLogic.go`。
 
 ```python
 h.run("mkdir -p /opt/aurora-build", check=True)
