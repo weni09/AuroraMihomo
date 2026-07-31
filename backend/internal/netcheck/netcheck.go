@@ -29,7 +29,6 @@ package netcheck
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -164,17 +163,9 @@ func (r *Report) AnyAvailable() bool {
 // Detect 探测当前环境。实现按平台分文件，见 detect_*.go。
 func Detect() *Report { return detect() }
 
-// hasCommand 判断外部命令是否在 PATH 上。
-func hasCommand(name string) bool {
-	_, err := exec.LookPath(name)
-	return err == nil
-}
-
-// fileExists 判断路径存在（不区分文件类型）。
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
+// hasCommand 与 fileExists 定义在 detect_linux.go：
+// 只有 Linux 的探测路径用得到它们，放在本文件（无构建标签、全平台编译）
+// 会在 darwin/windows 下成为未被引用的死代码，被 unused 检查拦下。
 
 // readFileTrim 读文件并去掉首尾空白；读不到返回空串。
 // 探测场景下"读不到"与"内容为空"处理方式相同，不需要区分。

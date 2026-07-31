@@ -404,3 +404,19 @@ func iptablesBackend(c commandProbe) string {
 		return ""
 	}
 }
+
+// hasCommand 判断外部命令是否在 PATH 上。
+//
+// 与 fileExists 一同放在本文件而不是 netcheck.go：后者没有构建标签、
+// 在所有平台编译，而这两个只有 Linux 探测路径会用，放那边会在
+// darwin/windows 构建下变成未引用的死代码（unused 检查会拦）。
+func hasCommand(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// fileExists 判断路径存在（不区分文件类型）。
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

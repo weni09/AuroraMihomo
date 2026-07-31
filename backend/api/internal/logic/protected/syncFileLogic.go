@@ -60,7 +60,7 @@ func (l *SyncFileLogic) SyncFile(req *types.IdPathReq) (*types.SubFile, error) {
 	l.svcCtx.RenderService.InvalidateRenderCache()
 
 	for _, w := range res.Warnings {
-		l.Logger.Errorf("同步文件 %s：%s", f.Name, w)
+		l.Errorf("同步文件 %s：%s", f.Name, w)
 	}
 	out := toFileType(*f)
 	return &out, nil

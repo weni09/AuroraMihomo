@@ -117,7 +117,9 @@ func ValidateTemplateLang(lang, content string) error {
 		// 校验函数名是否已定义，这里若不注册，用了 proxiesYaml 等辅助函数的
 		// 模板会在保存时被判为"function not defined"，而实际渲染完全正常。
 		if _, err := template.New("custom").Funcs(goTemplateFuncs).Parse(content); err != nil {
-			return fmt.Errorf("Go 模板语法错误: %w", err)
+			// 措辞以小写起首是 staticcheck ST1005 的要求（错误串会被包裹进
+			// 更长的句子）。这里把 "Go" 挪到句中而不是关掉该检查。
+			return fmt.Errorf("模板语法错误（Go 模板）: %w", err)
 		}
 	case model.TemplateLangYAML:
 		var v map[string]interface{}
