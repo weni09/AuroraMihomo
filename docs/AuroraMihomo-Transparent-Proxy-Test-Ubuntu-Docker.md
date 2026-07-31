@@ -805,13 +805,14 @@ $ curl -4 -sS --noproxy '*' https://ipv4.icanhazip.com
 ### 8.1 本次测试未在本形态发现代码缺陷
 
 Docker 形态的全部 14 个场景按设计工作。唯一的功能性缺陷发现在 Alpine
-二进制形态（`sysctl --system` 在 BusyBox 上不可用），详见
+二进制形态（`sysctl --system` 在 BusyBox 上不可用，已修复），详见
 [Alpine 报告](./AuroraMihomo-Transparent-Proxy-Test-Alpine-Binary.md) 第 4.3 节。
 该缺陷对本形态无影响，因为容器内的 sysctl 写入本就按设计被拒绝。
 
 但**需要留意一个潜在关联**：本项目的 Dockerfile 基于 alpine:3.21，容器内的
 `sysctl` 同样是 BusyBox applet。当前不受影响仅因为容器内不执行 sysctl 写入；
-若将来放开这条路径，会踩同一个坑。
+若将来放开这条路径，会踩同一个坑 —— 该缺陷的修复（`--system` 失败时回退为
+`sysctl -p <文件>`）已一并覆盖这种情形。
 
 ### 8.2 日志里的 error 级误报
 

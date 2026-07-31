@@ -501,8 +501,48 @@ Alpine 也有 `procps-ng-4.0.6-r0` 包提供 GNU 版 `sysctl`（支持 `--system
 
 无论哪种方案，`manualCommands` 里的对应命令都要同步调整。
 
-为让测试继续，已手动执行 `sysctl -p` 使内核值就位（TProxy 需要
+为让测试继续，当时先手动执行 `sysctl -p` 使内核值就位（TProxy 需要
 `rp_filter ≠ 1`）。
+
+**修复与回归验证（测试后补充）**
+
+已按方案 1 修复：`applySysctl` 拆出 `reloadSysctl`，先试 `--system`，
+仅在错误输出匹配「选项不被识别」类措辞时回退为 `sysctl -p <本文件>`。
+刻意不对所有失败都回退 —— 像 `cannot stat /proc/sys/...` 这类错误说明
+某个键在当前内核上不存在，换成 `-p` 是同样结果，转成成功等于掩盖真实问题。
+`manualCommands` 也改为 `sudo sysctl -p <文件>`，它在 procps-ng 与
+BusyBox 上都可用。
+
+在同一台 Alpine 上回归：先把内核值改回缺陷会暴露的状态
+（`rp_filter=1`、`ip_forward=0`）并删掉 drop-in，部署修复版后重新调用
+`provision`：
+
+```
+{"name":"使 sysctl 生效", "command":"sysctl --system", "success":true,
+ "skipped":true,
+ "detail":"当前系统的 sysctl 不支持 --system（常见于 BusyBox），已改用逐文件加载。
+           原始输出：sysctl: unrecognized option: system ..."}
+{"name":"使 sysctl 生效（逐文件加载）",
+ "command":"sysctl -p /etc/sysctl.d/99-auroramihomo.conf", "success":true,
+ "detail":"net.ipv4.ip_forward = 1\nnet.ipv4.conf.all.rp_filter = 2\n..."}
+```
+
+关键判据是回读 `/proc` 确认内核值真的变了（修复前这一步是不变的）：
+
+```
+$ cat /proc/sys/net/ipv4/ip_forward
+1
+$ for f in /proc/sys/net/ipv4/conf/*/rp_filter; do ...; done
+all=2  default=2  eth0=2  lo=1
+```
+
+`manualCommands` 也已确认给出 `sudo sysctl -p /etc/sysctl.d/99-auroramihomo.conf`。
+随后在 `rp_filter=2` 的状态下复测 TProxy 端到端：出口 IP 变为节点 IP、
+关闭后规则清理干净，与修复前手动置位时的行为一致。
+
+单元测试补了三个用例（`netcheck` 包由 70 个增至 73 个，全绿）：
+回退路径生效、回退也失败时如实报错、`manualCommands` 不含 `--system`。
+配套更新了设计文档第 2 节与用户指南「自动准备」一节。
 
 ### 4.4 幂等复测
 
@@ -823,7 +863,7 @@ default via 192.168.1.251 dev eth0 proto dhcp src 192.168.1.129 metric 1002
 
 ## 9. 发现的问题
 
-### 缺陷 #1：`sysctl --system` 在 BusyBox 环境不可用（待修）
+### 缺陷 #1：`sysctl --system` 在 BusyBox 环境不可用（已修复并回归验证）
 
 详见 4.3 节。摘要：
 
@@ -832,8 +872,10 @@ default via 192.168.1.251 dev eth0 proto dhcp src 192.168.1.129 metric 1002
 - **后果**：`rp_filter` 保持 1，而这正是「会导致 TProxy 收不到包」的条件。「自动准备」报告部分成功，实际 TProxy 仍不可用
 - **影响面**：所有 Alpine / BusyBox 环境的二进制部署。Docker 形态当前不受影响（容器内 sysctl 写入本就按设计拒绝），但镜像基于 alpine:3.21，若放开该路径会踩同一坑
 - **同类根因**：与既有报告第 4 节的 `ip --version` 误判同源——假设 GNU 工具行为
-- **建议修法**：回退式调用（先 `--system`，失败则逐文件 `-p`），并同步修正 `manualCommands`
-- **已验证**：`sysctl -p <file>` 在 BusyBox 上可用且内核值立即生效
+- **修法**：已按回退式调用修复（先 `--system`，仅在「选项不被识别」时逐文件 `-p`），
+  `manualCommands` 同步改为 `-p`。其它类型的失败不回退、如实报错
+- **回归验证**：在同一台 Alpine 上复现缺陷场景后部署修复版，回读 `/proc` 确认
+  `ip_forward` 0→1、`rp_filter` 全部 1→2；详见 4.3 节末尾
 
 ### 未验证项
 
@@ -842,7 +884,6 @@ default via 192.168.1.251 dev eth0 proto dhcp src 192.168.1.129 metric 1002
 | 从 CGNAT 源地址探测 SSH 端口握手 | Alpine 无 `nc`。全程 SSH 未断为替代证据 |
 | `/api/v1/system/restart` 端到端 | 仅确认了 supervise-daemon 在位这一前提，未实际触发重启 |
 | 宿主重启后的状态一致性（`ReconcileState`） | 本次未重启宿主 |
-| 缺陷 #1 修复后的回归 | 按约定不在测试过程中改代码，修复与回归留待后续 |
 
 ---
 
@@ -871,7 +912,7 @@ default via 192.168.1.251 dev eth0 proto dhcp src 192.168.1.129 metric 1002
 | S1-5c 三条告警的准确性 | 通过，均准确 |
 | S1-6 自动准备：装包 | 通过（已就绪故 skipped） |
 | S1-6 自动准备：写 sysctl 文件 | 通过 |
-| **S1-6 自动准备：使 sysctl 生效** | **未通过 —— 缺陷 #1** |
+| **S1-6 自动准备：使 sysctl 生效** | **初测未通过（缺陷 #1），已修复并回归验证** |
 | S1-6b 幂等复测（无重复行堆积） | 通过 |
 | **S2 代理基础能力** | |
 | S2-7 面板自身出网 | 通过 |
@@ -903,4 +944,5 @@ Alpine 特有的平台差异大多不构成障碍——musl 下静态二进制�
 覆盖 busybox 软链因此无 PATH 问题、apk-tools 3.x 仍兼容平文件源配置。
 唯一的真实缺陷是 BusyBox `sysctl` 不支持 `--system`（缺陷 #1），它使
 「自动准备」的内核参数调整失效，而 `rp_filter=1` 正是 TProxy 不通的直接
-原因。该缺陷有明确的修法且已在本机验证可行。
+原因。该缺陷已按回退式调用修复，并在同一台机器上复现场景后完成回归验证
+（见 4.3 节末尾）。
