@@ -98,6 +98,7 @@ const addOperator = (type: string) => {
       block_quic: 'DEFAULT',
       ecn: 'DEFAULT',
       ip_version: 'DEFAULT',
+      client_fingerprint: 'DEFAULT',
     },
   }
   if (!(type in defaults)) return
@@ -266,8 +267,26 @@ const removeOperator = (index: number) => {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label :for="`qs-${uidOf(op)}-cfp`" class="text-xs text-fg-muted block mb-1">客户端指纹（仅 VLESS / VMess / Trojan / SS / Snell / AnyTLS）</Label>
+              <Select v-model="op.payload.client_fingerprint">
+                <SelectTrigger :id="`qs-${uidOf(op)}-cfp`" class="text-sm w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="DEFAULT">不改</SelectItem>
+                  <SelectItem value="chrome">chrome</SelectItem>
+                  <SelectItem value="firefox">firefox</SelectItem>
+                  <SelectItem value="safari">safari</SelectItem>
+                  <SelectItem value="ios">ios</SelectItem>
+                  <SelectItem value="android">android</SelectItem>
+                  <SelectItem value="edge">edge</SelectItem>
+                  <SelectItem value="random">random</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <p class="text-xs text-fg-subtle sm:col-span-2 lg:col-span-3">
               不适用于当前节点协议的选项会被自动跳过，不影响其它字段。
+              选「不改」时，Reality 节点仍会在输出阶段自动补上 chrome 指纹——
+              内核要求 Reality 必须有 uTLS 指纹，缺失会导致节点连不上。
             </p>
           </div>
 

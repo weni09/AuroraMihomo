@@ -477,6 +477,17 @@ var quickSettingReuseTypes = map[string]bool{"snell": true, "anytls": true, "tru
 // quickSettingECNTypes 「ECN」仅对这些协议生效
 var quickSettingECNTypes = map[string]bool{"tuic": true, "hysteria2": true}
 
+// quickSettingFingerprints 是「常用配置」允许设置的 uTLS 指纹取值，
+// 取自 mihomo component/tls/utls.go 的 fingerprints 表中非废弃的那些。
+//
+// 刻意不含 "none"：内核把 none 视为不启用 uTLS，对 reality 节点等同于
+// 选了个会让它连不上的值；而且非空值会绕过 resolveClientFingerprint 的兜底。
+// 也不含 chrome120/safari16 等历史指纹与 deprecated 项，避免用户误选。
+var quickSettingFingerprints = map[string]bool{
+	"chrome": true, "firefox": true, "safari": true, "ios": true,
+	"android": true, "edge": true, "random": true,
+}
+
 // quickSettingIPVersionMap 把面板枚举翻译成 mihomo 实际接受的 ip-version 取值
 var quickSettingIPVersionMap = map[string]string{
 	"dual":      "dual",
@@ -527,6 +538,13 @@ func applyQuickSetting(nodes []Node, payload map[string]interface{}) ([]Node, er
 
 	ipVersion, ipVersionChanged := quickSettingIPVersionMap[fmt.Sprint(payload["ip_version"])]
 
+	clientFP, _ := payload["client_fingerprint"].(string)
+	clientFP = strings.TrimSpace(clientFP)
+	// 只接受内核认识的取值：拼错的指纹（mihomo 仅警告 "wrong clientFingerprint"
+	// 后当作未设置）会让 reality 节点连不上，且因为字段非空还会绕过
+	// resolveClientFingerprint 的兜底，比不填更糟
+	clientFPChanged := quickSettingFingerprints[clientFP]
+
 	for i := range nodes {
 		typ := strings.ToLower(nodes[i].Type)
 		if nodes[i].Extra == nil {
@@ -563,6 +581,9 @@ func applyQuickSetting(nodes []Node, payload map[string]interface{}) ([]Node, er
 		}
 		if ipVersionChanged {
 			nodes[i].Extra["ip-version"] = ipVersion
+		}
+		if clientFPChanged && clientFingerprintTypes[typ] {
+			nodes[i].Extra["client-fingerprint"] = clientFP
 		}
 	}
 	return nodes, nil

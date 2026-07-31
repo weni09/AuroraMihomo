@@ -59,13 +59,6 @@ type ConfigService struct {
 	// 返回渲染好的 mihomo YAML。
 	renderCollection func(ctx context.Context, id int64) (string, error)
 	renderFile       func(ctx context.Context, id int64) (string, error)
-
-	// transparentOptions 提供透明代理开关当前对应的注入参数。
-	//
-	// 为什么在这一层注入而不是写进用户的 base 配置：base 是用户可编辑的，
-	// 他随手改掉 tun.enable 后开关状态就与实际配置不一致了。放在合并的
-	// 最后一步覆写，"开关说了算"这件事才有保证。
-	transparentOptions func() netcheck.InjectOptions
 }
 
 // SetPolicyProvider 注入合并策略来源，未注入时使用引擎默认策略
@@ -76,12 +69,6 @@ func (s *ConfigService) SetPolicyProvider(fn func() domain.MergePolicy) {
 // SetRemoteSourceProvider 注入远程来源选择，未注入时聚合所有启用订阅
 func (s *ConfigService) SetRemoteSourceProvider(fn func() domain.RemoteSource) {
 	s.remoteSourceProvider = fn
-}
-
-// SetTransparentOptions 注入透明代理的注入参数来源。
-// 未注入时合并流程不改动 tun / tproxy 相关字段，保持用户配置原样。
-func (s *ConfigService) SetTransparentOptions(fn func() netcheck.InjectOptions) {
-	s.transparentOptions = fn
 }
 
 // SetRenderers 注入组合与文件模板的渲染入口。
@@ -711,15 +698,21 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 		s.logger.Errorf("合并自动修正: %s", w)
 	}
 
-	// 透明代理开关最后落定，覆盖 base 与远程里的 tun / tproxy 设置。
-	// 必须在 GenerateYAML 之前、合并之后：合并结果里可能带着用户或订阅
-	// 写的 tun 段，只有在这一步覆写才能保证"界面上的开关说了算"。
-	if s.transparentOptions != nil {
-		if err := netcheck.Inject(result.Config, s.transparentOptions()); err != nil {
-			// 注入失败说明开关参数与配置结构冲突，继续下发会得到一份
-			// 与开关状态不符的配置，不如直接失败让用户看到原因
-			return nil, fmt.Errorf("应用透明代理设置失败: %w", err)
-		}
+	// 注入透明代理技术参数（不覆盖 tun.enable 和 tproxy-port）。
+	// 设计变更：开关状态现在直接存储在 base.yaml 中，通过配置合并流程生效。
+	// 这里只负责注入必要的技术参数（auto-route、dns-hijack、routing-mark 等）。
+	//
+	// 根据合并后配置的实际值决定注入内容：
+	//   - result.Config.TUN.Enable == true → 注入 TUN 技术参数
+	//   - result.Config.TProxyPort > 0 → 注入 TProxy 技术参数
+	report := netcheck.Detect()
+	injectOpts := netcheck.InjectOptions{
+		TUNStack:     "mixed", // 默认协议栈
+		AutoRedirect: report.OS == "linux",
+	}
+	if err := netcheck.Inject(result.Config, injectOpts); err != nil {
+		s.logger.Errorf("注入透明代理技术参数失败: %v", err)
+		// 技术参数注入失败不阻断流程，配置仍可生效，只是某些优化参数缺失
 	}
 
 	mergedBytes, err := s.engine.GenerateYAML(result.Config)
@@ -789,8 +782,25 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 	}
 
 	// 优先走 external-controller 的 PUT /configs 热重载，不重启进程、不断开现有连接；
-	// 未配置 controller 或请求失败时 ReloadConfig 会自行回退为重启
-	if err := s.mihomo.ReloadConfig(ctx, result.Config.ExternalController, result.Config.Secret, s.configPath()); err != nil {
+	// 未配置 controller 或请求失败时 ReloadConfig 会自行回退为重启。
+	//
+	// 但控制接口自身的参数（监听地址与密钥）是例外：mihomo 的热重载只换
+	// 运行期配置，不会重开 API 监听套接字，也不会换掉已生效的密钥
+	// （实测 PUT /configs 返回 204，而 external-controller 从
+	// 127.0.0.1:19090 改成 0.0.0.0:19090 后监听仍停留在回环，
+	// 新加的 secret 也不生效）。此时只有重启进程才能让新地址生效，
+	// 否则用户改完配置、界面提示"已生效"，局域网却依旧连不上面板。
+	if s.controllerChanged(previous, result.Config) {
+		s.logger.Infof("external-controller 或 secret 已变更，重启内核使其生效（热重载不会重开 API 监听）")
+		if err := s.mihomo.Reload(ctx); err != nil && !isBinaryMissing(err) {
+			return &MergeApplyResult{
+				Message:       fmt.Sprintf("配置已合并落盘，但内核重启失败：%v", err),
+				ConflictCount: len(result.Conflicts),
+				Diff:          result.Diff,
+				Warnings:      result.Warnings,
+			}, nil
+		}
+	} else if err := s.mihomo.ReloadConfig(ctx, result.Config.ExternalController, result.Config.Secret, s.configPath()); err != nil {
 		if !isBinaryMissing(err) {
 			return &MergeApplyResult{
 				Message:       fmt.Sprintf("配置已合并落盘，但内核重载失败：%v", err),
@@ -807,6 +817,21 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 		Diff:          result.Diff,
 		Warnings:      result.Warnings,
 	}, nil
+}
+
+// controllerChanged 判断本次合并是否动了控制接口的监听地址或密钥。
+//
+// previous 为 nil 表示磁盘上原本没有配置（首次生成）：这种情况下内核
+// 要么还没起，要么随后会被 Start 拉起，都不需要额外重启，返回 false。
+//
+// 只比这两个字段：其余配置项热重载都能正常生效，无谓的重启会断掉
+// 所有现有代理连接。
+func (s *ConfigService) controllerChanged(previous, next *domain.Config) bool {
+	if previous == nil || next == nil {
+		return false
+	}
+	return previous.ExternalController != next.ExternalController ||
+		previous.Secret != next.Secret
 }
 
 func isBinaryMissing(err error) bool {

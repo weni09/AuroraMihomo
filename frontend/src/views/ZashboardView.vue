@@ -5,16 +5,64 @@ import { Button } from '@/components/ui/button'
 
 // 内嵌 zashboard。
 //
-// zashboard 与本管理端同源（后端把它挂在 /ui/），因此可以直接 iframe 内嵌，
-// 不受同源策略限制；后端的安全响应头也已放开为 SAMEORIGIN / frame-src 'self'。
+// zashboard 与本管理端同源（后端把它挂在 /ui/，路径不同但协议/主机/端口
+// 与管理端一致），因此可以直接 iframe 内嵌；也正因为同源，两者的
+// localStorage 本来就是浏览器里同一份存储，父页面不必等 iframe 加载完成
+// 再跨 frame 访问，直接用 window.localStorage 即可。
 //
 // /dashboard/entry 会用当前内核的 external-controller 拼出带
-// ?hostname=&port=&secret= 的地址，面板据此自动对接内核，用户无需手填。
+// ?hostname=&port=&secret= 的地址，但 zashboard 只在“首次配置”时才会读取
+// 这几个 URL 参数：它把后端信息存进自己的 localStorage["setup/api-list"]，
+// 一旦存过一条，启动时只走“URL 参数与已存记录逐字段比对，完全相同才切换”
+// 这条路径——外部控制端口一变，比对必然失败，它既不会新增也不会更新，
+// 只会继续用旧端口的记录，看起来就是“改端口后面板连不上”。
+// 见 data/zashboard/assets/*.js 内 dbe/HX 等函数（已读源码确认此行为）。
+//
+// 因此这里在拿到最新 host/port/secret、但还没设置 frameSrc（即 iframe
+// 还没开始加载）之前，先把 zashboard 自己的 localStorage 更新好，
+// 它下次初始化读到的就已经是新端口，不需要用户手动重新走一遍配置向导。
+// 顺序很重要：如果等 iframe 加载完再改，zashboard 的启动脚本可能已经用
+// 旧值发起过一次连接尝试。
 const frameSrc = ref('')
 const loading = ref(true)
 const errorMsg = ref('')
 const entryHost = ref('')
 const entryPort = ref('')
+
+interface ZashboardBackend {
+  uuid: string
+  type?: string
+  protocol?: string
+  host: string
+  port: string
+  password?: string
+  label?: string
+  [key: string]: unknown
+}
+
+function syncZashboardBackend(host: string, port: string, secret: string) {
+  try {
+    const listRaw = window.localStorage.getItem('setup/api-list')
+    const uuid = window.localStorage.getItem('setup/active-uuid')
+    if (!listRaw || !uuid) return // 从未配置过，交给 zashboard 自己的首次配置逻辑
+
+    const list = JSON.parse(listRaw) as ZashboardBackend[]
+    if (!Array.isArray(list)) return
+    const cur = list.find((b) => b.uuid === uuid)
+    if (!cur) return
+
+    if (cur.host === host && cur.port === port && (cur.password || '') === secret) {
+      return // 已经是最新值，不必写回（避免每次加载都触发 localStorage 变更事件）
+    }
+    cur.host = host
+    cur.port = port
+    cur.password = secret
+    window.localStorage.setItem('setup/api-list', JSON.stringify(list))
+  } catch {
+    // 读写失败（localStorage 被禁用、字段格式在 zashboard 未来版本变化等）
+    // 静默放弃自动同步，用户仍可在面板内手动改后端设置
+  }
+}
 
 async function load() {
   loading.value = true
@@ -28,6 +76,8 @@ async function load() {
     }
     entryHost.value = res.data.host || ''
     entryPort.value = res.data.port || ''
+    const secret = new URL(res.data.url, window.location.origin).searchParams.get('secret') || ''
+    syncZashboardBackend(entryHost.value, entryPort.value, secret)
     frameSrc.value = res.data.url
   } catch (e: any) {
     errorMsg.value = e?.response?.data?.message || e?.message || '获取面板入口失败'
@@ -78,7 +128,9 @@ onMounted(load)
       </div>
     </div>
 
-    <!-- 同源内嵌，无需 sandbox 放行清单；面板需要访问 localStorage 保存自身设置 -->
+    <!-- 同源内嵌，无需 sandbox 放行清单；面板需要访问 localStorage 保存自身设置。
+         上方 load() 里已在设置 frameSrc 之前调用 syncZashboardBackend，
+         这里加载时读到的就是同步过的值，不需要再监听 @load 二次处理 -->
     <iframe
       v-else
       :src="frameSrc"

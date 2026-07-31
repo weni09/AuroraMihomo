@@ -38,6 +38,15 @@ func (f *fakeRunner) RunWithStdin(_ context.Context, _ string, name string, args
 	return f.record(name, args)
 }
 
+// RunEnv 把环境变量前置到记录里，使断言可以检查"有没有设
+// DEBIAN_FRONTEND"这类要求
+func (f *fakeRunner) RunEnv(_ context.Context, env []string, name string, args ...string) (string, error) {
+	if len(env) > 0 {
+		return f.record(strings.Join(env, " ")+" "+name, args)
+	}
+	return f.record(name, args)
+}
+
 func (f *fakeRunner) joined() string { return strings.Join(f.calls, "\n") }
 
 func (f *fakeRunner) indexOf(prefix string) int {
@@ -137,15 +146,38 @@ func TestTeardownIsIdempotent(t *testing.T) {
 	r.failOn["nft delete table"] = "Error: No such file or directory"
 	r.failOn["ip rule del"] = "RTNETLINK answers: No such process"
 
-	if err := newApplier(r, t.TempDir()).Teardown(context.Background(), false); err != nil {
+	if err := newApplier(r, t.TempDir()).Teardown(context.Background()); err != nil {
 		t.Errorf("目标不存在时拆除应视为成功，实际: %v", err)
+	}
+}
+
+// 拆除必须无条件清理 v6，不看启用时是不是开了 v6。
+//
+// 真机测试发现的残留：旧实现按参数决定清不清 v6，而调用方传的是硬编码的
+// false，于是在有 IPv6 出网能力的宿主上关闭透明代理后，v6 的 ip rule 与
+// local ::/0 路由仍然留在系统里，日志却报告"规则已拆除"。
+// 这类残留最隐蔽的地方在于它不影响当次上网，却会让下一次启用/排障时
+// 看到一个不该存在的策略路由。
+func TestTeardownAlwaysCleansIPv6(t *testing.T) {
+	r := newFakeRunner()
+	if err := newApplier(r, t.TempDir()).Teardown(context.Background()); err != nil {
+		t.Fatalf("Teardown 失败: %v", err)
+	}
+	all := r.joined()
+	for _, want := range []string{
+		"ip -6 rule del fwmark 1 table 100",
+		"ip -6 route flush table 100",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("拆除未执行 %q，v6 策略路由会残留:\n%s", want, all)
+		}
 	}
 }
 
 // 拆除顺序：先删规则再撤路由。反序会短暂出现"规则在、路由没了"的黑洞。
 func TestTeardownRemovesRulesBeforeRoutes(t *testing.T) {
 	r := newFakeRunner()
-	if err := newApplier(r, t.TempDir()).Teardown(context.Background(), false); err != nil {
+	if err := newApplier(r, t.TempDir()).Teardown(context.Background()); err != nil {
 		t.Fatalf("Teardown 失败: %v", err)
 	}
 	nft := r.indexOf("nft delete table")
@@ -161,7 +193,7 @@ func TestTeardownRemovesRulesBeforeRoutes(t *testing.T) {
 // 拆除只能动自己的表，不得整体 flush
 func TestTeardownNeverFlushesEverything(t *testing.T) {
 	r := newFakeRunner()
-	_ = newApplier(r, t.TempDir()).Teardown(context.Background(), true)
+	_ = newApplier(r, t.TempDir()).Teardown(context.Background())
 
 	all := r.joined()
 	for _, forbidden := range []string{"flush ruleset", "iptables -F", "-t nat -F", "nft flush"} {
@@ -205,5 +237,43 @@ func TestSnapshotWritesCollectedOutput(t *testing.T) {
 func TestSnapshotRequiresDir(t *testing.T) {
 	if _, err := (&Applier{Runner: newFakeRunner()}).Snapshot(context.Background()); err == nil {
 		t.Error("未配置快照目录时应报错")
+	}
+}
+
+// 规则确实存在时，探测应返回 true 且不判定为错误
+func TestRulesActiveReturnsTrueWhenTableExists(t *testing.T) {
+	r := newFakeRunner()
+	active, err := newApplier(r, t.TempDir()).RulesActive(context.Background())
+	if err != nil {
+		t.Fatalf("探测应成功，实际: %v", err)
+	}
+	if !active {
+		t.Error("nft 命令成功返回时应判定规则存在")
+	}
+}
+
+// 表不存在是"规则已失效"的正常信号（例如宿主重启后），不应当作探测出错
+func TestRulesActiveReturnsFalseWhenTableMissing(t *testing.T) {
+	r := newFakeRunner()
+	r.failOn["nft list table inet aurora_tproxy"] = "Error: No such file or directory"
+
+	active, err := newApplier(r, t.TempDir()).RulesActive(context.Background())
+	if err != nil {
+		t.Fatalf("表不存在不应视为探测出错，实际: %v", err)
+	}
+	if active {
+		t.Error("表不存在时应判定规则不存在")
+	}
+}
+
+// 命令本身执行不了（如 nft 未安装）时，不能贸然断言"规则不存在"，
+// 否则会错误地把"探测失败"和"确实没有规则"混为一谈
+func TestRulesActiveReturnsErrorOnUnexpectedFailure(t *testing.T) {
+	r := newFakeRunner()
+	r.failOn["nft list table inet aurora_tproxy"] = "nft: command not found"
+
+	_, err := newApplier(r, t.TempDir()).RulesActive(context.Background())
+	if err == nil {
+		t.Error("非'表不存在'的失败应报错，交由调用方判断，不能默认为规则已失效")
 	}
 }

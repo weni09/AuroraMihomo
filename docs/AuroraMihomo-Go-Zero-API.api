@@ -246,6 +246,47 @@ type TransparentUpdateReq {
 	TUNStack string `json:"tunStack,optional"`
 }
 
+// 环境准备（补依赖 / 调 sysctl）的单步结果。
+//
+// 逐步返回而非只给一个总的成功失败：装包成功但 sysctl 失败是常见组合，
+// 合成一个布尔值会让用户不知道该去修哪一半。
+type TransparentProvisionStep {
+	// Name 步骤名，面向用户（如"安装软件包"、"写入 sysctl 配置"）
+	Name string `json:"name"`
+	// Command 实际执行的命令，用于审计"面板到底动了什么"
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	// Detail 成功时是简要说明，失败时是命令原始输出（不截断成"失败"了事）
+	Detail string `json:"detail"`
+	// Skipped 该步骤无需执行（如包已装齐、sysctl 本来就合规）
+	Skipped bool `json:"skipped"`
+}
+
+type TransparentProvisionReq {
+	// InstallPackages 安装缺失的 iptables / nftables / iproute2
+	InstallPackages bool `json:"installPackages,optional"`
+	// ApplySysctl 写 /etc/sysctl.d/ 下的专用 drop-in 并使其立即生效
+	ApplySysctl bool `json:"applySysctl,optional"`
+}
+
+// 环境准备结果。
+//
+// 刻意带上重新探测后的 Env：用户点完按钮要立刻看到"现在到底可用了没有"，
+// 而不是自己再刷一次；也避免出现"提示成功但模式仍显示不可用"的割裂。
+type TransparentProvisionResp {
+	Success bool                       `json:"success"`
+	Message string                     `json:"message"`
+	Steps   []TransparentProvisionStep `json:"steps"`
+	// NotPersistent 改动重启或容器重建后会丢失（容器内装包即属此列），
+	// 前端据此提示用户长期使用应改镜像或用二进制部署
+	NotPersistent bool `json:"notPersistent"`
+	// ManualCommands 等价的手动命令。无论成功失败都返回：
+	// 失败时它是用户的兜底，成功时也便于记录到自己的部署脚本里
+	ManualCommands []string `json:"manualCommands"`
+	// Env 执行后重新探测的环境报告
+	Env TransparentEnvReport `json:"env"`
+}
+
 // ---------- 转换与预览 ----------
 type ConvertReq {
 	Url      string `json:"url,optional"`
@@ -699,6 +740,15 @@ service aurora-api {
 	// 确认网络正常，取消自动回滚。不调用则超时后规则被拆除、开关关闭。
 	@handler confirmTransparent
 	post /api/v1/transparent/confirm returns (TransparentStatusResp)
+
+	// 环境准备：安装缺失依赖、写 sysctl drop-in。
+	//
+	// 探测本身始终只读，这个接口是唯一会改动宿主的准备动作，且只能由用户
+	// 显式触发。只装代码里硬编码的那几个包、只写自己的 sysctl drop-in 文件，
+	// 不接受调用方传入任何命令或包名（否则等于开了个远程命令执行入口）。
+	// 装包可能耗时数十秒，受全局 Timeout 约束。
+	@handler provisionTransparent
+	post /api/v1/transparent/provision (TransparentProvisionReq) returns (TransparentProvisionResp)
 
 	@handler getRemoteSource
 	get /api/v1/settings/remote-source returns (RemoteSourceResp)

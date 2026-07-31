@@ -100,6 +100,25 @@ func TestShareLinkExportVLESSReality(t *testing.T) {
 	}
 }
 
+// TestShareLinkRoundTripClientFingerprint 守住导出与解析的对称性。
+// 曾经导出侧写 fp、解析侧不读，于是分享出去的链接再导入回来指纹就没了，
+// reality 节点随之失效。
+func TestShareLinkRoundTripClientFingerprint(t *testing.T) {
+	n := Node{Name: "vless reality fp", Type: "vless", Server: "c.example.com", Port: 42345,
+		Extra: map[string]interface{}{
+			"uuid": "1ff35761-7e07-4724-bc72-58160ea5fe8c",
+			"tls":  true, "network": "tcp", "servername": "www.icloud.com",
+			"client-fingerprint": "firefox",
+			"reality-opts": map[string]interface{}{
+				"public-key": "PUBKEY123", "short-id": "93c8",
+			},
+		}}
+	round := exportRoundTrip(t, n)
+	if round.Extra["client-fingerprint"] != "firefox" {
+		t.Errorf("client-fingerprint 未往返: %#v", round.Extra["client-fingerprint"])
+	}
+}
+
 func TestShareLinkExportVLESSWebSocket(t *testing.T) {
 	n := Node{Name: "vless ws", Type: "vless", Server: "d.example.com", Port: 443,
 		Extra: map[string]interface{}{

@@ -16,7 +16,7 @@ Mihomo 内核运行时与配置管理平台：订阅聚合、配置合并、冲�
 
 单个静态二进制，不依赖 CGO 与外部 C 库，Alpine 与 Debian/Ubuntu 通用。
 
-完整使用说明见 [使用文档](docs/AuroraMihomo-User-Guide.md)。
+完整使用说明见 [使用文档](userdocs/user-guide.md)，部署运行后也可在面板侧边栏的「使用文档」里直接查看。
 
 ## 快速开始
 
@@ -97,6 +97,8 @@ docker compose -f docker/docker-compose.yml up -d --build
 
 默认配置不支持透明代理。需要时编辑 `docker/docker-compose.yml`，取消 `user: "0:0"` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
 
+TProxy 需要的 `iptables`/`nftables`/`iproute2` 已预装在镜像里，开箱可用。两种模式的依赖不同：TUN 需要映射 `/dev/net/tun` 但不需要这些命令行工具（mihomo 自己走 netlink）；TProxy 反之，不需要 tun 设备。
+
 ---
 
 ### 方式二：二进制
@@ -111,6 +113,8 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 ```
 
 脚本会探测系统与架构、从 Release 拉对应包、解压到 `/opt/auroramihomo`、安装 systemd 单元。升级时重跑同一条命令即可，它会保留现有配置并自动停服替换。
+
+Alpine 等无 systemd 的系统上，脚本检测不到 `systemctl` 会跳过服务安装（不报错），装完只有程序本身、末尾的提示也仍是 systemd 命令 —— 服务需按下面「作为服务运行」的 OpenRC 部分手工配置。
 
 可选参数：
 
@@ -187,6 +191,42 @@ sudo journalctl -u auroramihomo -f      # 看日志
 ```
 
 进程自身不做 fork 自重启，生产环境依赖 systemd 的 `Restart=always`。
+
+**Alpine（OpenRC）** 没有 systemd，`install.sh` 的 systemd 单元用不上，需手工放服务脚本。要点是用 `supervise-daemon` 而非 `start-stop-daemon` —— 面板的「重启」是「优雅退出、等进程管理器拉起」，后者不做拉起，会让重启变成单向关机：
+
+```bash
+sudo tee /etc/init.d/auroramihomo >/dev/null <<'EOF'
+#!/sbin/openrc-run
+name="auroramihomo"
+directory="/opt/auroramihomo"
+command="/opt/auroramihomo/auroramihomo"
+command_args="-f etc/aurora-api.yaml"
+command_user="root:root"
+supervisor="supervise-daemon"
+supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
+pidfile="/run/auroramihomo.pid"
+depend() { need net; after firewall; }
+EOF
+
+sudo chmod +x /etc/init.d/auroramihomo
+sudo rc-update add auroramihomo default
+sudo rc-service auroramihomo start
+sudo tail -f /var/log/auroramihomo.log
+```
+
+Alpine 还需补几个默认没有的东西（透明代理必需项 + 排查工具）：
+
+```bash
+# ip6tables 是独立包；iproute2 会把 /sbin/ip 从 busybox 换成真 iproute2
+sudo apk add --no-cache nftables iproute2 ip6tables
+# 默认只有 busybox 的 wget，不支持 -x 与 --interface
+sudo apk add --no-cache curl bind-tools
+# tun 与 nft_tproxy 默认未加载
+sudo modprobe tun && sudo modprobe nft_tproxy
+printf 'tun\nnft_tproxy\n' | sudo tee /etc/modules-load.d/auroramihomo.conf
+```
+
+另外注意根分区余量：官方 cloud 镜像可能只有 100M 出头，而部署约需 55M（二进制 29M + 前端 3M + 内核 15M + 依赖包）。
 
 取初始密码：
 
@@ -354,9 +394,37 @@ sudo cat /opt/auroramihomo/data/initial_password.txt
 make check             # 格式检查 + 静态检查 + 测试 + 前端类型检查
 make test-race         # 带竞态检测运行测试
 make cover             # 查看测试覆盖率
+make sync-docs         # 同步 userdocs/ 到前端内置副本
 make docker            # 构建镜像
 make docker-multiarch  # 构建 amd64/arm64 多架构镜像
 ```
+
+## 发布版本
+
+GitHub Actions **只在手动打 tag 并 push 后触发**，日常推送分支不跑流水线。
+
+```bash
+# 先在本地确认全绿，避免推了 tag 才发现问题
+make check
+
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+推送后自动执行：质量门禁（完整 CI）→ 构建五平台二进制 → 创建 Release 并附上校验和。
+
+门禁不过就不会构建产物，也不会创建 Release，因此不存在「发出了测试不通过的包」这种情况。
+
+想在正式打 tag 前先验一遍，可以在 Actions 页面手动运行 Release（填一个临时版本号）。手动运行只构建产物供下载，**不创建 Release**。也可以单独手动运行 CI 只跑检查。
+
+发错了 tag 需要重来：
+
+```bash
+git tag -d v0.2.0                  # 删本地
+git push origin :refs/tags/v0.2.0  # 删远端
+```
+
+已创建的 Release 需要在 GitHub 页面手工删除，删 tag 不会连带删除它。
 
 ## 分享链接
 
@@ -371,7 +439,7 @@ http://<地址>/api/v1/file/<token>                # 文件模板直链（不支
 
 `target` 支持：`clash` `mihomo` `base64` `plain` `links` `surge` `surgemac` `loon` `qx` `singbox` `v2ray` `json` `stash` `surfboard` `shadowrocket` `egern`。
 
-链接凭据即链接本身，可在「Sub-Store 管理 → 分享管理」集中改名、设有效期、重置凭据或撤销。详见[使用文档](docs/AuroraMihomo-User-Guide.md#分享管理)。
+链接凭据即链接本身，可在「Sub-Store 管理 → 分享管理」集中改名、设有效期、重置凭据或撤销。详见[使用文档](userdocs/user-guide.md#分享管理)。
 
 ## 透明代理
 
@@ -381,7 +449,15 @@ http://<地址>/api/v1/file/<token>                # 文件模板直链（不支
 
 启用后**必须在 90 秒内确认网络正常**，否则自动拆除规则并关闭开关——规则配错可能让你同时失去 SSH 与面板访问，这个确认窗口是唯一的补救通道。回滚意图会持久化，面板崩溃重启后仍会生效。
 
-两种模式的取舍、四层防护机制、以及终端设备的四种接入方式（手动代理 / 只改 DNS / 网关模式 / 旁路由），见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
+两种模式都会**一并接管本机自身的流量**（宿主上的 `curl`、`apt` 也按分流规则走节点），没有只代理局域网设备的开关。SSH、面板端口、内核 API 与面板自身的出站始终直连。本机 DNS 指向回环（systemd-resolved 的 `127.0.0.53`）时本机的域名分流不生效，检测会告警。
+
+两种模式的取舍、防护机制、本机流量的接管细节、以及终端设备的四种接入方式（手动代理 / 只改 DNS / 网关模式 / 旁路由），见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
+
+真机实测记录（含完整命令与输出）：
+
+- [Ubuntu 24.04 / Docker](docs/AuroraMihomo-Transparent-Proxy-Test-Ubuntu-Docker.md)
+- [Alpine 3.24 / 二进制](docs/AuroraMihomo-Transparent-Proxy-Test-Alpine-Binary.md)（含 OpenRC 与 musl 兼容性）
+- [Ubuntu 二进制与容器](docs/AuroraMihomo-Transparent-Proxy-Test-Report.md)
 
 > 首次启用 TProxy 建议在有物理或控制台访问的机器上验证。
 

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"auroramihomo/backend/internal/netcheck"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -131,10 +132,23 @@ func New(cfg Config) *Manager {
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+			// 直连路径也打面板专用 fwmark：透明代理 TProxy 模式下，
+			// 不打标的话"直连"其实会被 mihomo 接管，用户关掉
+			// UseMihomoProxy 的意图就被无声地绕过了。
+			// 更要紧的是 mihomo 挂掉时这条路是下载内核的唯一通道，
+			// 不能让它也依赖 mihomo。
+			Transport: &http.Transport{
+				DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
+			},
 		},
 		logger: logx.WithContext(context.Background()),
 	}
 }
+
+// dialTimeout 单次 TCP 建连超时。
+// 与下面代理路径上用的是同一个值：都希望"连不上"能快速回落到下一个源，
+// 而不是耗尽整体 Timeout。
+const dialTimeout = 5 * time.Second
 
 func mihomoFileName() string {
 	if runtime.GOOS == "windows" {
@@ -270,8 +284,12 @@ func (m *Manager) httpClient() (*http.Client, string) {
 		Transport: &http.Transport{
 			Proxy: http.ProxyURL(u),
 			// 代理不可用时快速失败，好尽早回落到直连或镜像；
-			// 不设的话默认无连接超时，会一直等到整体 Timeout
-			DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			// 不设的话默认无连接超时，会一直等到整体 Timeout。
+			//
+			// 这里同样打面板 fwmark：拨的是到 mihomo 混合端口的本地连接，
+			// 目标虽是回环、本不会被 TPROXY 抓，但打标不影响它，
+			// 而两条路径用同一个构造方式能避免"改了一处忘了另一处"。
+			DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
 		},
 	}, proxy
 }

@@ -454,3 +454,96 @@ func TestRunScheduledPullSkipsUnreachableSubscription(t *testing.T) {
 		t.Errorf("回源失败应把订阅标记为 error，实际 %q", got.Status)
 	}
 }
+
+// external-controller 变更必须走进程重启，不能只发热重载。
+//
+// 固化的是一个实测到的内核行为：mihomo 的 PUT /configs 会返回 204，
+// 但不会重开 API 监听套接字。因此把 external-controller 从
+// 127.0.0.1:19090 改成 0.0.0.0:19090 之后，监听仍停在回环，
+// 局域网内其它设备打不开 zashboard——而界面已经提示"配置已生效"。
+func TestMergeAndApplyRestartsWhenControllerChanged(t *testing.T) {
+	svc, _, mgr := newTestConfigService(t)
+	ctx := context.Background()
+
+	if err := svc.UpdateBaseConfig("external-controller: 127.0.0.1:19090\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatalf("首次合并失败: %v", err)
+	}
+	// 首次合并（磁盘上原本无配置）应走热重载，不该无谓重启
+	if reloadCalls, restartCalls, _, _ := mgr.snapshot(); reloadCalls != 1 || restartCalls != 0 {
+		t.Fatalf("首次合并应只热重载，实际 reload=%d restart=%d", reloadCalls, restartCalls)
+	}
+
+	// 只改监听地址
+	if err := svc.UpdateBaseConfig("external-controller: 0.0.0.0:19090\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatalf("第二次合并失败: %v", err)
+	}
+
+	reloadCalls, restartCalls, _, _ := mgr.snapshot()
+	if restartCalls != 1 {
+		t.Errorf("controller 变更应触发一次进程重启，实际 %d 次", restartCalls)
+	}
+	if reloadCalls != 1 {
+		t.Errorf("controller 变更时不应再发热重载，ReloadConfig 累计应仍为 1，实际 %d", reloadCalls)
+	}
+}
+
+// secret 变更同样只有重启才生效：实测热重载后旧密钥仍然放行、
+// 新密钥不被要求，等于用户以为设了鉴权其实没设，是个安全问题。
+func TestMergeAndApplyRestartsWhenSecretChanged(t *testing.T) {
+	svc, _, mgr := newTestConfigService(t)
+	ctx := context.Background()
+
+	if err := svc.UpdateBaseConfig("external-controller: 127.0.0.1:19090\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.UpdateBaseConfig("external-controller: 127.0.0.1:19090\nsecret: newsecret\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, restartCalls, _, _ := mgr.snapshot(); restartCalls != 1 {
+		t.Errorf("secret 变更应触发一次进程重启，实际 %d 次", restartCalls)
+	}
+}
+
+// 反面用例：控制接口没动时，其余配置变更仍应走热重载。
+// 否则每次保存配置都会断掉全部现有代理连接。
+func TestMergeAndApplyHotReloadsWhenControllerUnchanged(t *testing.T) {
+	svc, _, mgr := newTestConfigService(t)
+	ctx := context.Background()
+
+	if err := svc.UpdateBaseConfig("external-controller: 127.0.0.1:19090\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 只改与控制接口无关的项
+	if err := svc.UpdateBaseConfig("external-controller: 127.0.0.1:19090\nmode: global\nproxies: []\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.MergeAndApplyDetailed(ctx, MergeWithRefresh(0)); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadCalls, restartCalls, _, _ := mgr.snapshot()
+	if restartCalls != 0 {
+		t.Errorf("控制接口未变时不应重启进程（会断开所有连接），实际 %d 次", restartCalls)
+	}
+	if reloadCalls != 2 {
+		t.Errorf("两次合并都应走热重载，实际 ReloadConfig %d 次", reloadCalls)
+	}
+}

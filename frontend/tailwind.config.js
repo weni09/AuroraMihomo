@@ -69,6 +69,10 @@ export default {
           DEFAULT: 'rgb(var(--accent-solid) / <alpha-value>)',
           foreground: 'rgb(var(--accent-solid-foreground) / <alpha-value>)',
         },
+        // accent-text 是淡色底上的强调「文字」色。与 accent-solid 分开的原因
+        // 见 main.css 里的说明：后者要兼顾实色按钮底配白字，明度被钉住，
+        // 深色主题下拿来当文字达不到 WCAG AA 的 4.5:1。
+        'accent-text': 'rgb(var(--accent-text) / <alpha-value>)',
         muted: {
           DEFAULT: 'rgb(var(--muted) / <alpha-value>)',
           foreground: 'rgb(var(--muted-foreground) / <alpha-value>)',

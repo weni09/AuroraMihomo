@@ -96,7 +96,7 @@
   },
   "src/views/SubscriptionsView.vue": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 9
+      "count": 8
     }
   },
   "src/views/ZashboardView.vue": {

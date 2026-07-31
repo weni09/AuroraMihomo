@@ -608,7 +608,9 @@ func singBoxApplyTLS(n Node, ob map[string]interface{}, force bool) {
 	if alpn := extraStringSlice(n, "alpn"); len(alpn) > 0 {
 		tls["alpn"] = alpn
 	}
-	if fp := extraString(n, "client-fingerprint"); fp != "" {
+	// sing-box 的 reality 客户端同样强依赖 uTLS（缺指纹会报
+	// "uTLS is required by reality client"），故走补全后的取值
+	if fp := resolveClientFingerprint(n); fp != "" {
 		tls["utls"] = map[string]interface{}{"enabled": true, "fingerprint": fp}
 	}
 	if ro, ok := n.Extra["reality-opts"].(map[string]interface{}); ok && len(ro) > 0 {
@@ -805,7 +807,8 @@ func v2rayStreamSettings(n Node) map[string]interface{} {
 		if v := mapString(reality, "short-id"); v != "" {
 			rs["shortId"] = v
 		}
-		if fp := extraString(n, "client-fingerprint"); fp != "" {
+		// Xray 的 reality 也要求 uTLS 指纹，缺失时补默认值
+		if fp := resolveClientFingerprint(n); fp != "" {
 			rs["fingerprint"] = fp
 		}
 		ss["realitySettings"] = rs

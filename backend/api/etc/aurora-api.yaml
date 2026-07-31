@@ -1,0 +1,84 @@
+Name: aurora-api
+Host: 0.0.0.0
+Port: 8899
+# 合并配置、刷新订阅、下载内核远超默认 3 秒，需放宽
+Timeout: 300000
+
+# 连接层超时。上面的 Timeout 只约束单请求的处理阶段，不限制读写报文，
+# 缺少这些值时慢速连接（Slowloris）可长期占用连接不被回收。
+Server:
+  ReadHeaderTimeoutSec: 10
+  ReadTimeoutSec: 60
+  # 必须大于上面的 Timeout，否则长耗时请求会在写响应阶段被连接层掐断
+  WriteTimeoutSec: 360
+  IdleTimeoutSec: 120
+  MaxHeaderBytes: 1048576
+
+# 可信反向代理的 IP/CIDR 白名单。
+# 仅当请求直连来源命中白名单时，才采信 X-Forwarded-For / X-Real-IP 来做
+# 登录失败限流的计数依据；留空表示一律使用真实 RemoteAddr。
+# 若不填而部署在反代之后，所有请求会被归到反代 IP 上（一个用户失败会影响其他人）；
+# 若填成 0.0.0.0/0 则等于允许任何人伪造头部绕过限流，切勿如此配置。
+TrustedProxies: []
+
+DataSource: "./data/aurora.db"
+
+Mihomo:
+  BinaryPath: ""
+  ConfigDir: "./data"
+
+SubStore:
+  NodePath: "node"
+  SubStoreScript: "./data/substore/substore.js"
+
+Bootstrap:
+  EnsureOnStart: true
+  FailOnEnsureError: false
+
+# 本项目自身的运行日志（与 mihomo 内核日志分开采集）。
+# go-zero 的 Log 段管控制台输出格式；这里管的是
+# 「留一份在内存供界面查看、留一份在磁盘供事后回溯」。
+AppLog:
+  # 内存中保留的条数，供界面实时查看
+  MemoryLimit: 1000
+  # 落盘的意义是回溯重启前的现场：进程异常退出后控制台输出通常已经没了
+  ToFile: true
+  # 留空则取 <Mihomo.ConfigDir>/logs/aurora.log
+  FilePath: ""
+  # 单文件 8MB × 保留 5 份，磁盘占用上界约 40MB
+  MaxFileMB: 8
+  MaxBackups: 5
+  # go-zero 对每个 HTTP 请求写一条 Info，而前端的实时通道与每 5 秒状态推送
+  # 本身就在不断产生请求；收录后满屏都是访问记录，业务日志会被冲走。
+  # 需要排查请求链路时再临时打开。
+  IncludeAccessLog: false
+
+AutoUpdate:
+  Enabled: false
+  Cron: "0 0 4 * * *"
+
+Updater:
+  MihomoRepo: "MetaCubeX/mihomo"
+  ZashboardRepo: "Zephyruso/zashboard"
+  GitHubAPI: "https://api.github.com"
+  TimeoutSec: 180
+
+  # 下载与版本查询优先经由本地 mihomo 代理出网。
+  # 内核跑起来后走它通常比第三方镜像更快、拿到的也是官方原始文件；
+  # 代理不可用（内核未运行或未开放 mixed-port/port）时自动回落。
+  UseMihomoProxy: true
+
+  # Release 资产（内核/面板二进制）的下载源，顺序即优先级。
+  # 仅这一类需要镜像：GitHub REST API 没有可用镜像（ghproxy 只代理
+  # github.com 的下载路径，jsdelivr 只镜像仓库内文件），故版本查询
+  # 一律直连官方，网络不通时由上面的 mihomo 代理兜底。
+  # 自定义源可写完整前缀，或含 %s 的模板（%s 替换为完整官方地址）。
+  CDNProviders:
+    - ghproxy.com
+    - mirror.ghproxy.com
+    - gh.ddlc.top
+    - ghproxy.net
+    - gitdl.cn
+    - gh.llkk.cc
+    - ghp.ci
+    - github

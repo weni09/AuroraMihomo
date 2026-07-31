@@ -26,7 +26,7 @@ deps: ## 安装前后端依赖
 build: build-frontend build-backend ## 完整构建（前端产物会同步到 public/）
 
 .PHONY: build-frontend
-build-frontend: ## 构建前端并同步到 public/
+build-frontend: sync-docs ## 构建前端并同步到 public/
 	cd frontend && npm run build
 	rm -rf public
 	cp -r frontend/dist public
@@ -37,7 +37,7 @@ build-backend: ## 构建后端二进制
 
 # ---------- 质量 ----------
 .PHONY: check
-check: fmt-check vet test type-check lint-frontend test-frontend conventions ## 本地跑一遍 CI 的主要检查
+check: fmt-check vet test type-check lint-frontend test-frontend conventions docs-check ## 本地跑一遍 CI 的主要检查
 
 .PHONY: check-all
 check-all: check lint ## 含 golangci-lint 的完整检查（需本地 golangci-lint 与 go.mod 版本匹配）
@@ -135,3 +135,11 @@ docker-multiarch: ## 构建 amd64/arm64 多架构镜像（需 buildx）
 clean: ## 清理构建产物（不动 data/）
 	rm -f $(BINARY)
 	rm -rf public frontend/dist
+
+.PHONY: sync-docs
+sync-docs: ## 把 userdocs/ 下的用户文档同步到前端内置副本
+	node scripts/sync-docs.mjs
+
+.PHONY: docs-check
+docs-check: ## 校验前端内置文档与 userdocs/ 下的原件一致
+	node scripts/sync-docs.mjs --check

@@ -94,6 +94,11 @@
     --warning-foreground: 15 23 42; /* slate-900，见上方对比度说明 */
     --accent-solid: 79 70 229; /* indigo-600 */
     --accent-solid-foreground: 255 255 255;
+    /* accent 系的「文字色」变体，用于淡色底上的强调文字（选中项等）。
+       与 --accent-solid 分开是因为后者要兼顾实色按钮底（配白字），
+       明度被钉住了；而淡底上的文字需要另一个明度才能达到 4.5:1。
+       浅色主题下两者同值，深色主题里这个会调亮（见下方 .dark 块）。 */
+    --accent-text: 79 70 229; /* indigo-600 */
 
     --radius: 0.5rem;
   }
@@ -123,6 +128,10 @@
     --success: 16 185 129; /* emerald-500 */
     --warning: 245 158 11; /* amber-500 */
     --accent-solid: 99 102 241; /* indigo-500 */
+    /* 深色底上 indigo-500 作为文字只有 2.6:1，远不到 AA 的 4.5:1，
+       淡底强调文字要用更亮的色阶。这里不能直接调 --accent-solid：
+       它还要当实色按钮底配白字，调亮会让那处失去对比度。 */
+    --accent-text: 165 180 252; /* indigo-300 */
   }
 
   /**
@@ -267,6 +276,10 @@
     top: calc(1rem + env(safe-area-inset-top, 0px));
     right: calc(1rem + env(safe-area-inset-right, 0px));
   }
+  /* 底部居中的悬浮操作条：贴着底部手势条，需在自身间距上叠加安全区 */
+  .safe-inset-b {
+    bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
 
   /**
    * 全屏遮罩内的居中浮层（弹窗）。
@@ -345,6 +358,31 @@
   .responsive-table td[colspan]::before {
     content: none;
   }
+}
+
+/* 细滚动条：用于内容区里的长列表（目前是文档目录）。
+   默认滚动条在浅色主题下带一条明显的灰轨道，压在窄侧栏里很抢眼；
+   这里把轨道设为透明、滑块做细并半透明，悬停时才加深，
+   既保留「还能往下滚」的提示又不干扰阅读。
+   与 .no-scrollbar 的区别：后者彻底隐藏，用于横向标签栏。 */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  /* Firefox 只认这一对值：滑块色 + 轨道色 */
+  scrollbar-color: rgb(var(--c-line-strong)) transparent;
+}
+.thin-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--c-line-strong));
+  border-radius: 3px;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--c-fg-subtle));
 }
 
 /* 横向滚动容器（移动端的分组导航、标签栏）不显示滚动条，

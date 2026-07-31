@@ -184,6 +184,10 @@ func parseVMess(link, source string) (Node, error) {
 	if host, ok := m["host"].(string); ok && host != "" {
 		n.Extra["servername"] = host
 	}
+	// v2rayN 的 JSON 形式用 fp 承载 uTLS 指纹
+	if fp := firstString(m["fp"], ""); fp != "" {
+		n.Extra["client-fingerprint"] = fp
+	}
 	return n, nil
 }
 
@@ -226,6 +230,12 @@ func parseVLESS(u *url.URL, source string) (Node, error) {
 	// Flow
 	if flow := q.Get("flow"); flow != "" {
 		n.Extra["flow"] = flow
+	}
+
+	// uTLS 客户端指纹：reality 节点没有它就无法完成握手，
+	// 而链接里这个参数是可选的，漏读会让节点在导入后静默失效。
+	if fp := q.Get("fp"); fp != "" {
+		n.Extra["client-fingerprint"] = fp
 	}
 
 	// Network / Transport
@@ -273,6 +283,10 @@ func parseTrojan(u *url.URL, source string) (Node, error) {
 	q := u.Query()
 	if sni := q.Get("sni"); sni != "" {
 		n.Extra["sni"] = sni
+	}
+	// trojan 也支持 reality / uTLS，同样不能漏读 fp
+	if fp := q.Get("fp"); fp != "" {
+		n.Extra["client-fingerprint"] = fp
 	}
 
 	network := q.Get("type")

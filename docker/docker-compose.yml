@@ -24,6 +24,10 @@ services:
     # 「TUN 设备未找到」与「NET_ADMIN 已授予但当前进程未持有」，据此对照排查。
     #   devices:
     #     - /dev/net/tun:/dev/net/tun
+    #
+    # TProxy 所需的 iptables / nftables / iproute2 已预装在镜像里，不必再进
+    # 容器手工安装。但它仍需要上面的 host 网络、NET_ADMIN 与 root
+    # （TProxy 不需要 /dev/net/tun，那是 TUN 模式的要求）。
     security_opt:
       # 禁止通过 setuid 程序提权，缩小容器逃逸面。
       # 注意：该选项会阻断基于文件 capability 的提权，与 TUN 模式互斥。

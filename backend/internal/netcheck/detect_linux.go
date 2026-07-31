@@ -5,6 +5,7 @@ package netcheck
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -12,38 +13,52 @@ import (
 // probePaths 把所有被探测的路径收成一处，测试可替换成临时目录里的假数据。
 // 生产代码只用 defaultProbePaths。
 type probePaths struct {
-	procStatus          string // /proc/self/status，读 CapEff/CapBnd
-	procModules         string // /proc/modules，查内核模块
-	osRelease           string // /etc/os-release，判发行版
-	kernelRelease       string // /proc/sys/kernel/osrelease
-	devNetTun           string // /dev/net/tun
-	devTun              string // /dev/tun，sing-tun 的备选路径
-	sysClassMiscTun     string // /sys/class/misc/tun，模块内建时也存在
-	dockerEnv           string // /.dockerenv
-	procOneCgroup       string // /proc/1/cgroup
-	selfNetNS           string // /proc/self/ns/net
-	oneNetNS            string // /proc/1/ns/net
-	sysctlIPForward     string
-	sysctlRPFilter      string
-	sysctlRouteLocalnet string
+	procStatus      string // /proc/self/status，读 CapEff/CapBnd
+	procModules     string // /proc/modules，查内核模块
+	osRelease       string // /etc/os-release，判发行版
+	kernelRelease   string // /proc/sys/kernel/osrelease
+	devNetTun       string // /dev/net/tun
+	devTun          string // /dev/tun，sing-tun 的备选路径
+	sysClassMiscTun string // /sys/class/misc/tun，模块内建时也存在
+	dockerEnv       string // /.dockerenv
+	procOneCgroup   string // /proc/1/cgroup
+	selfNetNS       string // /proc/self/ns/net
+	oneNetNS        string // /proc/1/ns/net
+	sysctlIPForward string
+	sysctlRPFilter  string
+	// sysctlConfDir 是 /proc/sys/net/ipv4/conf，用于枚举每个网卡的 rp_filter。
+	// 内核对某网卡取 max(all, <该网卡>)，只看 all 会漏掉"all 已宽松但网卡仍严格"
+	// 的情况——那种机器上 TProxy 依然丢包。
+	sysctlConfDir string
+	// resolvConf 是 /etc/resolv.conf，用于发现回环 DNS stub（systemd-resolved）
+	resolvConf string
+	// procNetIPv6Route 是 /proc/net/ipv6_route，用于判断有没有 v6 默认路由。
+	// 用 /proc 而不是执行 `ip -6 route`：探测路径要保持只读且不依赖外部命令，
+	// 而这台机器可能压根没装 iproute2（那正是 TProxy 不可用的原因之一）。
+	procNetIPv6Route string
+	// procNetIfInet6 是 /proc/net/if_inet6，用于判断有没有全局 v6 地址
+	procNetIfInet6 string
 }
 
 func defaultProbePaths() probePaths {
 	return probePaths{
-		procStatus:          "/proc/self/status",
-		procModules:         "/proc/modules",
-		osRelease:           "/etc/os-release",
-		kernelRelease:       "/proc/sys/kernel/osrelease",
-		devNetTun:           "/dev/net/tun",
-		devTun:              "/dev/tun",
-		sysClassMiscTun:     "/sys/class/misc/tun",
-		dockerEnv:           "/.dockerenv",
-		procOneCgroup:       "/proc/1/cgroup",
-		selfNetNS:           "/proc/self/ns/net",
-		oneNetNS:            "/proc/1/ns/net",
-		sysctlIPForward:     "/proc/sys/net/ipv4/ip_forward",
-		sysctlRPFilter:      "/proc/sys/net/ipv4/conf/all/rp_filter",
-		sysctlRouteLocalnet: "/proc/sys/net/ipv4/conf/all/route_localnet",
+		procStatus:       "/proc/self/status",
+		procModules:      "/proc/modules",
+		osRelease:        "/etc/os-release",
+		kernelRelease:    "/proc/sys/kernel/osrelease",
+		devNetTun:        "/dev/net/tun",
+		devTun:           "/dev/tun",
+		sysClassMiscTun:  "/sys/class/misc/tun",
+		dockerEnv:        "/.dockerenv",
+		procOneCgroup:    "/proc/1/cgroup",
+		selfNetNS:        "/proc/self/ns/net",
+		oneNetNS:         "/proc/1/ns/net",
+		sysctlIPForward:  "/proc/sys/net/ipv4/ip_forward",
+		sysctlRPFilter:   "/proc/sys/net/ipv4/conf/all/rp_filter",
+		sysctlConfDir:    "/proc/sys/net/ipv4/conf",
+		resolvConf:       "/etc/resolv.conf",
+		procNetIPv6Route: "/proc/net/ipv6_route",
+		procNetIfInet6:   "/proc/net/if_inet6",
 	}
 }
 
@@ -94,12 +109,63 @@ func detectWith(p probePaths, c commandProbe, euid int) *Report {
 	r.InContainer = fileExists(p.dockerEnv) || cgroupLooksContainerized(readFileTrim(p.procOneCgroup))
 	r.HostNetwork = sameNetNS(p.selfNetNS, p.oneNetNS)
 
+	// sysctl 原始值在这里一次读出并留在 Report 上：Warnings 需要它们生成
+	// 人话提示，Provisioner 需要它们判断哪几项真的要改。此前只在
+	// collectWarnings 里读完即丢，准备逻辑只能重新读一遍。
+	r.SysctlIPForward = readFileTrim(p.sysctlIPForward)
+	r.SysctlRPFilter = readFileTrim(p.sysctlRPFilter)
+	r.RPFilterStrictIfaces = strictRPFilterIfaces(p.sysctlConfDir)
+
+	// 这两项服务于"本机流量被接管"这条路径：前者决定要不要下发 v6 规则，
+	// 后者决定本机的域名分流能不能生效。都在探测阶段一次读出，
+	// 避免下发规则时再读一遍（两次读之间状态可能已经变了）。
+	r.HasIPv6Egress = hasIPv6Egress(p)
+	r.DNSLoopbackStub = loopbackDNSStub(readFileTrim(p.resolvConf))
+
 	r.Modes = []ModeStatus{
 		checkTUN(r, p, c),
 		checkTProxy(r, p, c),
 	}
 	r.Warnings = collectWarnings(r, p, c)
 	return r
+}
+
+// strictRPFilterIfaces 列出 rp_filter 仍为 1（严格）的网卡。
+//
+// 为什么要逐网卡看：内核判定用的是 max(conf.all.rp_filter,
+// conf.<iface>.rp_filter)，所以把 all 改成 2 之后，任何仍是 1 的网卡上
+// 依然按严格模式丢包。只改 all 就以为搞定，是这块最容易踩空的地方。
+//
+// 跳过 all 与 default：前者是聚合项，后者只影响将来新建的网卡，
+// 两者都由调用方单独处理。lo 也跳过，回环不参与反向路径校验。
+func strictRPFilterIfaces(confDir string) []string {
+	if confDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(confDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if name == "all" || name == "default" || name == "lo" {
+			continue
+		}
+		if readFileTrim(filepath.Join(confDir, name, "rp_filter")) == "1" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// hasIPv6Egress 判断宿主是否真的能往外走 IPv6。
+//
+// 两个条件都要满足：有全局单播地址、且有非 lo 的默认路由。少任何一个都
+// 意味着 v6 流量出不去，此时不该下发 v6 的 TProxy 规则与策略路由。
+func hasIPv6Egress(p probePaths) bool {
+	return hasGlobalIPv6Addr(readFileTrim(p.procNetIfInet6)) &&
+		hasIPv6DefaultRoute(readFileTrim(p.procNetIPv6Route))
 }
 
 func detectPackageManager(c commandProbe) string {
@@ -238,24 +304,28 @@ func checkTProxy(r *Report, p probePaths, c commandProbe) ModeStatus {
 	return s
 }
 
-// installHintFor 给出补齐依赖的命令。
-func installHintFor(pm string) string {
-	switch pm {
-	case "apk":
-		// Alpine 的 iproute2 拆得很细，iproute2-minimal 不够用，要装完整包
-		return "apk add --no-cache iptables ip6tables nftables iproute2"
-	case "apt-get":
-		return "apt-get update && apt-get install -y --no-install-recommends iptables nftables iproute2"
-	default:
-		return "请用发行版包管理器安装 iptables（或 nftables）与 iproute2"
-	}
-}
-
 // isRealIproute2 区分 iproute2 与 busybox 的 ip applet。
-// iproute2 的 `ip --version` 输出形如 "ip utility, iproute2-6.x"。
+//
+// 必须用短选项 `-V`：iproute2 的 `ip` 不认 `--version`，会把它归一化成
+// `-version` 再当未知选项拒绝——以退出码 255 失败并往 stderr 打
+// `Option "-version" is unknown, try "ip -help".`。两个相隔很远的版本上
+// 都实测到同样行为（Ubuntu 24.04 的 6.1.0、Alpine 3.21 的 6.11.0），
+// 所以这不是某个版本的个例。而 `-V` 稳定输出 "ip utility, iproute2-<版本>"。
+//
+// 原实现只试 `--version`，探测函数用 CombinedOutput 把 stderr 也收进来，
+// 拿到的是那句报错文字，不含 "iproute2"，于是把真正装着的 iproute2
+// 误判成 busybox 的 ip applet，进而把 TProxy 模式整体判定为不可用。
+// 这是真机测试发现的，见 AuroraMihomo-Transparent-Proxy-Test-Report.md 第 4 节；
+// 此前的单元测试用不区分参数的 mock 返回版本串，测不出"参数传错"这类问题。
+//
+// 仍保留对 `--version` 的回落尝试：busybox 的 ip 两种写法都给不出
+// "iproute2" 字样（已在容器里实测），多试一次不会造成误判，
+// 而万一将来某个打包反过来只认长选项，这一层能兜住。
 func isRealIproute2(c commandProbe) bool {
-	out := strings.ToLower(c.version("ip", "--version"))
-	return strings.Contains(out, "iproute2")
+	if strings.Contains(strings.ToLower(c.version("ip", "-V")), "iproute2") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(c.version("ip", "--version")), "iproute2")
 }
 
 func isCharDevice(path string) bool {
@@ -271,18 +341,40 @@ func collectWarnings(r *Report, p probePaths, c commandProbe) []string {
 	var w []string
 
 	// 网关模式必须开转发，否则局域网设备的流量到不了内核
-	if readFileTrim(p.sysctlIPForward) == "0" {
+	if r.SysctlIPForward == "0" {
 		w = append(w, "net.ipv4.ip_forward 为 0，作为局域网网关时需要开启："+
 			"sysctl -w net.ipv4.ip_forward=1（持久化写 /etc/sysctl.d/）")
 	}
 	// rp_filter=1（严格）会丢掉 TPROXY 打标后回环的包；Debian/Ubuntu 默认 2（宽松）可用
-	if readFileTrim(p.sysctlRPFilter) == "1" {
-		w = append(w, "net.ipv4.conf.all.rp_filter 为 1（严格反向路径校验），"+
-			"会导致 TProxy 丢包，建议设为 0 或 2")
+	if r.SysctlRPFilter == "1" {
+		msg := "net.ipv4.conf.all.rp_filter 为 1（严格反向路径校验），" +
+			"会导致 TProxy 丢包，建议设为 0 或 2"
+		// 内核取 max(all, 网卡)，只改 all 在这些网卡上不生效——
+		// 不点明的话用户改完 all 仍然丢包，且很难想到是这个原因
+		if len(r.RPFilterStrictIfaces) > 0 {
+			msg += "；注意内核取 all 与各网卡的最大值，以下网卡也需一并调整：" +
+				strings.Join(r.RPFilterStrictIfaces, "、")
+		}
+		w = append(w, msg)
 	}
 	if b := iptablesBackend(c); b == "legacy" && c.lookPath("nft") {
 		w = append(w, "iptables 是 legacy 后端但系统同时装有 nft，"+
 			"两套规则互不可见，容易出现规则存在却不生效")
+	}
+	// 本机流量在两种模式下都会被接管（TProxy 靠 output 链 + 策略路由，
+	// TUN 靠 auto-route），所以这两条与"本机能不能正确分流"直接相关的
+	// 情况必须让用户知道——否则表现是"开着但本机行为不如预期"，很难自查。
+	if r.DNSLoopbackStub != "" {
+		w = append(w, "本机 DNS 指向回环地址 "+r.DNSLoopbackStub+
+			"（常见于 systemd-resolved），本机自身的 DNS 查询不会被劫持，"+
+			"域名类分流规则对本机流量不生效（局域网设备不受影响）。"+
+			"需要本机也按域名分流时，可把 /etc/resolv.conf 的 nameserver 改为"+
+			"非回环地址，或关闭 systemd-resolved 的 DNSStubListener")
+	}
+	if !r.HasIPv6Egress {
+		w = append(w, "未探测到 IPv6 出网能力（缺全局 IPv6 地址或 IPv6 默认路由），"+
+			"透明代理只会接管 IPv4 流量。这是刻意的：下发 IPv6 规则却没有对应的"+
+			"IPv6 策略路由会让 IPv6 流量被标记后无路可走，比不接管更糟")
 	}
 	if r.InContainer && r.HostNetwork {
 		// host 网络下容器内 sysctl 改的是宿主，docker 也会拒绝 --sysctl

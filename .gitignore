@@ -1,11 +1,16 @@
 # Binaries
+#
+# 这两条必须用 / 锚定在仓库根：裸写 `api` 会匹配任意层级的同名路径，
+# 把整个 backend/api/ 源码目录（含 handler、logic、svc 与 etc/aurora-api.yaml）
+# 一并排除掉——曾因此导致 136 个源文件从未入库，干净检出根本编译不了。
+# 需要忽略的只是 `go build` 落在根目录的产物。
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-api
-auroramihomo
+/api
+/auroramihomo
 
 # Data & runtime
 /data/
@@ -23,6 +28,10 @@ frontend/.eslintcache
 .vscode/
 .DS_Store
 Thumbs.db
+
+# AI 编码代理的会话产物。按 session id 命名、随每次会话累积，
+# 对仓库使用者没有价值，也不构成项目文档。
+.zcode/
 
 # Go
 vendor/

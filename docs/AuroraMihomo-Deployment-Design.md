@@ -140,10 +140,35 @@ services:
 **代价**：`user: "0:0"` 加上去掉 `no-new-privileges` 会显著降低容器隔离性。
 不需要透明代理时应保持默认（非 root）配置。
 
+TProxy 所需的 `iptables` / `ip6tables` / `nftables` / `iproute2` **已预装在
+镜像里**，开箱即可用，不需要进容器 `apk add`（那样装的包容器重建即丢）。
+代价是镜像增大约 8.8MB——主要来自 `libmnl`、`libnftnl`、`jansson`、
+`readline` 等传递依赖，三个主包自身只有约 3MB。
+
+`iproute2` 必须显式安装：Alpine 自带的 `ip` 是 busybox applet，不支持
+`ip rule add fwmark`，策略路由建不起来。`ip6tables` 在 Alpine 是独立包
+（Debian 系由 `iptables` 一并提供）。
+
+注意两种模式的依赖是**不同**的：
+
+| 模式   | 需要 `/dev/net/tun` | 需要 nft/iptables/iproute2      |
+| ------ | ------------------- | ------------------------------- |
+| TUN    | 是                  | 否（mihomo 走 netlink 自管规则）|
+| TProxy | 否                  | 是（面板用 nft / ip 下发规则）  |
+
+所以上面四项改动里，`devices: /dev/net/tun` 只有 TUN 模式需要；只用 TProxy
+时不必映射设备（已实测：不映射设备时 TUN 报不可用而 TProxy 正常工作）。
+
 host 网络下容器内改 sysctl 会影响宿主，且 Docker 会拒绝
 `--sysctl net.ipv4.ip_forward`，网关模式所需的转发开关要在宿主上设置。
 
-详见 `AuroraMihomo-Transparent-Proxy.md`。
+详见 `AuroraMihomo-Transparent-Proxy.md`。实测记录有三份：
+
+| 报告 | 覆盖 |
+| --- | --- |
+| `AuroraMihomo-Transparent-Proxy-Test-Report.md` | Ubuntu，二进制与容器两种形态（第 7 节为容器部分） |
+| `AuroraMihomo-Transparent-Proxy-Test-Ubuntu-Docker.md` | Ubuntu 24.04 + Docker，含真实节点的出口 IP 三段对照 |
+| `AuroraMihomo-Transparent-Proxy-Test-Alpine-Binary.md` | Alpine 3.24 + 二进制，含 OpenRC 与 musl 兼容性 |
 
 ------------------------------------------------------------------------
 
@@ -165,6 +190,10 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 
 脚本会探测 OS/架构、从 GitHub Release 拉取对应的压缩包、
 解压到 `/opt/auroramihomo`、生成默认配置并（可选）安装 systemd 单元。
+
+服务安装由 `have systemctl` 守卫，因此在 Alpine 等无 systemd 的系统上
+会静默跳过：程序装好了但没有服务，且脚本末尾打印的仍是 `systemctl`
+命令。这类系统需按下面「OpenRC 单元」一节手工配置。
 
 ## 离线安装
 
@@ -229,6 +258,81 @@ journalctl -u auroramihomo -f
 
 进程自身不做 fork 自重启（见 Makefile 注释），生产环境依赖
 systemd 的 `Restart=always`。
+
+## OpenRC 单元（Alpine）
+
+Alpine 没有 systemd。`scripts/install.sh` 目前只安装 systemd 单元，
+Alpine 上需手工放置服务脚本。
+
+**必须用 `supervise-daemon` 而不是 `start-stop-daemon`。** 面板的
+`POST /api/v1/system/restart` 的约定是「优雅退出，等进程管理器拉起」，
+`start-stop-daemon` 不做重新拉起，会让重启接口变成单向关机。
+
+```sh
+# /etc/init.d/auroramihomo
+#!/sbin/openrc-run
+
+name="auroramihomo"
+description="AuroraMihomo 配置管理平台"
+
+directory="/opt/auroramihomo"
+command="/opt/auroramihomo/auroramihomo"
+command_args="-f etc/aurora-api.yaml"
+command_user="root:root"
+
+# supervise-daemon 才有进程退出后重新拉起的能力，
+# /api/v1/system/restart 依赖这一点
+supervisor="supervise-daemon"
+supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
+pidfile="/run/auroramihomo.pid"
+
+depend() {
+    need net
+    after firewall
+}
+```
+
+```bash
+chmod +x /etc/init.d/auroramihomo
+rc-update add auroramihomo default
+rc-service auroramihomo start
+rc-service auroramihomo status
+tail -f /var/log/auroramihomo.log
+```
+
+装好后 `ps` 里应能看到 supervise-daemon 在监管（带
+`--respawn-delay 2 --respawn-max 5`）：
+
+```
+supervise-daemon auroramihomo --start --chdir /opt/auroramihomo ...
+  auroramihomo -f etc/aurora-api.yaml
+    data/bin/mihomo -d ./data
+```
+
+## Alpine 的前置依赖
+
+Alpine 最小系统缺几样东西，装之前先补齐：
+
+```bash
+# 透明代理必需。ip6tables 在 Alpine 是独立包；iproute2 会把
+# /sbin/ip 从 busybox 软链替换成真 iproute2，因此不存在 PATH 优先级问题
+apk add --no-cache nftables iproute2 ip6tables
+
+# 排查用。Alpine 默认只有 busybox 的 wget，不支持 -x 与 --interface
+apk add --no-cache curl bind-tools
+
+# tun 与 nft_tproxy 默认未加载，/dev/net/tun 也不存在
+modprobe tun && modprobe nft_tproxy
+printf 'tun\nnft_tproxy\n' > /etc/modules-load.d/auroramihomo.conf
+```
+
+`sysctl` 在 Alpine 是 BusyBox applet，不认 `--system`。面板的「自动准备」
+已能识别并回退为 `sysctl -p <文件>`；手工设置时也请用 `-p`。
+
+根分区余量值得先确认：官方 cloud 镜像的根分区可能只有 100M 出头，
+而部署需求约 55M（二进制 29M + 前端 3M + mihomo 内核 15M + 依赖包）。
+若根分区是整盘直接格式化的 ext4（`blkid` 看不到分区表），扩容不需要
+`growpart`，宿主上扩盘后直接 `resize2fs /dev/sda` 即可。
 
 ## 权限说明
 

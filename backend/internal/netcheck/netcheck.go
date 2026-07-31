@@ -1,16 +1,30 @@
-// Package netcheck 探测运行环境是否具备透明代理条件。
+// Package netcheck 探测运行环境是否具备透明代理条件，并在用户显式要求时
+// 补齐这些条件。
 //
 // 设计约束（这些直接决定了本包的形态）：
 //
-//   - 只读探测。本包不安装依赖、不改 sysctl、不动防火墙。缺什么就把
-//     "缺什么"和"怎么装"如实报出来，由用户自己决定是否执行。容器里装包
-//     重启即丢，代面板执行包管理器更是把失败形态放大（无网络、源不可达、
-//     只读文件系统），收益不抵风险。
+//   - 探测只读。detect_*.go 里的探测路径不安装依赖、不改 sysctl、不动
+//     防火墙，只把"缺什么"和"怎么装"如实报出来。
+//   - 修复需显式触发、可审计、默认不动。写操作集中在两个组件里：
+//     Applier（防火墙规则与策略路由）与 Provisioner（软件包与 sysctl）。
+//     二者都只在用户主动操作后运行，且只碰自己那一份东西——
+//     Applier 只管自己的 nft 表，Provisioner 只装硬编码的包、只写自己的
+//     sysctl drop-in。
 //   - 结论要能解释。每种模式给出 available 与 reason，前端要能直接把
 //     reason 显示给用户，因此文案是面向使用者而非开发者的。
 //   - 平台差异用 build tag 拆文件（detect_linux.go / detect_darwin.go /
 //     detect_other.go），沿用项目里 signal_unix.go / signal_windows.go 的
 //     既有范式，避免在函数内部堆 runtime.GOOS 分支。
+//
+// 关于"代为安装依赖"这条约束的变更（原先是完全不做）：
+// 原理由是"容器里装包重启即丢，代执行包管理器把失败形态放大（无网络、
+// 源不可达、只读文件系统），收益不抵风险"。真机测试（见
+// docs/AuroraMihomo-Transparent-Proxy-Test-Report.md）表明这些顾虑成立但
+// 不足以否掉整个功能：手动步骤本身是可靠的、也是用户频繁需要的，
+// 而失败形态可以靠"如实回报每一步的原始输出 + 始终提供等价手动命令"来消化。
+// 于是改为提供 Provisioner，但保留原理由中仍然成立的部分：
+// 容器内的改动会明确标注不持久，容器内不碰 sysctl（非特权会被拒绝、
+// host 网络会直接改到宿主，都不该由面板替用户决定）。
 package netcheck
 
 import (
@@ -99,6 +113,32 @@ type Report struct {
 
 	// Warnings 是不阻塞启用但需要用户知道的问题
 	Warnings []string `json:"warnings,omitempty"`
+
+	// 以下 sysctl 原始值不出现在 JSON 里：界面上要看的是 Warnings 里那句
+	// 人话，而 Provisioner 需要原始值才能判断"到底哪几项要改"。
+	// 之前这些值只在 collectWarnings 内部读完就丢，导致准备逻辑只能重新
+	// 读一遍文件——两次读之间状态可能已经变了。
+	//
+	// SysctlIPForward 是 net.ipv4.ip_forward 的当前值，读不到时为空
+	SysctlIPForward string `json:"-"`
+	// SysctlRPFilter 是 net.ipv4.conf.all.rp_filter 的当前值，读不到时为空
+	SysctlRPFilter string `json:"-"`
+	// RPFilterStrictIfaces 是当前 rp_filter 仍为 1（严格）的具体网卡名。
+	// 内核对某网卡取 max(all, <该网卡>)，只改 all 不会让已存在的网卡生效，
+	// 所以必须知道有哪些网卡需要一起改。
+	RPFilterStrictIfaces []string `json:"-"`
+
+	// HasIPv6Egress 表示宿主确实具备 IPv6 出网能力（有全局 v6 地址且有
+	// v6 默认路由）。TProxy 据此决定是否下发 v6 规则与 v6 策略路由：
+	// 两者必须同时有或同时没有，只下发规则而没有路由会让 v6 包被打标后
+	// 无路可走，从"不分流"恶化成"不通"。
+	HasIPv6Egress bool `json:"-"`
+
+	// DNSLoopbackStub 是 /etc/resolv.conf 里指向回环的 nameserver 地址
+	// （systemd-resolved 的 127.0.0.53 最常见），没有则为空。
+	// 本机 DNS 劫持刻意排除回环目标（否则与 mihomo 自己的 DNS 自环），
+	// 所以这类机器上本机的域名分流不生效——必须如实告警而不是假装劫持了。
+	DNSLoopbackStub string `json:"-"`
 }
 
 // ModeStatusOf 取出指定模式的结论；不存在时返回不可用。

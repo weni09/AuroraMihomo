@@ -186,6 +186,43 @@ func TestQuickSetting_UselessDropsInfoNodesAndKeepsOthers(t *testing.T) {
 	}
 }
 
+func TestQuickSetting_ClientFingerprintProtocolGating(t *testing.T) {
+	nodes := quickSettingNodes()
+	out, err := applyQuickSetting(nodes, map[string]interface{}{"client_fingerprint": "firefox"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, n := range out {
+		// quickSettingNodes 里 vmess / snell / ss 都接受该字段，tuic 不接受
+		if n.Type == "tuic" {
+			if _, ok := n.Extra["client-fingerprint"]; ok {
+				t.Errorf("tuic 不支持 client-fingerprint，不应写入")
+			}
+			continue
+		}
+		if n.Extra["client-fingerprint"] != "firefox" {
+			t.Errorf("%s: 期望 firefox，实际 %v", n.Name, n.Extra["client-fingerprint"])
+		}
+	}
+}
+
+func TestQuickSetting_ClientFingerprintRejectsUnknownValues(t *testing.T) {
+	// DEFAULT、空值与拼错的指纹都不应写入：写入一个内核不认识的值会让
+	// reality 节点连不上，还会绕过 resolveClientFingerprint 的兜底
+	for _, v := range []string{"DEFAULT", "", "none", "chrome_typo"} {
+		nodes := quickSettingNodes()
+		out, err := applyQuickSetting(nodes, map[string]interface{}{"client_fingerprint": v})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, n := range out {
+			if got, ok := n.Extra["client-fingerprint"]; ok {
+				t.Errorf("client_fingerprint=%q: %s 不应被写入，实际 %v", v, n.Name, got)
+			}
+		}
+	}
+}
+
 func TestQuickSetting_ViaApplyPipeline(t *testing.T) {
 	nodes := quickSettingNodes()
 	out, err := ApplyPipeline(nodes, []PipelineOperator{

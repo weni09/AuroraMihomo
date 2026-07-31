@@ -37,6 +37,10 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) (string, error)
 	// RunWithStdin 执行命令并写入 stdin（nft -f - 需要）
 	RunWithStdin(ctx context.Context, stdin string, name string, args ...string) (string, error)
+	// RunEnv 执行命令并追加环境变量。
+	// Provisioner 用它设 DEBIAN_FRONTEND=noninteractive——不设的话 apt 在
+	// 某些镜像里会尝试打开交互式配置界面，而这里没有 tty，进程会挂住。
+	RunEnv(ctx context.Context, env []string, name string, args ...string) (string, error)
 }
 
 // execRunner 走真实 exec。
@@ -53,6 +57,16 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) (string,
 func (execRunner) RunWithStdin(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (execRunner) RunEnv(ctx context.Context, env []string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if len(env) > 0 {
+		// 追加而非替换：包管理器需要继承 PATH、HTTP(S)_PROXY 等
+		cmd.Env = append(os.Environ(), env...)
+	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -131,14 +145,14 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 			if strings.Contains(strings.ToLower(out), "file exists") {
 				continue
 			}
-			_ = a.Teardown(ctx, p.EnableIPv6)
+			_ = a.Teardown(ctx)
 			return fmt.Errorf("配置策略路由失败 %v: %w: %s", cmd, err, strings.TrimSpace(out))
 		}
 	}
 
 	// 3. 下发规则
 	if out, err := a.Runner.RunWithStdin(ctx, rules, "nft", "-f", "-"); err != nil {
-		_ = a.Teardown(ctx, p.EnableIPv6)
+		_ = a.Teardown(ctx)
 		return fmt.Errorf("下发规则失败: %w: %s", err, strings.TrimSpace(out))
 	}
 
@@ -151,7 +165,10 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 // 幂等且尽力而为：每一步失败都只记录不中断，因为拆除常发生在
 // "已经出问题"的场景（自动回滚、异常恢复），此时任何一步卡住都会
 // 让系统停在更糟的中间态。
-func (a *Applier) Teardown(ctx context.Context, enableIPv6 bool) error {
+//
+// 不接受"当初有没有启用 v6"这类参数：v4 与 v6 一律清理，
+// 理由见 PolicyRouteTeardownCommands 的注释。
+func (a *Applier) Teardown(ctx context.Context) error {
 	var firstErr error
 
 	// 先删规则再撤路由：反序会短暂出现"规则在、路由没了"的黑洞
@@ -164,7 +181,7 @@ func (a *Applier) Teardown(ctx context.Context, enableIPv6 bool) error {
 		}
 	}
 
-	for _, cmd := range PolicyRouteTeardownCommands(enableIPv6) {
+	for _, cmd := range PolicyRouteTeardownCommands() {
 		if out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...); err != nil {
 			low := strings.ToLower(out)
 			// 规则不存在同样属于"已经是目标状态"
@@ -181,4 +198,30 @@ func (a *Applier) Teardown(ctx context.Context, enableIPv6 bool) error {
 		a.logf("透明代理规则已拆除")
 	}
 	return firstErr
+}
+
+// RulesActive 探测本项目的 nft 表是否还存在于宿主上。
+//
+// 真机测试发现的问题：TProxy 规则与策略路由不持久化到宿主重启（见
+// AuroraMihomo-Transparent-Proxy-Test-Report.md 第 6.3 节）——重启后
+// nftables 状态被内核清空，但数据库里"已确认启用"的记录不会跟着变。
+// 若启动时只看数据库，界面会一直显示"已开启"，而宿主上实际什么都没有，
+// 用户没有任何信号能察觉这个不一致，只能自己碰一下开关才会发现。
+//
+// 这个方法只做只读探测，不做任何修改；由调用方（TransparentService）
+// 决定探测结果与数据库记录不一致时如何处理。
+func (a *Applier) RulesActive(ctx context.Context) (bool, error) {
+	cmd := NFTRulesCheckCommand()
+	out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...)
+	if err == nil {
+		return true, nil
+	}
+	low := strings.ToLower(out)
+	if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
+		// 表不存在，这是"规则已失效"的正常信号，不算探测出错
+		return false, nil
+	}
+	// 其它错误（如 nft 命令本身不可执行）无法判断真实状态，交给调用方
+	// 决定——保守起见不应就此断言"规则不存在"，那可能是误诊
+	return false, fmt.Errorf("探测防火墙规则状态失败: %w: %s", err, strings.TrimSpace(out))
 }

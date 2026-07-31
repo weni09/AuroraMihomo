@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useConfigStore } from '../stores/config'
 import { baseConfigSchema, getByPath, setByPath, deleteByPath, normalizeOptions, advancedExcludedKeys } from '../schemas/baseConfig'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -120,6 +121,16 @@ onMounted(() => {
   store.fetchBase()
   store.fetchRemoteSource()
 })
+
+/**
+ * TUN 是否已开启。
+ *
+ * 直接读 store.model（fetchBase 已经加载），不额外请求 /transparent/status：
+ * 那个接口每次都会做一次实时环境检测（读一堆 /proc、还要 exec 出 ip 与
+ * iptables 子进程），只为决定一条提示横幅是否显示，代价不成比例。
+ * 而开关状态本身就存在 base.yaml 里，本页的 model 就是它。
+ */
+const transparentTUNActive = computed(() => !!store.model?.tun?.enable)
 
 // 仅这三类需要再选一个具体实体；none/all/url 不需要
 const needsEntity = computed(() =>
@@ -466,7 +477,10 @@ const displayValue = (key: string, type: string) => {
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 class="text-sm font-semibold text-fg">本地配置</h2>
-          <p class="text-xs text-fg-subtle mt-0.5">加载、保存下方分组表单中的本地基础配置</p>
+          <!-- 点明这里填的是 mihomo 内核配置：本页同时还有「远程订阅」区块，
+               而下方分组表单的字段名（dns / tun / sniffer 等）都是 mihomo 的，
+               不说明的话容易被当成本平台自身的设置（那些在「系统设置」里）。 -->
+          <p class="text-xs text-fg-subtle mt-0.5">加载、保存下方分组表单中的本地基础配置，即 mihomo 内核配置</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <Button variant="outline" :disabled="store.loading" @click="reloadBase()">放弃修改（重新加载）</Button>
@@ -529,6 +543,28 @@ const displayValue = (key: string, type: string) => {
       <section class="lg:col-span-3 bg-surface border rounded p-3 sm:p-5 space-y-4">
         <div v-for="sec in baseConfigSchema.filter((s) => s.id === active)" :key="sec.id">
           <h2 class="text-xl font-semibold mb-4">{{ sec.title }}</h2>
+          
+          <!-- TUN 分组提示：这一段与「系统设置 → 透明代理」的开关是同一份数据，
+               用户需要知道在哪改都算改、以及何时才真正生效。
+               配色沿用 SettingsView 里待确认横幅的写法（当前没有可用的 info token）。 -->
+          <div
+            v-if="sec.id === 'tun' && transparentTUNActive"
+            class="mb-4 rounded-lg border border-blue-300 bg-blue-50 p-3 dark:border-blue-500/40 dark:bg-blue-500/10"
+            role="note"
+          >
+            <div class="text-sm font-semibold text-blue-800 dark:text-blue-300">
+              TUN 当前已开启
+            </div>
+            <p class="mt-1 text-xs text-blue-700 dark:text-blue-400">
+              这里的 tun.enable 与
+              <RouterLink to="/settings" class="underline hover:text-blue-900 dark:hover:text-blue-200">
+                系统设置 → 透明代理
+              </RouterLink>
+              的开关是同一项配置，两边改的都是它。在本页修改后需点「保存并应用」才会生效，
+              系统设置里的开关状态也在那时同步。只点「保存基础配置」不会重新下发配置。
+            </p>
+          </div>
+          
           <div class="space-y-4">
             <!-- items-start 而非 center：字段说明文字换行后，
                  居中会让标签浮在输入框中间 -->

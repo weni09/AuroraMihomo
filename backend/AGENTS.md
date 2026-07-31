@@ -47,16 +47,30 @@ migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
 ```
 1. 先改 docs/AuroraMihomo-Go-Zero-API.api
        ↓
-2. 提交变更，等待用户确认
+2. 执行 goctl 生成代码
        ↓
-3. 由用户执行 goctl 生成代码
+3. 核对生成结果（见下"生成后必须核对"）
        ↓
-4. 确认生成完成后，方可继续后续改动
+4. 继续后续改动（logic / service / 前端）
 ```
 
-代理不要自行运行 goctl 覆盖生成物。若改了 Request/Response 结构体名，必须在生成后同步修正 logic 层的出入参类型。
+代理可以自行运行 goctl。但生成是**覆盖式**的，所以有两条硬要求：
+
+- **生成前确认工作区干净**（至少 `backend/api/internal/` 下无未提交的手写改动），
+  以便生成结果异常时能一键还原。
+- **生成后必须核对**：`routes.go` 与 `types.go` 的 `DO NOT EDIT` 头仍在、
+  新增路由与类型确实出现、既有 handler 未被意外重写、`go build ./backend/...`
+  通过。goctl 对已存在的 handler/logic 文件默认跳过而不覆盖，
+  但新增 handler 会生成空的 logic 骨架，需要自己填实现。
+
+若改了 Request/Response 结构体名，必须在生成后同步修正 logic 层的出入参类型。
 
 `--style goZero` 是本项目既有生成物的风格，重新生成时须保持一致。
+本项目的生成命令（在仓库根目录执行）：
+
+```bash
+goctl api go -api docs/AuroraMihomo-Go-Zero-API.api -dir backend/api --style goZero
+```
 
 `internal/handler/routes.go` 与 `internal/types/types.go` 带 `DO NOT EDIT` 头，禁止手改。handler 文件除请求解析/响应写法需要调整外也不要手改。
 

@@ -11,10 +11,28 @@ import (
 func sampleParams() TProxyParams {
 	return TProxyParams{
 		TProxyPort: 7893,
-		DNSPort:    1053,
 		KeepPorts:  []int{22, 8899, 9090},
 		EnableIPv6: false,
 	}
+}
+
+// chainOf 截出指定链的规则文本。
+//
+// prerouting 与 output 两条链的规则在方向语义上不同（一个看 dport、
+// 一个看 sport），只在整份输出里搜字符串会让"写在错误的链里"这类问题
+// 照样通过——这正是 D1 那个会断 SSH 的缺陷能长期存在的原因。
+func chainOf(t *testing.T, rules, chain string) string {
+	t.Helper()
+	start := strings.Index(rules, "chain "+chain+" {")
+	if start < 0 {
+		t.Fatalf("规则里没有 %s 链:\n%s", chain, rules)
+	}
+	rest := rules[start:]
+	end := strings.Index(rest, "\n  }")
+	if end < 0 {
+		t.Fatalf("%s 链没有正常闭合:\n%s", chain, rest)
+	}
+	return rest[:end]
 }
 
 // 管理端口必须在 TPROXY 之前放行。若顺序颠倒，规则生效瞬间
@@ -130,11 +148,10 @@ func TestNormalizeRejectsBadInput(t *testing.T) {
 		name string
 		p    TProxyParams
 	}{
-		{"tproxy 端口为 0", TProxyParams{TProxyPort: 0, DNSPort: 1053, KeepPorts: []int{22}}},
-		{"tproxy 端口越界", TProxyParams{TProxyPort: 70000, DNSPort: 1053, KeepPorts: []int{22}}},
-		{"DNS 端口为 0", TProxyParams{TProxyPort: 7893, DNSPort: 0, KeepPorts: []int{22}}},
+		{"tproxy 端口为 0", TProxyParams{TProxyPort: 0, KeepPorts: []int{22}}},
+		{"tproxy 端口越界", TProxyParams{TProxyPort: 70000, KeepPorts: []int{22}}},
 		// 空 KeepPorts 必须拒绝：没有豁免端口就等于放弃唯一的补救通道
-		{"KeepPorts 为空", TProxyParams{TProxyPort: 7893, DNSPort: 1053}},
+		{"KeepPorts 为空", TProxyParams{TProxyPort: 7893}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -203,9 +220,195 @@ func TestPolicyRouteIPv6Optional(t *testing.T) {
 	}
 }
 
-// 拆除命令必须与建立命令对应，否则会留下孤立的 ip rule
-func TestPolicyRouteTeardownMatchesSetup(t *testing.T) {
-	td := PolicyRouteTeardownCommands(true)
+// ---- 本机流量接管（output 链）的回归用例 ----
+//
+// 本机流量在 TProxy 下由 output 链 + 策略路由发夹接管。下面这组用例盯住的
+// 是曾经真实存在过的缺陷，每一条都对应一种"规则看着有、实际不起作用"的情形。
+
+// output 链必须按 sport 放行管理端口。
+//
+// 这是曾经会断 SSH 的缺陷：output 链处理出站包，sshd 对入站 SSH 的回包是
+// sport=22、dport=客户端随机端口，只按 dport 放行匹配不到它，回包会被打标
+// 经 local 路由当作本机投递而永远出不去。此前 SSH 没断只是因为后面的局域网
+// 网段 return 兜住了同网段客户端——一旦 SSH 来源不在那几个私有网段
+// （公网跳板、VPN 段），启用 TProxy 的瞬间就会失联。
+func TestOutputChainExemptsManagementPortsBySourcePort(t *testing.T) {
+	rules, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	out := chainOf(t, rules, "output")
+
+	firstMark := strings.Index(out, "meta mark set")
+	if firstMark < 0 {
+		t.Fatalf("output 链里没有打标动作:\n%s", out)
+	}
+	for _, port := range []int{22, 8899, 9090} {
+		needle := "tcp sport " + itoa(port) + " return"
+		idx := strings.Index(out, needle)
+		if idx < 0 {
+			t.Errorf("output 链未按源端口放行 %d，本机上该服务的回包会被打标后无法送出:\n%s",
+				port, out)
+			continue
+		}
+		if idx > firstMark {
+			t.Errorf("端口 %d 的 sport 放行出现在打标之后（%d > %d），回包仍会被劫持",
+				port, idx, firstMark)
+		}
+	}
+}
+
+// prerouting 侧相反：入站包的管理端口在目的端口上，必须按 dport 放行。
+// 两条链的方向语义不同，这条用例与上一条互为对照，防止"统一"成同一种写法。
+func TestPreroutingChainExemptsManagementPortsByDestPort(t *testing.T) {
+	rules, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	pre := chainOf(t, rules, "prerouting")
+	for _, port := range []int{22, 8899, 9090} {
+		if !strings.Contains(pre, "tcp dport "+itoa(port)+" return") {
+			t.Errorf("prerouting 链未按目的端口放行 %d:\n%s", port, pre)
+		}
+	}
+}
+
+// 本机 DNS 必须被打标，否则本机流量只能按 IP 分流、域名类规则全部失效。
+// 位置有两个硬约束：在局域网 return 之前（否则指向局域网 DNS 的查询被放行），
+// 且在 mihomo/面板的 mark return 之后（否则它们自己的查询自环）。
+func TestOutputChainHijacksLocalDNS(t *testing.T) {
+	rules, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	out := chainOf(t, rules, "output")
+
+	dns := strings.Index(out, "th dport 53")
+	if dns < 0 {
+		t.Fatalf("output 链没有劫持本机 DNS，域名类规则对本机流量不会生效:\n%s", out)
+	}
+	lan := strings.Index(out, "ip daddr 192.168.0.0/16 return")
+	if lan < 0 {
+		t.Fatalf("output 链缺少局域网放行:\n%s", out)
+	}
+	if dns > lan {
+		t.Errorf("DNS 劫持(%d)出现在局域网放行(%d)之后，指向局域网 DNS 的查询会被直接放行",
+			dns, lan)
+	}
+	kernelMark := strings.Index(out, "meta mark 0xff return")
+	panelMark := strings.Index(out, "meta mark 0xfe return")
+	if kernelMark < 0 || panelMark < 0 {
+		t.Fatalf("output 链缺少内核/面板放行:\n%s", out)
+	}
+	if dns < kernelMark || dns < panelMark {
+		t.Errorf("DNS 劫持(%d)必须在内核(%d)与面板(%d)放行之后，否则它们自己的查询会自环",
+			dns, kernelMark, panelMark)
+	}
+	// 回环目标必须排除：mihomo 自己的 DNS 就监听在回环上
+	if !strings.Contains(out, "ip daddr != 127.0.0.0/8") {
+		t.Errorf("本机 DNS 劫持未排除回环目标，会与 mihomo 自身的 DNS 形成自环:\n%s", out)
+	}
+}
+
+// 面板自身出站必须放行。不放行的话面板拉订阅、下载内核都会被 mihomo 接管，
+// 既绕过了用户对出网方式的显式选择，也让 mihomo 故障时失去恢复手段。
+func TestRulesExemptPanelMark(t *testing.T) {
+	rules, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	if PanelMark == KernelMark {
+		t.Fatal("面板与内核的 mark 不能相同，否则无法区分两者的流量")
+	}
+	for _, chain := range []string{"prerouting", "output"} {
+		got := chainOf(t, rules, chain)
+		if !strings.Contains(got, "meta mark 0xfe return") {
+			t.Errorf("%s 链缺少面板出站放行（meta mark 0x%x return）:\n%s",
+				chain, PanelMark, got)
+		}
+	}
+}
+
+// 未启用 v6 时兜底规则必须限定 IPv4。
+//
+// 表是 inet 家族，不限定的话 v6 包也会被打上 FirewallMark，而此时并没有
+// 下发 v6 的 ip rule 与 local ::/0 路由——包被标记后无路可走，成了静默
+// 丢包的黑洞。这比"v6 不走代理"糟得多：后者只是不分流，前者是不通。
+func TestCatchAllRestrictedToIPv4WhenIPv6Disabled(t *testing.T) {
+	p := sampleParams()
+	p.EnableIPv6 = false
+	rules, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	for _, chain := range []string{"prerouting", "output"} {
+		got := chainOf(t, rules, chain)
+		for _, line := range strings.Split(got, "\n") {
+			if !strings.Contains(line, "meta mark set") ||
+				!strings.Contains(line, "meta l4proto { tcp, udp }") {
+				continue
+			}
+			// DNS 那几条自带 `ip daddr` / `ip6 daddr`，家族已由地址匹配隐含限定，
+			// 不需要也不该再加 nfproto。这里只校验没有任何地址匹配的兜底规则。
+			if strings.Contains(line, "dport 53") {
+				continue
+			}
+			if !strings.Contains(line, "meta nfproto ipv4") {
+				t.Errorf("%s 链的兜底规则未限定 IPv4，v6 包会被打标却无路由可走:\n%s",
+					chain, line)
+			}
+		}
+	}
+}
+
+// 启用 v6 时反过来：既要放行 v6 的本地网段，也不该再限定 IPv4，
+// 否则 v6 策略路由建了却没有规则会把流量导向它。
+func TestIPv6RulesEmittedWhenEnabled(t *testing.T) {
+	p := sampleParams()
+	p.EnableIPv6 = true
+	rules, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	if strings.Contains(rules, "meta nfproto ipv4") {
+		t.Errorf("启用 IPv6 后兜底规则不应再限定 IPv4:\n%s", rules)
+	}
+	// 回环、链路本地、ULA、组播都要放行，缺了会把邻居发现、DHCPv6、mDNS
+	// 这些本地协议一起代理掉
+	for _, cidr := range []string{"::1/128", "fe80::/10", "fc00::/7", "ff00::/8"} {
+		if !strings.Contains(rules, "ip6 daddr "+cidr+" return") {
+			t.Errorf("启用 IPv6 后缺少本地网段放行 %s:\n%s", cidr, rules)
+		}
+	}
+	out := chainOf(t, rules, "output")
+	if !strings.Contains(out, "ip6 daddr != ::1/128") {
+		t.Errorf("启用 IPv6 后 output 链缺少 v6 DNS 劫持:\n%s", out)
+	}
+}
+
+// 未启用 v6 时不该出现 v6 规则：多写几条无用规则会让排障时误以为
+// v6 已经被接管了。
+func TestNoIPv6RulesWhenDisabled(t *testing.T) {
+	p := sampleParams()
+	p.EnableIPv6 = false
+	rules, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	if strings.Contains(rules, "ip6 daddr") {
+		t.Errorf("未启用 IPv6 却生成了 v6 规则:\n%s", rules)
+	}
+}
+
+// 拆除命令必须与建立命令对应，否则会留下孤立的 ip rule。
+//
+// 关键在于 v4 与 v6 一律清理，不看"当初有没有启用 v6"：真机测试里，
+// 按参数决定清不清 v6 的旧实现在有 IPv6 出网能力的宿主上留下了残留的
+// v6 ip rule 与 local ::/0 路由，而日志照样报告"规则已拆除"
+// （调用方传的是硬编码的 false）。拆除路径不该依赖记住启用时的参数：
+// 进程重启后那个参数根本无从得知。
+func TestPolicyRouteTeardownAlwaysCoversBothFamilies(t *testing.T) {
+	td := PolicyRouteTeardownCommands()
 	all := ""
 	for _, c := range td {
 		all += strings.Join(c, " ") + "\n"
@@ -214,9 +417,10 @@ func TestPolicyRouteTeardownMatchesSetup(t *testing.T) {
 		"ip rule del fwmark 1 table 100",
 		"ip route flush table 100",
 		"ip -6 rule del fwmark 1 table 100",
+		"ip -6 route flush table 100",
 	} {
 		if !strings.Contains(all, want) {
-			t.Errorf("拆除命令缺少 %q:\n%s", want, all)
+			t.Errorf("拆除命令缺少 %q（会留下残留的策略路由）:\n%s", want, all)
 		}
 	}
 }

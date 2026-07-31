@@ -3,12 +3,15 @@ package fetcher
 import (
 	"context"
 	"fmt"
-	"github.com/zeromicro/go-zero/core/logx"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"auroramihomo/backend/internal/netcheck"
+
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // Client downloads remote subscription content.
@@ -22,10 +25,23 @@ func New(timeout time.Duration) *Client {
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		httpClient: &http.Client{Timeout: timeout},
-		userAgent:  "AuroraMihomo/0.1",
+		httpClient: &http.Client{
+			Timeout: timeout,
+			// 给订阅拉取的连接打上面板专用 fwmark，使其在透明代理 TProxy
+			// 模式下不被 mihomo 自己接管（理由见 netcheck.MarkedDialer）。
+			// 非 Linux 平台上打标是空操作，行为与改动前一致。
+			Transport: &http.Transport{
+				DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
+			},
+		},
+		userAgent: "AuroraMihomo/0.1",
 	}
 }
+
+// dialTimeout 单次 TCP 建连的超时。
+// 比整体 Timeout 短很多：机场地址不可达时应尽快失败，而不是把整个
+// 刷新流程卡在一个连不上的订阅上。
+const dialTimeout = 10 * time.Second
 
 func (c *Client) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	return c.FetchWithUA(ctx, rawURL, "")

@@ -43,6 +43,16 @@ const router = createRouter({
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '系统设置' } },
     // 内嵌 zashboard（后端把面板静态资源挂在同源的 /ui/）
     { path: '/zashboard', name: 'zashboard', component: ZashboardView, meta: { title: 'Zashboard' } },
+    // 使用文档随程序内置，离线可用（内容在构建时打进产物）。
+    // 本项目其余路由都是静态导入，这里刻意用懒加载：文档页要拉进
+    // markdown-it 与全文内容（约 150KB），而它不是常用页面，
+    // 静态导入会让每个用户的首屏都为此付费。
+    {
+      path: '/docs',
+      name: 'docs',
+      component: () => import('../views/DocsView.vue'),
+      meta: { title: '使用文档' },
+    },
     // 兜底路由，避免未知路径渲染空白页面
     { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { public: true, title: '页面不存在' } },
   ],

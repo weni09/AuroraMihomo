@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import api from '../api'
 import { loadYaml, dumpYaml } from '../utils/yaml'
 import { useNotifyStore } from './notify'
+import { useTransparentStore } from './transparent'
 
 /**
  * 远程配置来源类型。
@@ -184,13 +185,26 @@ export const useConfigStore = defineStore('config', {
       // 且成功提示会覆盖掉真正的错误信息
       if (!(await this.saveBase())) return
       this.loading = true
+      let merged = false
       try {
         const res = await api.post('/config/merge')
         useNotifyStore().success(res.data?.message || '已应用并生效')
+        merged = true
       } catch (e: any) {
         useNotifyStore().error(e?.response?.data?.message || e?.message || '合并失败')
       } finally {
         this.loading = false
+      }
+
+      // 透明代理开关读的是 base.yaml 里的 tun.enable / tproxy-port，
+      // 本页刚改过它，系统设置那边的开关状态必须跟着刷新。
+      //
+      // 放在 try 之外：这一步失败只是"另一个页面的显示没同步"，
+      // 若与合并共用 catch，一次拉取失败就会在"已应用并生效"之后
+      // 再弹一条"合并失败"，两条互相矛盾的提示。
+      // fetch 自身已有错误处理，这里不再重复兜。
+      if (merged) {
+        await useTransparentStore().fetch()
       }
     },
   },

@@ -179,6 +179,9 @@ func nodeToProxyMap(n Node) map[string]interface{} {
 	for k, v := range n.Extra {
 		item[k] = v
 	}
+	// reality 节点缺 client-fingerprint 时补默认值（见 fingerprint.go）。
+	// 必须在拷贝 Extra 之后：上面是整体搬运，缺的字段也会一并缺失。
+	applyClientFingerprint(n, item)
 	return item
 }
 

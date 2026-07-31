@@ -25,6 +25,8 @@ func NodesToStash(nodes []Node) (string, error) {
 			}
 			item[k] = v
 		}
+		// Stash 同为 Clash 系，reality 对 uTLS 指纹的依赖与 mihomo 一致
+		applyClientFingerprint(n, item)
 		proxies = append(proxies, item)
 		names = append(names, n.Name)
 	}

@@ -17,38 +17,51 @@ type fakeEnv struct {
 	cmd   commandProbe
 	// present 记录哪些命令视为存在
 	present map[string]bool
-	// versions 记录命令的版本输出
+	// versions 记录命令的版本输出，对所有 flag 一视同仁
 	versions map[string]string
+	// versionArgs 按"命令 参数"精确匹配版本输出，用于区分同一命令在不同
+	// flag 下的不同表现（例如 ip -V 与 ip --version 行为不一致的场景）。
+	// 优先于 versions；未命中时才回落到 versions。
+	versionArgs map[string]string
 }
 
 func newFakeEnv(t *testing.T) *fakeEnv {
 	t.Helper()
 	dir := t.TempDir()
 	f := &fakeEnv{
-		dir:      dir,
-		present:  map[string]bool{},
-		versions: map[string]string{},
+		dir:         dir,
+		present:     map[string]bool{},
+		versions:    map[string]string{},
+		versionArgs: map[string]string{},
 	}
 	// 所有路径都指向临时目录下的同名文件；不写的文件即"不存在"
 	f.paths = probePaths{
-		procStatus:          filepath.Join(dir, "status"),
-		procModules:         filepath.Join(dir, "modules"),
-		osRelease:           filepath.Join(dir, "os-release"),
-		kernelRelease:       filepath.Join(dir, "osrelease"),
-		devNetTun:           filepath.Join(dir, "dev-net-tun"),
-		devTun:              filepath.Join(dir, "dev-tun"),
-		sysClassMiscTun:     filepath.Join(dir, "sys-class-misc-tun"),
-		dockerEnv:           filepath.Join(dir, "dockerenv"),
-		procOneCgroup:       filepath.Join(dir, "one-cgroup"),
-		selfNetNS:           filepath.Join(dir, "self-net"),
-		oneNetNS:            filepath.Join(dir, "one-net"),
-		sysctlIPForward:     filepath.Join(dir, "ip_forward"),
-		sysctlRPFilter:      filepath.Join(dir, "rp_filter"),
-		sysctlRouteLocalnet: filepath.Join(dir, "route_localnet"),
+		procStatus:       filepath.Join(dir, "status"),
+		procModules:      filepath.Join(dir, "modules"),
+		osRelease:        filepath.Join(dir, "os-release"),
+		kernelRelease:    filepath.Join(dir, "osrelease"),
+		devNetTun:        filepath.Join(dir, "dev-net-tun"),
+		devTun:           filepath.Join(dir, "dev-tun"),
+		sysClassMiscTun:  filepath.Join(dir, "sys-class-misc-tun"),
+		dockerEnv:        filepath.Join(dir, "dockerenv"),
+		procOneCgroup:    filepath.Join(dir, "one-cgroup"),
+		selfNetNS:        filepath.Join(dir, "self-net"),
+		oneNetNS:         filepath.Join(dir, "one-net"),
+		sysctlIPForward:  filepath.Join(dir, "ip_forward"),
+		sysctlRPFilter:   filepath.Join(dir, "rp_filter"),
+		resolvConf:       filepath.Join(dir, "resolv.conf"),
+		procNetIPv6Route: filepath.Join(dir, "ipv6_route"),
+		procNetIfInet6:   filepath.Join(dir, "if_inet6"),
 	}
 	f.cmd = commandProbe{
 		lookPath: func(name string) bool { return f.present[name] },
-		version:  func(name string, _ ...string) string { return f.versions[name] },
+		version: func(name string, args ...string) string {
+			key := name + " " + strings.Join(args, " ")
+			if v, ok := f.versionArgs[key]; ok {
+				return v
+			}
+			return f.versions[name]
+		},
 	}
 	return f
 }
@@ -69,6 +82,20 @@ func (f *fakeEnv) haveTools() {
 	f.versions["iptables"] = "iptables v1.8.9 (nf_tables)"
 }
 
+// haveTunDevice 让探测认为 TUN 设备存在。
+//
+// 必须指向一个真实的字符设备：checkTUN 用 isCharDevice 判定，普通文件
+// 过不了这一关。此前这里写一个普通文件到 sysClassMiscTun 就以为模拟出了
+// 设备，结果探测一路走到"设备缺失"分支，那些本该校验 capability 提示与
+// 桥接网络范围提示的用例全都在断言错误的分支上——测试是红的，且红得
+// 没有意义（失败信息指向设备缺失，与用例意图无关）。
+//
+// /dev/null 在任何 Linux 上都是字符设备（CI 容器里也是），拿它当替身
+// 既真实又不需要特权。
+func (f *fakeEnv) haveTunDevice() {
+	f.paths.devNetTun = "/dev/null"
+}
+
 // 容器里最容易踩的坑：docker 的 cap_add 只填充 bounding 集，
 // 非 root 进程的 effective 集仍是空的，于是"给了却拿不到"。
 // 提示必须能区分这两种情况，否则用户会以为 compose 配错了。
@@ -77,8 +104,9 @@ func TestTUNDistinguishesBoundingOnlyCapability(t *testing.T) {
 	f.write(t, f.paths.procStatus, "CapBnd:\t0000000000001000\nCapEff:\t0000000000000000\n")
 	f.write(t, f.paths.dockerEnv, "")
 	f.write(t, f.paths.procModules, "tun 57344 2 - Live 0x0000000000000000\n")
-	// 设备存在（用普通文件模拟不了字符设备，所以走 sysClassMiscTun 分支）
-	f.write(t, f.paths.sysClassMiscTun, "")
+	// 设备必须是真的字符设备，否则探测会走"设备缺失"分支，
+	// 下面对 capability 提示的断言就落在了错误的分支上
+	f.haveTunDevice()
 
 	r := detectWith(f.paths, f.cmd, 1000) // 非 root
 	tun := r.ModeStatusOf(ModeTUN)
@@ -146,6 +174,28 @@ func TestTProxyRejectsBusyboxIP(t *testing.T) {
 	}
 }
 
+// 回归测试：真机测试（Ubuntu 24.04，iproute2 6.1.0）发现 `ip --version`
+// 在这个版本上不识别长选项，会报 "Option "-version" is unknown"，
+// 若探测代码只试这一种写法，会把真实装着的 iproute2 误判成 busybox，
+// TProxy 因此被错误拒绝。见 detect_linux.go 的 isRealIproute2。
+func TestTProxyAcceptsIproute2WhenLongFlagUnsupported(t *testing.T) {
+	f := newFakeEnv(t)
+	f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
+	f.present["nft"] = true
+	f.present["iptables"] = true
+	f.present["ip"] = true
+	// `-V` 给出正常输出，`--version` 给出 iproute2 6.1.0 在真机上实测到的
+	// 错误提示（不含 "iproute2" 字样）——必须优先信任 -V 的结果
+	f.versionArgs["ip -V"] = "ip utility, iproute2-6.1.0, libbpf 1.3.0"
+	f.versionArgs["ip --version"] = `Option "-version" is unknown, try "ip -help".`
+
+	r := detectWith(f.paths, f.cmd, 0)
+	tp := r.ModeStatusOf(ModeTProxy)
+	if !tp.Available {
+		t.Errorf("真实 iproute2 应判定 TProxy 可用，实际 Reason=%s Missing=%v", tp.Reason, tp.Missing)
+	}
+}
+
 // 缺工具时要按发行版给出可直接复制的安装命令
 func TestTProxyInstallHintPerDistro(t *testing.T) {
 	cases := []struct {
@@ -181,7 +231,7 @@ func TestBridgeNetworkContainerWarnsOnScope(t *testing.T) {
 	f := newFakeEnv(t)
 	f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
 	f.write(t, f.paths.dockerEnv, "")
-	f.write(t, f.paths.sysClassMiscTun, "")
+	f.haveTunDevice()
 	f.write(t, f.paths.procModules, "tun 1 1 - Live 0x0\n")
 	f.haveTools()
 	// 两个 netns 符号链接指向不同目标 → 非 host 网络
@@ -240,6 +290,89 @@ func TestWarnsOnMixedIptablesBackend(t *testing.T) {
 	r := detectWith(f.paths, f.cmd, 0)
 	if !strings.Contains(strings.Join(r.Warnings, "\n"), "legacy") {
 		t.Errorf("应警告后端混用，实际 warnings=%v", r.Warnings)
+	}
+}
+
+// 本机流量在两种模式下都会被接管，所以"本机 DNS 没被劫持"必须告警：
+// 否则表现是本机只按 IP 分流、域名规则静默失效，用户很难自查到原因。
+func TestWarnsOnLoopbackDNSStub(t *testing.T) {
+	f := newFakeEnv(t)
+	f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
+	f.write(t, f.paths.resolvConf, "nameserver 127.0.0.53\noptions edns0\n")
+	f.haveTools()
+
+	r := detectWith(f.paths, f.cmd, 0)
+	if r.DNSLoopbackStub != "127.0.0.53" {
+		t.Errorf("应探测到回环 DNS stub，实际 %q", r.DNSLoopbackStub)
+	}
+	joined := strings.Join(r.Warnings, "\n")
+	if !strings.Contains(joined, "127.0.0.53") {
+		t.Errorf("告警里应带上具体地址便于用户对照，实际 warnings=%v", r.Warnings)
+	}
+	// 必须说清影响范围：局域网设备不受这个限制，混为一谈会让用户以为
+	// 整个透明代理的域名分流都坏了
+	if !strings.Contains(joined, "局域网设备不受影响") {
+		t.Errorf("告警应说明局域网设备不受影响，实际 warnings=%v", r.Warnings)
+	}
+}
+
+func TestNoLoopbackDNSWarningWhenResolverIsExternal(t *testing.T) {
+	f := newFakeEnv(t)
+	f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
+	f.write(t, f.paths.resolvConf, "nameserver 192.168.1.1\n")
+	f.haveTools()
+
+	r := detectWith(f.paths, f.cmd, 0)
+	if r.DNSLoopbackStub != "" {
+		t.Errorf("非回环 DNS 不该被判为 stub，实际 %q", r.DNSLoopbackStub)
+	}
+	if strings.Contains(strings.Join(r.Warnings, "\n"), "DNS 指向回环") {
+		t.Errorf("不该产生回环 DNS 告警，实际 warnings=%v", r.Warnings)
+	}
+}
+
+// v6 出网能力决定要不要下发 v6 规则。这里同时校验探测结论与告警：
+// 没有 v6 能力时要告警（说明只接管 v4），有能力时不该多此一举。
+func TestIPv6EgressDetection(t *testing.T) {
+	globalAddr := "24010db8000000000000000000000001 02 40 00 00 ens18\n"
+	defaultRoute := strings.Repeat("0", 32) + " 00 " + strings.Repeat("0", 32) +
+		" 00 fe800000000000000000000000000001 00000400 00000000 00000000 00000003 ens18\n"
+
+	cases := []struct {
+		name       string
+		addr       string
+		route      string
+		wantEgress bool
+	}{
+		{"全局地址与默认路由都有", globalAddr, defaultRoute, true},
+		{"有地址但没默认路由", globalAddr, "", false},
+		{"有默认路由但没全局地址", "", defaultRoute, false},
+		{"两者都没有", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeEnv(t)
+			f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
+			f.haveTools()
+			if c.addr != "" {
+				f.write(t, f.paths.procNetIfInet6, c.addr)
+			}
+			if c.route != "" {
+				f.write(t, f.paths.procNetIPv6Route, c.route)
+			}
+
+			r := detectWith(f.paths, f.cmd, 0)
+			if r.HasIPv6Egress != c.wantEgress {
+				t.Errorf("HasIPv6Egress = %v，期望 %v", r.HasIPv6Egress, c.wantEgress)
+			}
+			hasWarn := strings.Contains(strings.Join(r.Warnings, "\n"), "IPv6 出网能力")
+			if c.wantEgress && hasWarn {
+				t.Errorf("有 v6 出网能力时不该告警，实际 warnings=%v", r.Warnings)
+			}
+			if !c.wantEgress && !hasWarn {
+				t.Errorf("无 v6 出网能力时应告警只接管 IPv4，实际 warnings=%v", r.Warnings)
+			}
+		})
 	}
 }
 
