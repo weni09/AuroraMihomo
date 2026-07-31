@@ -41,8 +41,13 @@ jobs:
 
       # go vet 不检查被丢弃的错误返回值，此前 service/repository 层因此
       # 长期存在静默吞掉写库失败的代码。errcheck 等检查由 golangci-lint 覆盖。
+      #
+      # action 必须用 v8：v6 自 6.5.1 起加了硬性上限，只允许 golangci-lint v1，
+      # 配 version: v2.x 会在 action 内部校验阶段直接失败（报错与被检代码无关，
+      # 极易误判成自家代码有问题）。本项目的 .golangci.yml 是 v2 schema，
+      # 而 v2.6.2 ≥ v2.1.0，正是 action v8 要求的下限。
       - name: 静态检查 (golangci-lint)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: v2.6.2
           args: --timeout=5m ./backend/...
