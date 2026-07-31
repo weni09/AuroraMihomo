@@ -3,11 +3,13 @@
 package netcheck
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // probePaths 把所有被探测的路径收成一处，测试可替换成临时目录里的假数据。
@@ -74,9 +76,17 @@ func defaultCommandProbe() commandProbe {
 	return commandProbe{
 		lookPath: hasCommand,
 		version: func(name string, args ...string) string {
-			// 只读探测，超时交由调用方的 context 控制；这里用 CombinedOutput
-			// 是因为部分工具把版本写到 stderr
-			out, err := exec.Command(name, args...).CombinedOutput()
+			// 必须带超时：Detect() 会在每次读取透明代理状态时被调用（面板刷新
+			// 就会走到），而 nft / iptables 在内核模块状态异常时可能长时间不返回。
+			// 没有时限的话一次探测就能把 HTTP 请求拖住。
+			//
+			// 早先这里写的是 exec.Command 并注释"超时交由调用方的 context 控制"，
+			// 但 Detect() 全链路都没有 context，那个超时从来不存在（noctx 检查
+			// 正是拦这个）。改用 CommandContext 在内部兜住。
+			ctx, cancel := context.WithTimeout(context.Background(), probeCommandTimeout)
+			defer cancel()
+			// CombinedOutput 是因为部分工具把版本写到 stderr
+			out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 			if err != nil && len(out) == 0 {
 				return ""
 			}
@@ -84,6 +94,12 @@ func defaultCommandProbe() commandProbe {
 		},
 	}
 }
+
+// probeCommandTimeout 单次外部命令探测的时限。
+//
+// 取 3 秒：这些命令都只是打印版本号，正常在毫秒级返回；给足冗余以免在
+// 负载高的机器上误判为"命令不存在"，同时短到不会让面板刷新明显卡顿。
+const probeCommandTimeout = 3 * time.Second
 
 func detect() *Report {
 	return detectWith(defaultProbePaths(), defaultCommandProbe(), os.Geteuid())

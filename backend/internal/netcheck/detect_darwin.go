@@ -3,10 +3,12 @@
 package netcheck
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // macOS 上只有 TUN 一条可行路径：
@@ -54,7 +56,12 @@ func detect() *Report {
 }
 
 func darwinKernel() string {
-	out, err := exec.Command("uname", "-r").Output()
+	// 带超时的理由同 detect_linux.go 的 defaultCommandProbe：
+	// Detect() 在每次读取透明代理状态时被调用，探测不该有无限等待的可能。
+	// CI 只跑 Linux，所以 noctx 不会在这里报错，但问题是同一个。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "uname", "-r").Output()
 	if err != nil {
 		return ""
 	}
