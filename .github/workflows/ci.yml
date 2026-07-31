@@ -42,15 +42,29 @@ jobs:
       # go vet 不检查被丢弃的错误返回值，此前 service/repository 层因此
       # 长期存在静默吞掉写库失败的代码。errcheck 等检查由 golangci-lint 覆盖。
       #
-      # action 必须用 v8：v6 自 6.5.1 起加了硬性上限，只允许 golangci-lint v1，
-      # 配 version: v2.x 会在 action 内部校验阶段直接失败（报错与被检代码无关，
-      # 极易误判成自家代码有问题）。本项目的 .golangci.yml 是 v2 schema，
-      # 而 v2.6.2 ≥ v2.1.0，正是 action v8 要求的下限。
+      # 用官方安装脚本 + 直接调 CLI，不走 golangci-lint-action：
+      # 该 action 把「下载、校验版本、执行」包在一起，任何一环出错都只报
+      # 一句失败，日志里看不出是环境问题还是代码问题。本项目曾因此连续三次
+      # 发布失败——真因是 lint 二进制与 Go 工具链的版本错配（见下），
+      # 但 action 只报"静态检查失败"，极易误判成自家代码有 lint 问题。
+      # 直接调 CLI 则版本、参数与 panic 栈全部落在日志里。
+      #
+      # 版本必须固定且不能低于构建它的 Go 版本所能解析的语言版本：
+      # golangci-lint 二进制内嵌 go/types，只能分析「不高于自身构建 Go 版本」
+      # 的代码。v2.6.2 用 go1.25 构建，遇到 Go 1.26 的标准库会直接
+      # panic: file requires newer Go version go1.26。而 setup-go 读 go.mod 时
+      # 把 `go 1.25.0` 当下限、实际装最新的 1.26.x，于是必然踩中。
+      # v2.11.4 用 go1.26.1 构建，已验证在 1.25 与 1.26 工具链下均为 0 issues。
+      # 同理不用 latest：lint 规则集随版本变化，浮动版本会让同一份代码
+      # 在不同时间得到不同结论。
+      - name: 安装 golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
+          "$(go env GOPATH)/bin/golangci-lint" --version
+
       - name: 静态检查 (golangci-lint)
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.6.2
-          args: --timeout=5m ./backend/...
+        run: "$(go env GOPATH)/bin/golangci-lint run --timeout=5m ./backend/..."
 
       - name: 构建
         run: go build -v ./backend/api
