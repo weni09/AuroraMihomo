@@ -22,6 +22,8 @@ const BASE_YAML = [
   '    type: socks',
   'experimental:',
   '  sniff-tls-sni: true',
+  'hosts:',
+  "  'router.local': 192.168.1.1",
   'proxy-groups:',
   '  - name: PROXY',
   '    type: select',
@@ -53,6 +55,7 @@ type ConfigVm = {
   onCodeInput: (key: string, type: string, value: string) => void
   clearRawField: (key: string) => void
   reloadBase: () => Promise<void>
+  onHostsMap: (key: string, value: Record<string, unknown> | undefined) => void
 }
 const vmOf = (wrapper: ReturnType<typeof mount>) => wrapper.vm as unknown as ConfigVm
 
@@ -152,6 +155,73 @@ describe('ConfigView 源码字段的破坏性写入防护', () => {
     vmOf(wrapper).clearRawField('advanced-raw')
 
     expect(store.model.listeners).toBeDefined()
+  })
+
+  /**
+   * hosts 自「域名解析」分组有了专属表单后就是受管键，
+   * 必须与 advanced-raw 彻底脱钩：否则高级参数的「先删非受管键再写入」
+   * 会把 hosts 表单刚配好的映射删掉，而用户在两个页面之间切换时看不出原因。
+   */
+  it('advanced-raw 全量替换不得动 hosts（已是受管键）', async () => {
+    vi.useFakeTimers()
+    const { wrapper, store } = await mountLoaded()
+    expect(store.model.hosts).toEqual({ 'router.local': '192.168.1.1' })
+
+    vmOf(wrapper).onCodeInput('advanced-raw', 'code', 'experimental:\n  sniff-tls-sni: false\n')
+    vi.runAllTimers()
+
+    expect(store.model.hosts).toEqual({ 'router.local': '192.168.1.1' })
+  })
+
+  it('清空高级参数不得清掉 hosts', async () => {
+    const { wrapper, store } = await mountLoaded()
+    vi.stubGlobal('confirm', vi.fn(() => true))
+
+    vmOf(wrapper).clearRawField('advanced-raw')
+
+    expect(store.model.hosts).toEqual({ 'router.local': '192.168.1.1' })
+    // 真正的非受管键仍按既有语义被清掉
+    expect(store.model.listeners).toBeUndefined()
+  })
+})
+
+describe('ConfigView 的 hosts 表单', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  /** 光是把 onHostsMap 接上不够：字段还得真的出现在「域名解析」分组里 */
+  it('切到「域名解析」分组时渲染出 hosts 行编辑器与已有映射', async () => {
+    const { wrapper } = await mountLoaded()
+    const dnsNav = wrapper.findAll('button').find((b) => b.text() === '域名解析 (DNS)')
+    expect(dnsNav).toBeDefined()
+    await dnsNav!.trigger('click')
+
+    expect(wrapper.text()).toContain('自定义 hosts 映射')
+    const domainInput = wrapper.findAll('input').find((i) => i.attributes('aria-label')?.includes('的域名'))
+    expect(domainInput).toBeDefined()
+    expect((domainInput!.element as HTMLInputElement).value).toBe('router.local')
+  })
+
+  it('写入映射后落到 model 的顶层 hosts', async () => {
+    const { wrapper, store } = await mountLoaded()
+    vmOf(wrapper).onHostsMap('hosts', { 'a.local': '10.0.0.1' })
+
+    expect(store.model.hosts).toEqual({ 'a.local': '10.0.0.1' })
+  })
+
+  /** 空映射要删键而不是留下 `hosts: {}`——后者是「显式配置了空映射」，语义不同 */
+  it('映射被清空时删除 hosts 键，不写出空映射', async () => {
+    const { wrapper, store } = await mountLoaded()
+
+    vmOf(wrapper).onHostsMap('hosts', undefined)
+    expect('hosts' in store.model).toBe(false)
+
+    vmOf(wrapper).onHostsMap('hosts', {})
+    expect('hosts' in store.model).toBe(false)
   })
 })
 

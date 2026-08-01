@@ -1,4 +1,4 @@
-export type FieldType = 'switch' | 'text' | 'number' | 'select' | 'textarea' | 'string-array' | 'yaml-object'
+export type FieldType = 'switch' | 'text' | 'number' | 'select' | 'textarea' | 'string-array' | 'yaml-object' | 'hosts-map'
 
 /** 下拉选项：value 是写入配置的真实值，label 仅用于界面展示 */
 export interface FieldOption {
@@ -119,7 +119,7 @@ export const baseConfigSchema: FormSection[] = [
       { key: 'socks-port', title: 'SOCKS 代理端口', type: 'number', placeholder: '7891', help: 'SOCKS5 代理监听端口。留空表示不启用。' },
       { key: 'mixed-port', title: '混合代理端口', type: 'number', placeholder: '7890', help: 'HTTP 与 SOCKS5 共用的混合端口，推荐只开这一个。' },
       { key: 'redir-port', title: 'Redir 端口 (仅 Linux/macOS)', type: 'number', placeholder: '7892', help: 'mihomo 原生 REDIRECT 端口，仅支持 TCP（UDP 无法接管）。与「透明代理」页的一键开关无关：面板不会为它下发 iptables nat 规则，需要你自己写并自己清理。想一键接管请改用「透明代理」页的 TUN / TProxy。' },
-      { key: 'tproxy-port', title: 'TProxy 端口 (仅 Linux)', type: 'number', placeholder: '7893', help: 'mihomo TPROXY 端口，支持 TCP/UDP，仅 Linux。注意：此处填写会被「透明代理」页的开关接管——开关选 TProxy 时端口取该页的设置值，开关关闭时此值被清空。要一键启用请去那一页，不要在这里填。' },
+      { key: 'tproxy-port', title: 'TProxy 端口 (仅 Linux)', type: 'number', placeholder: '7893', help: 'mihomo TPROXY 端口，支持 TCP/UDP，仅 Linux。只填这里不足以让流量被接管：还需要防火墙规则与策略路由把流量引到该端口，那部分不在配置文件里。想一键接管请用「透明代理」页的开关（它会下发规则，并把端口写在此处）；若你自行维护规则，在这里填端口是可以的，面板不会改动它。' },
     ],
   },
   {
@@ -209,8 +209,16 @@ export const baseConfigSchema: FormSection[] = [
       { key: 'dns.default-nameserver', title: '默认名称服务器 (Default Nameserver)', type: 'string-array', placeholder: '223.5.5.5, 119.29.29.29', help: '用于解析 nameserver/fallback 中域名形式服务器地址的纯 IP DNS。只能填 IP。' },
       { key: 'dns.proxy-server-nameserver', title: '代理节点域名解析服务器 (Proxy Server Nameserver)', type: 'string-array', placeholder: 'https://223.5.5.5/dns-query', help: '专门用于解析代理节点域名，不受规则影响。开启 respect-rules 时必须配置。' },
       { key: 'dns.direct-nameserver', title: '直连域名解析服务器 (Direct Nameserver)', type: 'string-array', placeholder: 'system://', help: '仅用于直连出口的域名解析，多个用逗号分隔。' },
-      { key: 'dns.use-hosts', title: '使用 hosts 映射 (Use Hosts)', type: 'switch', help: '是否使用下方自定义 hosts 映射，官方默认开启。' },
-      { key: 'dns.use-system-hosts', title: '使用系统 hosts (Use System Hosts)', type: 'switch', help: '是否查询操作系统的 hosts 文件，官方默认开启。' },
+      { key: 'dns.use-hosts', title: '使用 hosts 映射 (Use Hosts)', type: 'switch', help: '是否使用下方「自定义 hosts 映射」里配置的域名映射，官方默认开启。关掉则那些映射不生效。' },
+      { key: 'dns.use-system-hosts', title: '使用系统 hosts (Use System Hosts)', type: 'switch', help: '是否查询操作系统的 hosts 文件（Windows 为 C:\\Windows\\System32\\drivers\\etc\\hosts，Linux/macOS 为 /etc/hosts），官方默认开启。' },
+      {
+        // hosts 是顶层键而非 dns 的子键（见 backend/internal/domain/config.go），
+        // 但它只在 use-hosts 开启时才起作用，放在开关旁边才找得到
+        key: 'hosts',
+        title: '自定义 hosts 映射',
+        type: 'hosts-map',
+        help: '域名到地址的映射，需上方「使用 hosts 映射」开启才生效。域名支持 +.example.com / *.example.com 通配；指向可填 IP、多个 IP（逗号分隔）或另一个域名作别名。',
+      },
       { key: 'dns.respect-rules', title: '解析遵循路由规则 (Respect Rules)', type: 'switch', help: '开启后 DNS 请求也走 rules 匹配，需同时配置 proxy-server-nameserver。' },
       { key: 'dns.prefer-h3', title: '优先使用 DoH 的 HTTP/3 (Prefer H3)', type: 'switch', help: 'DoH 优先使用 HTTP/3，网络不稳定时建议关闭。官方默认关闭。' },
       { key: 'dns.ipv6-timeout', title: 'IPv6 解析超时 (毫秒)', type: 'number', placeholder: '100', help: '等待 AAAA 记录的超时时间（毫秒），超时则只用 IPv4 结果。' },
@@ -364,9 +372,6 @@ export const baseConfigSchema: FormSection[] = [
         codeHeight: '420px',
         placeholder:
           '# 本页未覆盖的任意官方参数都可写在这里，例如：\n' +
-          'hosts:\n' +
-          "  'router.local': 192.168.1.1\n" +
-          '\n' +
           'proxies:\n' +
           '  - name: 示例节点\n' +
           '    type: ss\n' +
@@ -387,7 +392,8 @@ export const baseConfigSchema: FormSection[] = [
           '  quic-go-disable-gso: true\n',
         help:
           '以 YAML 对象格式填写本页未覆盖的任意官方 Mihomo 参数（如 listeners、proxy-providers、' +
-          'sub-rules、tls、experimental、hosts、tunnels、ntp 等），保存后会原样合并进最终配置。' +
+          'sub-rules、tls、experimental、tunnels、ntp 等），保存后会原样合并进最终配置。' +
+          'hosts 已有专属表单（见「域名解析」分组），在这里写会被忽略。' +
           '与订阅合并时同名顶层键遵循本地优先，本地未声明的键由远程补齐。',
       },
     ],
@@ -400,9 +406,13 @@ export const baseConfigSchema: FormSection[] = [
  * 写入 advanced-raw 时必须排除这些键，否则会覆盖专属表单已经写入的值；
  * 展示 advanced-raw 时同理需要排除，否则会造成同一字段在两处重复编辑。
  *
- * 注意：`proxies` / `rule-providers` / `hosts` 等字段故意不在此列——它们没有
- * 专属表单分组，需要经由「高级参数」文本域可见可编辑，排除它们会导致本地
- * base 配置里的这些字段在界面上既没有专属入口、也无法通过兜底框访问。
+ * 注意：`proxies` / `rule-providers` 等字段故意不在此列——它们没有专属表单
+ * 分组，需要经由「高级参数」文本域可见可编辑，排除它们会导致本地 base 配置
+ * 里的这些字段在界面上既没有专属入口、也无法通过兜底框访问。
+ *
+ * `hosts` 原属上述情况，自「域名解析」分组新增 hosts-map 表单后转为受管：
+ * 不排除它的话，两处都能改同一个键，且 advanced-raw 的「先删非受管键再写入」
+ * 会把 hosts 表单刚写的内容删掉。
  */
 export const advancedExcludedKeys = new Set([
   'mode',
@@ -444,6 +454,7 @@ export const advancedExcludedKeys = new Set([
   'geo-update-interval',
   'geox-url',
   'profile',
+  'hosts',
   'dns',
   'tun',
   'sniffer',

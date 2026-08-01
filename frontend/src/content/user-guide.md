@@ -264,12 +264,12 @@ function operator(proxies) {
 | **外部控制** | `external-controller`（默认 `127.0.0.1:9090`）、`secret`、面板挂载路径。**对外暴露时务必设 secret** |
 | **GeoData 规则库** | GeoIP/GeoSite 数据源与自动更新间隔 |
 | **运行状态持久化** | 记住手选节点（建议开启）、记住 fake-ip 映射 |
-| **域名解析** | DNS 全部行为：enhanced-mode（推荐 fake-ip）、fake-ip 段与过滤、各类 nameserver、respect-rules 等。**用 TUN 时必须开 dns.enable** |
+| **域名解析** | DNS 全部行为：enhanced-mode（推荐 fake-ip）、fake-ip 段与过滤、各类 nameserver、respect-rules 等，以及**自定义 hosts 映射**（域名 → IP 的行编辑器，需同组的「使用 hosts 映射」开启才生效）。**用 TUN 时必须开 dns.enable** |
 | **虚拟网卡** | TUN 的 enable / stack / auto-route / dns-hijack / mtu / strict-route 等 |
 | **域名嗅探** | 从流量还原域名。注意：只开总开关不配 `sniffer.sniff` 的话嗅探不会生效 |
 | **策略组** | YAML 数组定义本地策略组，与订阅中同名组合并 |
 | **基础路由规则** | 每行一条，会被置顶插入最终配置，顺序即优先级 |
-| **高级参数** | 兜底所有未建模的顶层键：`listeners` `proxy-providers` `sub-rules` `tls` `experimental` `hosts` `tunnels` `ntp` 等 |
+| **高级参数** | 兜底所有未建模的顶层键：`listeners` `proxy-providers` `sub-rules` `tls` `experimental` `tunnels` `ntp` 等。`hosts` 已移到「域名解析」的专属表单，写在这里会被忽略 |
 
 **两个必须知道的交互**：
 

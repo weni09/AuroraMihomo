@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { useConfigStore } from '../stores/config'
 import { baseConfigSchema, getByPath, setByPath, deleteByPath, normalizeOptions, advancedExcludedKeys } from '../schemas/baseConfig'
 import CodeEditor from '../components/CodeEditor.vue'
+import HostsEditor from '../components/HostsEditor.vue'
 import { loadYaml, dumpYaml } from '../utils/yaml'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -187,6 +188,27 @@ const reloadBase = async () => {
 }
 
 const onSwitch = (key: string, checked: boolean) => setByPath(store.model, key, checked)
+
+/**
+ * hosts-map 字段（顶层 hosts）的写回。
+ *
+ * 编辑器传 undefined 表示「一条映射都不剩」，此时删键而不是写 {}：
+ * 空映射会在 base.yaml 里留下一个 `hosts: {}`，那是「显式配置了空映射」，
+ * 与「没配过 hosts」不是一回事，也让配置文件多出无意义的噪声。
+ */
+const onHostsMap = (key: string, value: Record<string, unknown> | undefined) => {
+  if (!value || Object.keys(value).length === 0) {
+    deleteByPath(store.model, key)
+    return
+  }
+  setByPath(store.model, key, value)
+}
+
+/** hosts-map 的当前值；未配置时给编辑器一个空对象，免得它在模板里判空 */
+const hostsMapValue = (key: string): Record<string, unknown> => {
+  const v = getByPath(store.model, key)
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+}
 const onInput = (key: string, value: string, type: string) => {
   if (type === 'number') {
     // 清空或非法输入时移除该键，而不是写入 0：
@@ -599,6 +621,16 @@ const displayValue = (key: string, type: string) => {
                     </SelectItem>
                   </SelectContent>
                 </Select>
+                <!-- 顶层 hosts：键值行编辑器。它自己维护编辑期状态，
+                     不走 drafts / 失焦提交那套（域名是 map 的键，逐字符
+                     改键会碰撞，理由见 HostsEditor.vue 的文件头注释）。 -->
+                <HostsEditor
+                  v-else-if="f.type === 'hosts-map'"
+                  :model-value="hostsMapValue(f.key)"
+                  :labelledby="labelId(f.key)"
+                  :describedby="f.help ? helpId(f.key) : undefined"
+                  @update:model-value="onHostsMap(f.key, $event)"
+                />
                 <!-- 源码类字段（YAML/JS）用 CodeMirror 编辑，带语法高亮与行号。
                      它不像 textarea 那样会被规范化回灌打断输入，因此直接用
                      草稿值 + 变更事件，失焦时统一提交。 -->
