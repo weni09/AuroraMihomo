@@ -374,7 +374,10 @@ const displayValue = (key: string, type: string) => {
        外壳已不再锁屏，这里改用 sticky 达到同样的“导航常驻可见”效果。 -->
   <main class="p-4 sm:p-6 lg:p-8">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4 sm:mb-6">
-      <h1 class="text-2xl sm:text-3xl font-bold">配置中心</h1>
+      <div>
+        <h1 class="text-2xl sm:text-3xl font-bold">配置中心</h1>
+        <p class="text-xs sm:text-sm text-fg-subtle mt-1">管理 Mihomo 内核的基础配置、远程订阅与规则关联</p>
+      </div>
     </div>
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->
 
@@ -527,6 +530,31 @@ const displayValue = (key: string, type: string) => {
             保存并应用
           </Button>
         </div>
+      </div>
+
+      <!-- 用户只点击了「保存基础配置」而尚未合并下发给内核时的提示条 -->
+      <div
+        v-if="store.baseLoaded && store.unmergedChanges"
+        class="mt-3 note-warn border rounded p-3 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+        role="status"
+      >
+        <div>
+          <div class="font-semibold">
+            本地基础配置已保存，但尚未应用生效
+          </div>
+          <p class="text-xs opacity-90 mt-0.5">
+            改动已保存到数据库，但尚未合并并作用于 mihomo 内核配置。点击右侧「应用并生效」使其生效。
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          class="shrink-0"
+          :disabled="store.loading"
+          @click="saveAndMerge()"
+        >
+          应用并生效
+        </Button>
       </div>
     </section>
 

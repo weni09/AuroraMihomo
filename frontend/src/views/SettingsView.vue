@@ -427,7 +427,10 @@ const navOpen = ref(false)
   <!-- pb-28 给底部悬浮操作条让位：否则滚到最底时它会盖住
        「配置合并策略」的最后一行内容与那一节自己的保存按钮 -->
   <main class="p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28 max-w-7xl mx-auto">
-    <h1 class="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6">系统设置</h1>
+    <div class="mb-4 sm:mb-6">
+      <h1 class="text-2xl sm:text-3xl font-bold">系统设置</h1>
+      <p class="text-xs sm:text-sm text-fg-subtle mt-1">管理 AuroraMihomo 管理面板自身的基础配置、更新服务与应用日志</p>
+    </div>
 
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->
 
