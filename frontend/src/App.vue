@@ -252,19 +252,17 @@ const logout = () => {
                 class="text-xs text-fg-muted font-mono text-center py-1 truncate cursor-default"
                 aria-label="系统版本"
               >
-                {{ mihomoStore.appVersion.startsWith('v') ? mihomoStore.appVersion : 'v' + mihomoStore.appVersion }}
+                {{ mihomoStore.appVersion }}
               </div>
             </TooltipTrigger>
-            <TooltipContent side="right">
-              AuroraMihomo {{ mihomoStore.appVersion.startsWith('v') ? mihomoStore.appVersion : 'v' + mihomoStore.appVersion }}
-            </TooltipContent>
+            <TooltipContent side="right">版本号: {{ mihomoStore.appVersion }}</TooltipContent>
           </Tooltip>
           <div
             v-else
             class="text-xs text-fg-muted font-mono flex items-center justify-between px-1 py-1"
           >
-            <span>AuroraMihomo</span>
-            <span>{{ mihomoStore.appVersion.startsWith('v') ? mihomoStore.appVersion : 'v' + mihomoStore.appVersion }}</span>
+            <span>版本号</span>
+            <span>{{ mihomoStore.appVersion }}</span>
           </div>
         </TooltipProvider>
 
