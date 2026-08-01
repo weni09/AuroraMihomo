@@ -10,6 +10,9 @@ endif
 CONFIG := backend/api/etc/aurora-api.yaml
 IMAGE := auroramihomo:latest
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS := -w -s -X 'auroramihomo/backend/internal/version.AppVersion=$(VERSION)'
+
 .PHONY: help
 help: ## 显示可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -32,8 +35,8 @@ build-frontend: sync-docs ## 构建前端并同步到 public/
 	cp -r frontend/dist public
 
 .PHONY: build-backend
-build-backend: ## 构建后端二进制
-	go build -ldflags="-w -s" -o $(BINARY) ./backend/api
+build-backend: ## 构建后端二进制（注入 Tag 版本号与内嵌静态资源）
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./backend/api
 
 # ---------- 质量 ----------
 .PHONY: check
