@@ -253,9 +253,10 @@ type ShareUpdateReq struct {
 }
 
 type Status struct {
-	Status  string `json:"status"`
-	Version string `json:"version"`
-	Pid     int    `json:"pid"`
+	Status     string `json:"status"`
+	Version    string `json:"version"`
+	AppVersion string `json:"appVersion"`
+	Pid        int    `json:"pid"`
 }
 
 type SubFile struct {

@@ -9,9 +9,10 @@ info (
 // 本文件与 backend/api/internal/{types,handler} 下的生成物保持一致。
 // 改接口时两侧需同步：规格是唯一的对外契约描述，落后于代码会误导调用方。
 type Status {
-	Status  string `json:"status"`
-	Version string `json:"version"`
-	Pid     int    `json:"pid"`
+	Status     string `json:"status"`
+	Version    string `json:"version"`
+	AppVersion string `json:"appVersion"`
+	Pid        int    `json:"pid"`
 }
 
 type Result {
