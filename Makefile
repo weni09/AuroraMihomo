@@ -10,7 +10,7 @@ endif
 CONFIG := backend/api/etc/aurora-api.yaml
 IMAGE := auroramihomo:latest
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || echo "dev")
 LDFLAGS := -w -s -X 'auroramihomo/backend/internal/version.AppVersion=$(VERSION)'
 
 .PHONY: help
