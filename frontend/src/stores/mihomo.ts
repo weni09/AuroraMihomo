@@ -6,12 +6,14 @@ interface Status {
   status: string
   version: string
   pid: number
+  appVersion?: string
 }
 
 export const useMihomoStore = defineStore('mihomo', {
   state: () => ({
     status: '未知',
     version: '未知',
+    appVersion: '未知',
     pid: 0,
     isLoading: false,
     recentLogs: [] as Array<{ time: string; stream: string; message: string }>,
@@ -21,6 +23,7 @@ export const useMihomoStore = defineStore('mihomo', {
     applyStatus(payload: Partial<Status>) {
       if (payload.status) this.status = payload.status
       if (payload.version) this.version = payload.version
+      if (payload.appVersion) this.appVersion = payload.appVersion
       if (typeof payload.pid === 'number') this.pid = payload.pid
     },
     pushLog(line: { time?: string; stream?: string; message?: string }) {

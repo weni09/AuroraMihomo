@@ -2,7 +2,8 @@
 import ToastHost from './components/ToastHost.vue'
 import AppLogo from './components/AppLogo.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useMihomoStore } from './stores/mihomo'
 import {
   Menu,
   X,
@@ -26,7 +27,12 @@ import { useSidebar } from './composables/useSidebar'
 
 const route = useRoute()
 const router = useRouter()
+const mihomoStore = useMihomoStore()
 const isLogin = computed(() => route.name === 'login')
+
+onMounted(() => {
+  mihomoStore.fetchStatus()
+})
 
 // 侧边栏折叠。只作用于 lg 以上的桌面布局：窄屏侧边栏是覆盖式抽屉，
 // 收起后一点宽度都不占，再做一个图标条没有意义。
@@ -239,6 +245,27 @@ const logout = () => {
         class="border-t border-line shrink-0 space-y-2"
         :class="collapsed ? 'p-2' : 'p-4 space-y-3'"
       >
+        <TooltipProvider :delay-duration="0">
+          <Tooltip v-if="collapsed">
+            <TooltipTrigger as-child>
+              <div
+                class="text-xs text-fg-muted font-mono text-center py-1 truncate cursor-default"
+                aria-label="系统版本"
+              >
+                v{{ mihomoStore.appVersion }}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="right">AuroraMihomo v{{ mihomoStore.appVersion }}</TooltipContent>
+          </Tooltip>
+          <div
+            v-else
+            class="text-xs text-fg-muted font-mono flex items-center justify-between px-1 py-1"
+          >
+            <span>AuroraMihomo</span>
+            <span>v{{ mihomoStore.appVersion }}</span>
+          </div>
+        </TooltipProvider>
+
         <!-- 折叠态下 ThemeToggle 的分段控件放不进 64px，
              收起为一个图标按钮触发的折叠菜单代价过大，
              这里直接隐藏——展开侧边栏或用窄屏顶栏都能切换主题 -->
