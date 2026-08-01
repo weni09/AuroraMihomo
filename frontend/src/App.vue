@@ -249,20 +249,24 @@ const logout = () => {
           <Tooltip v-if="collapsed">
             <TooltipTrigger as-child>
               <div
-                class="text-xs text-fg-muted font-mono text-center py-1 truncate cursor-default"
+                class="flex items-center justify-center py-1 text-[10px] font-mono text-fg-muted cursor-default"
                 aria-label="系统版本"
               >
-                {{ mihomoStore.appVersion }}
+                <span class="px-1.5 py-0.5 rounded bg-elevated border border-line truncate max-w-[48px]">
+                  {{ mihomoStore.appVersion }}
+                </span>
               </div>
             </TooltipTrigger>
-            <TooltipContent side="right">版本号: {{ mihomoStore.appVersion }}</TooltipContent>
+            <TooltipContent side="right">系统版本: {{ mihomoStore.appVersion }}</TooltipContent>
           </Tooltip>
           <div
             v-else
-            class="text-xs text-fg-muted font-mono flex items-center justify-between px-1 py-1"
+            class="flex items-center justify-between px-3 py-1.5 rounded-lg bg-elevated/40 border border-line/60 text-xs"
           >
-            <span>版本号</span>
-            <span>{{ mihomoStore.appVersion }}</span>
+            <span class="text-[11px] text-fg-muted font-medium">系统版本</span>
+            <span class="px-1.5 py-0.5 rounded bg-surface border border-line text-[10px] font-mono font-semibold text-fg-muted">
+              {{ mihomoStore.appVersion }}
+            </span>
           </div>
         </TooltipProvider>
 
