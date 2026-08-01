@@ -43,9 +43,9 @@ func main() {
 
 	// 静态资源（Zashboard 内嵌面板 + 本项目前端）挂到原生 mux，
 	// go-zero 路由无法匹配任意深度路径，这里在进入路由前直接分流。
-	staticMux := http.NewServeMux()
-	mountStatic(staticMux, "/ui", filepath.Join(c.Mihomo.ConfigDir, "zashboard"))
-	mountStatic(staticMux, "/", webRoot())
+		staticMux := http.NewServeMux()
+		mountStatic(staticMux, "/ui", http.Dir(filepath.Join(c.Mihomo.ConfigDir, "zashboard")))
+		mountStatic(staticMux, "/", getWebFS())
 	// staticMux 在 server.StartWithOpts 中包装到最外层 Handler
 	registerWebSocket(server, svcCtx)
 	registerHealthz(server, svcCtx)
@@ -501,54 +501,15 @@ func setSecurityHeaders(w http.ResponseWriter, isAPI bool) {
 	}, "; "))
 }
 
-// webRoot 定位前端静态资源目录：
-// 生产镜像使用 ./public，本地开发回退到 frontend/dist。
-func webRoot() string {
-	for _, dir := range []string{"./public", "./frontend/dist"} {
-		if st, err := os.Stat(filepath.Join(dir, "index.html")); err == nil && !st.IsDir() {
-			return dir
-		}
-	}
-	return "./public"
-}
-
-func spaFileServer(routePrefix, dir string) http.Handler {
-	fileServer := http.FileServer(http.Dir(dir))
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rel := strings.TrimPrefix(r.URL.Path, routePrefix)
-		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" {
-			rel = "index.html"
-		}
-
-		full := filepath.Join(dir, filepath.Clean("/"+rel))
-		if st, err := os.Stat(full); err == nil && !st.IsDir() {
-			// 命中真实文件，交给标准 FileServer（自动处理 MIME / Range / 缓存）
-			http.StripPrefix(routePrefix, fileServer).ServeHTTP(w, r)
-			return
-		}
-
-		// SPA 回退：把未知路径交给 index.html 由前端路由接管
-		index := filepath.Join(dir, "index.html")
-		if _, err := os.Stat(index); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeFile(w, r, index)
-	})
-}
-
 // mountStatic 把静态目录挂到 go-zero 之外的原生 mux 上，
 // 避免 go-zero 路由无法匹配任意深度路径的问题。
-func mountStatic(mux *http.ServeMux, routePrefix, dir string) {
+func mountStatic(mux *http.ServeMux, routePrefix string, fsys http.FileSystem) {
 	if routePrefix == "/" {
-		mux.Handle("/", spaFileServer("", dir))
+		mux.Handle("/", spaFileSystemServer("", fsys))
 		return
 	}
 	prefix := strings.TrimSuffix(routePrefix, "/")
-	handler := spaFileServer(prefix, dir)
+	handler := spaFileSystemServer(prefix, fsys)
 	mux.Handle(prefix+"/", handler)
 	mux.Handle(prefix, http.RedirectHandler(prefix+"/", http.StatusMovedPermanently))
 }

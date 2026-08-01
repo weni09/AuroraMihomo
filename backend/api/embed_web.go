@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -63,13 +64,19 @@ func spaFileSystemServer(routePrefix string, fsys http.FileSystem) http.Handler 
 			http.NotFound(w, r)
 			return
 		}
-		_ = fIndex.Close()
+		defer fIndex.Close()
 
-		r2 := r.Clone(r.Context())
-		r2.URL.Path = routePrefix + "/index.html"
-		if routePrefix == "" {
-			r2.URL.Path = "/index.html"
+		stat, err := fIndex.Stat()
+		if err != nil {
+			http.NotFound(w, r)
+			return
 		}
-		fileServer.ServeHTTP(w, r2)
+
+		if rs, ok := fIndex.(io.ReadSeeker); ok {
+			http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
+			return
+		}
+
+		http.NotFound(w, r)
 	})
 }
