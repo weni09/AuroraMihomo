@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useConfigLabStore } from '../stores/configlab'
 import CodeEditor from '../components/CodeEditor.vue'
 import DiffEditor from '../components/DiffEditor.vue'
+import ConfigDiffTable from '../components/ConfigDiffTable.vue'
 import { Button } from '@/components/ui/button'
 import { normalizeYamlPairForDiff } from '../utils/yaml'
+import { buildConfigDiff } from '../utils/configDiff'
 
 const store = useConfigLabStore()
 onMounted(() => store.fetchConfigs())
@@ -16,14 +18,26 @@ onMounted(() => store.fetchConfigs())
  * 最终配置 = 合并后 mihomo 内核实际加载的内容；
  * 远程订阅 = 当前远程来源拉取后的原始层（合并前）。
  *
- * 两种看法：
+ * 三种看法：
  *   - 三栏对照：各看全文，确认内容本身符合预期
- *   - 并排差异：算出两份之间到底哪里不同，回答"合并改了什么"
+ *   - 语义对比：按顶层键回答"我设的项还在不在、有没有被合并改掉"
+ *   - 逐行文本：看两份文本的逐行差异
+ *
+ * 默认用语义对比。逐行文本在这三份配置上单独用是不够的：本地配置几十行、
+ * 最终配置上千行，规模悬殊是合法的（最终配置真的多出上千条规则），逐行算法
+ * 只能产出一个横跨上千行的巨块，等于说"整份都是新增"。它更适合已经锁定某个
+ * 键之后的细看，所以语义对比的每一行里也能就地展开逐行视图。
  *
  * 都是只读展示，改动请去配置中心。
  */
+// 默认落在「本地 → 最终」：进这个页面最常问的是"我改的配置生效了吗、
+// 被合并改了什么"，而不是"三份全文分别长什么样"。
 type View = 'panels' | 'local-final' | 'final-remote'
-const view = ref<View>('panels')
+const view = ref<View>('local-final')
+
+/** 选定一组对比对象后，用哪种方式看 */
+type Mode = 'semantic' | 'text'
+const mode = ref<Mode>('semantic')
 
 /**
  * 差异对比前先规范化。
@@ -44,7 +58,12 @@ const panels = computed(() => [
   { key: 'remote', title: '远程订阅', content: store.remoteContent, filename: 'remote-config.yaml' },
 ])
 
-/** 当前对比的两侧；三栏对照模式下为 null */
+/**
+ * 当前对比的两侧；三栏对照模式下为 null。
+ *
+ * hint 分两套：语义对比读的是「键的去向」，逐行文本读的是「哪一侧多出内容」，
+ * 同一句话套两种看法会有一头对不上——用户照着提示去找，找不到就更困惑。
+ */
 const pair = computed(() => {
   if (view.value === 'local-final') {
     return {
@@ -53,7 +72,10 @@ const pair = computed(() => {
       left: store.localContent,
       right: store.finalContent,
       // 说明这组差异该怎么读，否则容易误解成"合并把我的配置改坏了"
-      hint: '右侧多出的内容来自远程订阅与合并策略；左侧独有的项若在右侧消失，说明被远程层覆盖，或因引用失效被清理。',
+      semanticHint:
+        '「被丢弃」说明你设的项没进最终配置（被远程层覆盖，或因引用失效被清理），值得重点看；「新增」是远程订阅与合并策略带进来的。',
+      textHint:
+        '右侧多出的内容来自远程订阅与合并策略；左侧独有的项若在右侧消失，说明被远程层覆盖，或因引用失效被清理。',
     }
   }
   if (view.value === 'final-remote') {
@@ -62,7 +84,10 @@ const pair = computed(() => {
       rightTitle: '远程订阅',
       left: store.finalContent,
       right: store.remoteContent,
-      hint: '远程订阅是合并前的原始层。左侧独有的内容来自本地配置，以及合并时的补充（如透明代理注入）。',
+      semanticHint:
+        '远程订阅是合并前的原始层。「被丢弃」的项来自本地配置或合并时的补充（如透明代理注入），属正常；「新增」是远程有而最终没采用的项。',
+      textHint:
+        '远程订阅是合并前的原始层。左侧独有的内容来自本地配置，以及合并时的补充（如透明代理注入）。',
     }
   }
   return null
@@ -105,6 +130,31 @@ const identical = computed(() => {
   return p.left === p.right
 })
 
+/**
+ * 语义对比结果。任一侧 YAML 解析不了时为 null——按键对齐建立在解析产物上，
+ * 解析不了就没有可对齐的结构，硬凑出来的结论会误导人。
+ */
+const semanticDiff = computed(() => {
+  const p = pair.value
+  if (!p) return null
+  return buildConfigDiff(p.left, p.right)
+})
+
+/** 语义对比不可用（有一侧解析失败），此时只能看逐行文本 */
+const semanticUnavailable = computed(
+  () => !!pair.value && !pairMissing.value && semanticDiff.value === null,
+)
+
+/** 实际生效的看法：语义对比不可用时自动落到逐行文本，而不是显示一片空白 */
+const effectiveMode = computed<Mode>(() =>
+  semanticUnavailable.value ? 'text' : mode.value,
+)
+
+const modes: { key: Mode; label: string }[] = [
+  { key: 'semantic', label: '语义对比' },
+  { key: 'text', label: '逐行文本' },
+]
+
 const download = (content: string, filename: string) => {
   const blob = new Blob([content], { type: 'text/yaml;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -120,9 +170,9 @@ const download = (content: string, filename: string) => {
 }
 
 const tabs: { key: View; label: string }[] = [
-  { key: 'panels', label: '三栏对照' },
   { key: 'local-final', label: '本地 → 最终' },
   { key: 'final-remote', label: '最终 → 远程' },
+  { key: 'panels', label: '三栏对照' },
 ]
 </script>
 
@@ -163,8 +213,33 @@ const tabs: { key: View; label: string }[] = [
         </button>
       </div>
 
-      <!-- 规范化只对差异视图有意义；三栏对照展示的是原文 -->
-      <label v-if="pair" class="flex items-center gap-1.5 text-sm">
+      <!-- 看法切换：只在选定了一组对比对象后才有意义 -->
+      <div
+        v-if="pair"
+        class="inline-flex rounded border border-line overflow-hidden"
+        role="tablist"
+        aria-label="对比方式"
+      >
+        <button
+          v-for="(m, i) in modes"
+          :key="m.key"
+          type="button"
+          role="tab"
+          :aria-selected="effectiveMode === m.key"
+          :disabled="semanticUnavailable && m.key === 'semantic'"
+          class="px-3 py-1.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          :class="[
+            effectiveMode === m.key ? 'bg-primary text-primary-foreground' : 'hover:bg-elevated',
+            i > 0 ? 'border-l border-line' : '',
+          ]"
+          @click="mode = m.key"
+        >
+          {{ m.label }}
+        </button>
+      </div>
+
+      <!-- 规范化只影响逐行文本对比。语义对比按键对齐，注释与键序天然不构成差异 -->
+      <label v-if="pair && effectiveMode === 'text'" class="flex items-center gap-1.5 text-sm">
         <input v-model="normalize" type="checkbox" class="rounded border-line" />
         <span>忽略注释与键序差异</span>
       </label>
@@ -218,24 +293,42 @@ const tabs: { key: View; label: string }[] = [
           <span class="text-fg-subtle">→</span>
           <span>{{ pair.rightTitle }}</span>
         </div>
-        <p class="text-xs text-fg-subtle mt-1">{{ pair.hint }}</p>
+        <p class="text-xs text-fg-subtle mt-1">
+          {{ effectiveMode === 'semantic' ? pair.semanticHint : pair.textHint }}
+        </p>
       </div>
 
       <p v-if="pairMissing" class="p-4 text-sm text-fg-subtle">{{ pairMissing }}</p>
       <template v-else>
-        <p v-if="normalizeFailed" class="px-3 py-2 text-xs note-warn border-b border-line">
-          有一侧的 YAML 无法解析，本次按原文对比（注释与键序差异会一并显示）。
+        <!-- 语义对比不可用时如实说明为什么，并说明已经切到哪种看法 -->
+        <p v-if="semanticUnavailable" class="px-3 py-2 text-xs note-warn border-b border-line">
+          有一侧的 YAML 无法解析，按键对比无从下手，已切换为逐行文本对比。
         </p>
-        <p v-if="identical" class="p-4 text-sm text-fg-muted">
-          两者内容一致{{ normalize && !normalizeFailed ? '（已忽略注释与键序差异）' : '' }}。
-        </p>
-        <DiffEditor
-          v-else-if="prepared"
-          :original="prepared.left"
-          :modified="prepared.right"
-          language="yaml"
-          height="min(680px, 68vh)"
+
+        <!-- 语义对比：按顶层键回答"我设的项还在不在、被改成了什么" -->
+        <ConfigDiffTable
+          v-if="effectiveMode === 'semantic' && semanticDiff"
+          :diff="semanticDiff"
+          :left-title="pair.leftTitle"
+          :right-title="pair.rightTitle"
         />
+
+        <!-- 逐行文本 -->
+        <template v-else>
+          <p v-if="normalizeFailed" class="px-3 py-2 text-xs note-warn border-b border-line">
+            有一侧的 YAML 无法解析，本次按原文对比（注释与键序差异会一并显示）。
+          </p>
+          <p v-if="identical" class="p-4 text-sm text-fg-muted">
+            两者内容一致{{ normalize && !normalizeFailed ? '（已忽略注释与键序差异）' : '' }}。
+          </p>
+          <DiffEditor
+            v-else-if="prepared"
+            :original="prepared.left"
+            :modified="prepared.right"
+            language="yaml"
+            height="min(680px, 68dvh)"
+          />
+        </template>
       </template>
     </section>
   </main>
