@@ -4,10 +4,14 @@ import api from '../api'
 import { useRealtime } from '../composables/useRealtime'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { wsStatusLabel, appLogLevelLabel } from '../utils/labels'
+import { wsStatusLabel, appLogLevelLabel, kernelLogLevelLabel } from '../utils/labels'
 
-/** 内核日志：mihomo 子进程的 stdout/stderr */
-type KernelLine = { time: string; stream: string; message: string }
+/**
+ * 内核日志：mihomo 子进程的 stdout/stderr。
+ * level 由后端从内核的 logfmt 输出解析而来，空串表示该行无级别
+ * （启动横幅、panic 栈，以及后端自己写的 system 流）。
+ */
+type KernelLine = { time: string; stream: string; level?: string; message: string }
 /** 应用日志：本项目自身（go-zero logx）的输出，分级别、带调用位置 */
 type AppLine = { time: string; level: string; message: string; caller?: string }
 
@@ -23,11 +27,24 @@ const loadError = ref('')
 /** 应用日志的级别筛选，空字符串表示全部 */
 const levelFilter = ref('')
 
+/**
+ * 内核日志的级别筛选，空字符串表示全部。
+ *
+ * 与应用日志的筛选是两个独立状态：两边级别取值不同（内核有 warning，
+ * 应用有 slow/stat/severe），共用一个 ref 会在切 Tab 后筛出空列表。
+ */
+const kernelLevelFilter = ref('')
+
 // shadcn Select 的 SelectItem 不接受空字符串 value，"全部"用 __all__ 占位，
-// 转换只在这个 computed 里做，levelFilter 本身仍按空字符串语义读写
+// 转换只在这个 computed 里做，各 levelFilter 本身仍按空字符串语义读写
 const levelFilterSelectValue = computed({
   get: () => levelFilter.value || '__all__',
   set: (v: string) => { levelFilter.value = v === '__all__' ? '' : v },
+})
+
+const kernelLevelFilterSelectValue = computed({
+  get: () => kernelLevelFilter.value || '__all__',
+  set: (v: string) => { kernelLevelFilter.value = v === '__all__' ? '' : v },
 })
 
 // 前端保留上限。后端内存缓冲是 1000 条，这里 500 足够回溯；
@@ -54,7 +71,19 @@ const autoScrollIfActive = (which: Tab) => {
   if (which === tab.value && following.value) nextTick(scrollToBottom)
 }
 
+/**
+ * 判断一行内核日志是否通过当前级别筛选。
+ *
+ * 无级别的行（启动横幅、panic 栈、system 流）一律保留，与后端筛选语义一致：
+ * 筛 error 却看不到崩溃栈是反直觉的。
+ */
+const kernelLineMatches = (line: KernelLine) =>
+  !kernelLevelFilter.value || !line.level || line.level === kernelLevelFilter.value
+
 const pushKernel = (line: KernelLine) => {
+  // 实时行同样要过筛选，否则用户筛了 error，warning 仍会源源不断涌进来
+  if (!kernelLineMatches(line)) return
+
   kernelLogs.value.push(line)
   if (kernelLogs.value.length > MAX_LINES) {
     kernelLogs.value.splice(0, kernelLogs.value.length - MAX_LINES)
@@ -78,6 +107,20 @@ const visibleAppLogs = computed(() =>
 const isEmpty = computed(() =>
   tab.value === 'kernel' ? kernelLogs.value.length === 0 : visibleAppLogs.value.length === 0,
 )
+
+/**
+ * 拉取内核日志历史，按当前级别筛选。
+ *
+ * 筛选必须由后端做而非只在前端过滤：前端只留 500 行，而内核加载规则集时
+ * 一次能刷出上千条 warning——本地这 500 行里可能一条 error 都没有。
+ * 后端在 1000 条缓冲上先筛后截，才能把被 warning 挤掉的 error 捞回来。
+ */
+const loadKernelHistory = async () => {
+  const params = new URLSearchParams({ limit: String(MAX_LINES) })
+  if (kernelLevelFilter.value) params.set('level', kernelLevelFilter.value)
+  const res = await api.get<KernelLine[]>(`/mihomo/logs?${params}`)
+  kernelLogs.value = res.data || []
+}
 
 // 清空只作用于当前 Tab：用户清的是眼前这份列表，
 // 不该顺手把另一路的历史也丢掉。
@@ -114,6 +157,25 @@ const streamLabel = (stream: string) => {
 const streamClass = (stream: string) =>
   stream === 'stderr' ? 'text-rose-400' : stream === 'system' ? 'text-amber-400' : 'text-cyan-400'
 
+/**
+ * 内核级别配色：error 醒目，warning 次之，debug 压暗。
+ *
+ * 与 stream 配色分工：stream 说的是"从哪个管道来"，level 说的是"多严重"。
+ * mihomo 把 error 也写到 stdout，只看 stream 会漏掉真正的错误。
+ */
+const kernelLevelClass = (level: string) => {
+  switch (level) {
+    case 'error':
+      return 'text-rose-400'
+    case 'warning':
+      return 'text-amber-400'
+    case 'debug':
+      return 'log-meta-dim'
+    default:
+      return 'text-cyan-400'
+  }
+}
+
 /** 级别配色：error/severe 醒目，info 中性，debug/stat 次要 */
 const levelClass = (level: string) => {
   switch (level) {
@@ -136,6 +198,8 @@ const { status } = useRealtime((type, data, raw) => {
     pushKernel({
       time: data.time || raw?.at || '',
       stream: data.stream || '',
+      // 后端对无级别的行省略了该字段（omitempty），这里保持空串语义
+      level: data.level || '',
       message: data.message || '',
     })
     return
@@ -164,17 +228,30 @@ watch(tab, async () => {
   scrollToBottom()
 })
 
+// 改内核级别筛选后重新拉取历史：本地列表只有 500 行，
+// 在这 500 行里筛往往什么都筛不出来（见 loadKernelHistory 注释）。
+watch(kernelLevelFilter, async () => {
+  following.value = true
+  try {
+    await loadKernelHistory()
+  } catch {
+    // 拦截器已提示过。保留现有列表而非清空：
+    // 清空会让用户以为筛选结果真的为空
+    return
+  }
+  await nextTick()
+  scrollToBottom()
+})
+
 onMounted(async () => {
   // 两路历史并行拉取，任一失败只影响它自己
   const [kernel, app] = await Promise.allSettled([
-    api.get<KernelLine[]>('/mihomo/logs'),
+    loadKernelHistory(),
     api.get<{ logs: AppLine[]; total: number }>('/system/logs?limit=500'),
   ])
 
   const failed: string[] = []
-  if (kernel.status === 'fulfilled') {
-    kernelLogs.value = kernel.value.data || []
-  } else {
+  if (kernel.status === 'rejected') {
     failed.push('内核日志')
   }
   if (app.status === 'fulfilled') {
@@ -237,7 +314,24 @@ onMounted(async () => {
         </Button>
       </div>
 
-      <!-- 级别筛选只对应用日志有意义：内核的 stdout/stderr 不是级别 -->
+      <!-- 内核日志的级别来自内核 logfmt 输出的 level 字段（后端解析）。
+           改这里会重新向后端拉取，而不是只过滤本地那 500 行。 -->
+      <label v-if="tab === 'kernel'" class="flex items-center gap-1.5 text-sm">
+        <span class="text-fg-muted">级别</span>
+        <Select v-model="kernelLevelFilterSelectValue">
+          <SelectTrigger class="h-8 w-auto py-1 px-2 text-sm"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">全部</SelectItem>
+            <SelectItem value="error">错误</SelectItem>
+            <SelectItem value="warning">告警</SelectItem>
+            <SelectItem value="info">信息</SelectItem>
+            <SelectItem value="debug">调试</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+
+      <!-- 应用日志级别取值与内核不同（有 slow/stat/severe，无 warning），
+           故用另一套选项与另一个筛选状态 -->
       <label v-if="tab === 'app'" class="flex items-center gap-1.5 text-sm">
         <span class="text-fg-muted">级别</span>
         <Select v-model="levelFilterSelectValue">
@@ -274,6 +368,10 @@ onMounted(async () => {
         <div v-for="(l, i) in kernelLogs" :key="i" class="break-words">
           <span class="log-meta">{{ l.time }}</span>
           <span :class="streamClass(l.stream)"> [{{ streamLabel(l.stream) }}]</span>
+          <!-- 无级别的行不显示级别标签：硬填一个会让人以为内核真这么标的 -->
+          <span v-if="l.level" :class="kernelLevelClass(l.level)">
+            [{{ kernelLogLevelLabel(l.level) }}]</span
+          >
           {{ l.message }}
         </div>
       </template>

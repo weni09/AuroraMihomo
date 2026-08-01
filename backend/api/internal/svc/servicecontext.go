@@ -228,6 +228,11 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 标记会随用户开关变化，取值一次会让此后所有合并都用启动时的旧状态。
 	cfgSvc.SetTProxyManagedProvider(transparentSvc.TProxyManaged)
 
+	// 配置生效后让防火墙规则跟上：规则里烧进了 tproxy-port / DNS 端口 /
+	// 内核 API 端口，用户在配置中心改完这些，只有 config.yaml 会变。
+	// Resync 自身带指纹比对，配置没漂移时是空操作，因此每次合并都调是安全的。
+	cfgSvc.SetTransparentResyncFn(transparentSvc.Resync)
+
 	// 环境准备（装依赖、写 sysctl）同样只在 Linux 上构造，理由同 Applier。
 	// Root 用默认的 "/"：写的是真实的 /etc/sysctl.d/，测试才会指向临时目录。
 	if runtime.GOOS == "linux" {
@@ -240,6 +245,19 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 通道。两者都是可配置的，所以取实际值而不是硬编码：面板端口来自
 	// aurora-api.yaml（进程内不变），内核 API 端口来自 config.yaml
 	// （用户随时可改，因此传函数每次现取）。
+	// DNS 重定向目标：取 config.yaml 里 mihomo 实际的 dns.listen 端口。
+	// 送到 tproxy-port 是不行的——TPROXY 保留原始目的端口，mihomo 会把它当作
+	// 普通流量而不按 DNS 应答，域名解析就始终不被接管（真机实测过的现象）。
+	transparentSvc.SetDNSPortFn(func() int {
+		port, err := cfgSvc.KernelDNSPort()
+		if err != nil {
+			// 解析失败时返回 0，由 service 回落到默认端口并留痕。
+			// 不猜一个值：猜错会让 DNS 规则指向没人监听的端口。
+			logx.Errorf("解析 mihomo DNS 监听端口失败，透明代理将使用默认端口: %v", err)
+			return 0
+		}
+		return port
+	})
 	transparentSvc.SetManagementPorts(c.Port, func() int {
 		target, err := cfgSvc.KernelAPITarget()
 		if err != nil {

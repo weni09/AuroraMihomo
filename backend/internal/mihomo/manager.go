@@ -27,9 +27,17 @@ type Status struct {
 }
 
 type LogLine struct {
-	Time    time.Time `json:"time"`
-	Stream  string    `json:"stream"`
-	Message string    `json:"message"`
+	Time   time.Time `json:"time"`
+	Stream string    `json:"stream"`
+	// Level 是从 mihomo 的 logfmt 输出里解析出的级别（见 loglevel.go）。
+	// 空串表示该行没有级别字段——启动横幅、panic 栈、Go runtime 的输出
+	// 都属于这一类，本项目自己写的 "system" 流同样没有。
+	//
+	// 之所以要解析：内核加载 classical 规则集时会为每条不支持的规则打一条
+	// warning（真实场景下一次上千条），没有级别就无法在界面上把它们筛掉，
+	// 1000 条的环形缓冲会被瞬间冲干净，真正要看的 error 反而找不到。
+	Level   Level  `json:"level,omitempty"`
+	Message string `json:"message"`
 }
 
 type LogListener func(LogLine)
@@ -47,7 +55,8 @@ type Manager interface {
 	Status() Status
 	ValidateConfig(ctx context.Context, configPath string) error
 	Version(ctx context.Context) (string, error)
-	Logs(limit int) []LogLine
+	// Logs 取最近 limit 条日志，level 非空时按级别筛选（空级别的行始终保留）
+	Logs(limit int, level Level) []LogLine
 	SubscribeLogs(fn LogListener) (unsubscribe func())
 }
 
@@ -101,7 +110,10 @@ func (m *ProcessManager) isProcessAliveLocked() bool {
 }
 
 func (m *ProcessManager) appendLog(stream, msg string) {
-	line := LogLine{Time: time.Now(), Stream: stream, Message: msg}
+	// 级别在入口处解析一次并随行存下，而不是在查询/渲染时反复解析：
+	// 同一行会被历史快照、WebSocket 推送、按级别筛选多次读到。
+	// "system" 流是本项目自己写的，不含 logfmt 字段，解析结果为空级别。
+	line := LogLine{Time: time.Now(), Stream: stream, Level: parseLevel(msg), Message: msg}
 	m.mu.Lock()
 	m.logs = append(m.logs, line)
 	if len(m.logs) > m.logLimit {
@@ -394,14 +406,33 @@ func (m *ProcessManager) ValidateConfig(ctx context.Context, configPath string) 
 	return nil
 }
 
-func (m *ProcessManager) Logs(limit int) []LogLine {
+// Logs 返回最近 limit 条内核日志。limit <= 0 表示全部。
+//
+// level 非空时只返回该级别的行；没有级别的行（启动横幅、panic 栈、
+// "system" 流）在筛选时一律保留——它们往往正是排查启动失败要看的内容，
+// 按级别筛掉会让"筛 error 却看不到崩溃栈"这种反直觉的结果出现。
+func (m *ProcessManager) Logs(limit int, level Level) []LogLine {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if limit <= 0 || limit > len(m.logs) {
-		limit = len(m.logs)
+
+	// 先按级别筛，再取尾部。顺序反了会变成"在最后 N 条里筛"，
+	// 用户筛 error 时大概率什么都看不到（尾部全是 warning 刷屏）。
+	src := m.logs
+	if level != "" {
+		filtered := make([]LogLine, 0, len(src))
+		for _, ln := range src {
+			if ln.Level == level || ln.Level == "" {
+				filtered = append(filtered, ln)
+			}
+		}
+		src = filtered
+	}
+
+	if limit <= 0 || limit > len(src) {
+		limit = len(src)
 	}
 	out := make([]LogLine, limit)
-	copy(out, m.logs[len(m.logs)-limit:])
+	copy(out, src[len(src)-limit:])
 	return out
 }
 

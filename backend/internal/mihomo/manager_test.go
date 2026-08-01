@@ -36,7 +36,7 @@ func TestManagerStopAndLogs(t *testing.T) {
 	if mgr.Status().IsRunning {
 		t.Fatal("expected stopped")
 	}
-	_ = mgr.Logs(10)
+	_ = mgr.Logs(10, "")
 }
 
 // 并发调用 Start/Stop/Restart 不得出现数据竞争或双重解锁，

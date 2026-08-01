@@ -376,7 +376,7 @@ func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
 				"data": map[string]any{"status": status, "version": st.Version, "pid": st.PID},
 				"at":   time.Now(),
 			})
-			for _, line := range svcCtx.MihomoManager.Logs(50) {
+			for _, line := range svcCtx.MihomoManager.Logs(50, "") {
 				_ = conn.WriteJSON(map[string]any{"type": "log.message", "data": line, "at": time.Now()})
 			}
 			// 应用日志同样给一份初始快照，否则刚打开页面时列表是空的，

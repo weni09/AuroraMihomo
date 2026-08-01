@@ -244,8 +244,16 @@ type TransparentStatusResp {
 	// 单独报出来供界面提示用户：可能是他自己在管规则（本项目支持的用法，此时
 	// 一切正常），也可能是他以为填了端口就等于开启（内核在监听，但没有任何流量
 	// 被引过去）。面板无从区分这两者，只能如实呈现并把判断交给用户。
-	PortConfiguredOnly bool                 `json:"portConfiguredOnly"`
-	Env                TransparentEnvReport `json:"env"`
+	PortConfiguredOnly bool `json:"portConfiguredOnly"`
+	// RulesOutOfSync 宿主上的防火墙规则与当前配置不一致（规则里烧进的端口
+	// 已不是配置里的值）。
+	//
+	// 规则依赖 tproxy-port / DNS 端口 / 内核 API 端口，而这些值用户随时能在
+	// 配置中心改。正常情况下合并末尾会自动重新下发规则，所以此字段为 true
+	// 只发生在重下发失败时。必须报出来：此时内核听在新端口、规则还往旧端口投，
+	// 流量进黑洞，而用户刚看到的是"配置已生效"。
+	RulesOutOfSync bool                 `json:"rulesOutOfSync"`
+	Env            TransparentEnvReport `json:"env"`
 }
 
 type TransparentUpdateReq {
@@ -558,9 +566,27 @@ type TaskItem {
 	Message string `json:"message"`
 }
 
+// GetMihomoLogsReq 内核日志查询参数。
+//
+// 内核加载 classical 规则集时会为每条不支持的规则打一条 warning
+// （规则集含 Surge 语法的 USER-AGENT 时可达上千条），足以把内存缓冲冲干净。
+// 因此这里与应用日志的 /system/logs 对称，支持按级别筛选。
+type GetMihomoLogsReq {
+	// Limit 返回条数，缺省 200，上限与内存缓冲一致（1000）
+	Limit int `form:"limit,optional"`
+	// Level 级别筛选（debug/info/warning/error），空表示不筛。
+	// 无法识别的取值按"不筛"处理而非报 400：日志查询的容错
+	// 应偏向"给点东西看"。
+	Level string `form:"level,optional"`
+}
+
 type LogLine {
-	Time    string `json:"time"`
-	Stream  string `json:"stream"`
+	Time   string `json:"time"`
+	Stream string `json:"stream"`
+	// Level 从内核 logfmt 输出解析而来。空串表示该行无级别字段
+	// （启动横幅、panic 栈，以及本项目自己写的 system 流），
+	// 这类行在按级别筛选时始终保留。
+	Level   string `json:"level,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -630,7 +656,7 @@ service aurora-api {
 	post /api/v1/mihomo/reload returns (Result)
 
 	@handler getMihomoLogs
-	get /api/v1/mihomo/logs returns ([]LogLine)
+	get /api/v1/mihomo/logs (GetMihomoLogsReq) returns ([]LogLine)
 
 	@handler listSubscriptions
 	get /api/v1/subscriptions returns ([]Subscription)

@@ -162,16 +162,29 @@ const transparentModeLabel = (m: string) => MODE_LABELS[m] || m
 // 界面上选中的模式。开关关着时也要有个值，否则打开开关无从提交，
 // 默认取第一个可用模式。
 const transparentMode = ref<TransparentMode>('tun')
+// 只跟随后端的「生效模式」，不再监听整个 status。
+//
+// 早先这里 watch 整个 tp.status 且 deep: true，任何字段变动（倒计时每秒都在变）
+// 都会把 transparentMode 重新拉回 tp.status.mode。已启用状态下用户选新模式时，
+// 下拉框会立刻被弹回旧模式——表现就是"切不动、自己变回去"。
+//
+// 现在换模式由 onTransparentModeChange 提交，成功后 tp.status.mode 变化，
+// 这个 watch 顺势同步；失败或取消则由那个函数自己回退。职责不再重叠。
 watch(
-  () => tp.status,
+  () => [tp.status.enabled, tp.status.mode, tp.availableModes.length] as const,
   () => {
     if (tp.status.enabled && tp.status.mode !== 'off') {
       transparentMode.value = tp.status.mode
-    } else if (tp.availableModes.length > 0) {
+    } else if (
+      tp.availableModes.length > 0 &&
+      // 关闭状态下只在当前预选已不可用时才改：否则用户刚在下拉框里挑好模式、
+      // 还没点开关，一次后台状态刷新就会把他的选择重置成第一个可用项
+      !tp.availableModes.some((m) => m.mode === transparentMode.value)
+    ) {
       transparentMode.value = tp.availableModes[0]!.mode
     }
   },
-  { deep: true, immediate: true },
+  { immediate: true },
 )
 
 const transparentModeHelp = computed(() => {
@@ -207,28 +220,75 @@ const transparentEnvRows = computed(() => {
   return rows
 })
 
+/**
+ * 启用/切换前的确认文案。
+ *
+ * 必须按模式区分：只有 TProxy 会改宿主防火墙并进入 90 秒确认窗口。对 TUN 也说
+ * "不确认就自动回滚"是假承诺——后端不会为它开窗口，界面上既不会出现确认横幅
+ * 也没有按钮，用户会一直等一个不存在的东西。
+ *
+ * switching 为 true 时是「已启用状态下换模式」：此时旧模式的规则会被拆掉、
+ * 新模式接管，中途网络会短暂中断，这一点必须讲明，否则用户会以为切换是无感的。
+ */
+function transparentConfirmMessage(mode: TransparentMode, switching: boolean): string {
+  const head = switching
+    ? `即将切换到 ${transparentModeLabel(mode)} 模式。\n\n切换会先拆除当前模式的规则再启用新模式，期间网络可能短暂中断。\n\n`
+    : `即将启用透明代理（${transparentModeLabel(mode)}）。\n\n`
+  const body =
+    mode === 'tproxy'
+      ? 'TProxy 会修改本机的防火墙规则与路由表。若配置不当，可能导致 SSH 与面板都无法访问。\n\n' +
+        '启用后需在 90 秒内点击"网络正常，确认"，否则将自动回滚。\n确定继续？'
+      : 'TUN 由 mihomo 自行管理路由与防火墙规则，进程退出时会自动清理，' +
+        '随时可以再关掉。\n\n' +
+        '该操作会写入基础配置的 tun.enable，并立即重新下发配置。\n确定继续？'
+  return head + body
+}
+
 async function onToggleTransparent(next: boolean | 'indeterminate') {
   const enabled = next === true
   if (enabled) {
-    // 提示必须按模式区分：只有 TProxy 会改宿主防火墙并进入 90 秒确认窗口。
-    // 对 TUN 也说"不确认就自动回滚"是假承诺——后端不会为它开窗口，
-    // 界面上既不会出现确认横幅也没有按钮，用户会一直等一个不存在的东西。
     const mode = transparentMode.value
-    const message =
-      mode === 'tproxy'
-        ? `即将启用透明代理（${transparentModeLabel(mode)}）。\n\n` +
-          'TProxy 会修改本机的防火墙规则与路由表。若配置不当，可能导致 SSH 与面板都无法访问。\n\n' +
-          '启用后需在 90 秒内点击"网络正常，确认"，否则将自动回滚。\n确定继续？'
-        : `即将启用透明代理（${transparentModeLabel(mode)}）。\n\n` +
-          'TUN 由 mihomo 自行管理路由与防火墙规则，进程退出时会自动清理，' +
-          '随时可以再关掉。\n\n' +
-          '该操作会写入基础配置的 tun.enable，并立即重新下发配置。\n确定继续？'
-    if (!confirm(message)) {
+    if (!confirm(transparentConfirmMessage(mode, false))) {
       return
     }
     await tp.update({ enabled: true, mode, tunStack: tp.status.tunStack })
   } else {
     await tp.update({ enabled: false, mode: 'off' })
+  }
+}
+
+/**
+ * 已启用状态下切换模式。
+ *
+ * 下拉框不能只改本地 ref：`transparentMode` 会被上面那个 watch 拉回
+ * `tp.status.mode`，用户选了新模式却看到它自己弹回去，表现为"切不动"。
+ * 而开关已经是开的，也无法靠关掉再打开来切——那会先断一次网。
+ * 所以选择模式本身就得是一次提交。
+ *
+ * 仅在已启用时提交：开关关着的时候下拉框只是"打开开关后用哪个模式"的预选，
+ * 此刻提交等于替用户把开关打开了。
+ */
+async function onTransparentModeChange(next: unknown) {
+  const mode = next as TransparentMode
+  // 与当前生效模式相同：可能是 watch 回写触发的，不是用户操作，直接忽略
+  if (mode === tp.status.mode) {
+    return
+  }
+  if (!tp.status.enabled) {
+    transparentMode.value = mode
+    return
+  }
+  if (!confirm(transparentConfirmMessage(mode, true))) {
+    // 取消后要把下拉框拨回真实状态，否则界面显示的模式与实际生效的不一致
+    transparentMode.value = tp.status.mode
+    return
+  }
+  transparentMode.value = mode
+  const ok = await tp.update({ enabled: true, mode, tunStack: tp.status.tunStack })
+  if (!ok) {
+    // 切换失败时后端仍停在原模式（环境不支持、规则下发失败等），
+    // 下拉框必须跟着回退，否则用户会以为已经切过去了
+    transparentMode.value = tp.status.mode
   }
 }
 
@@ -536,6 +596,23 @@ const navOpen = ref(false)
             </div>
           </div>
 
+          <!-- 规则与配置脱节的告警。
+               用红色而非琥珀色：这不是"你可能需要知道"，而是流量正在进黑洞。
+               正常情况下配置变更会自动触发规则重下发，能看到这条说明重下发失败了，
+               需要用户介入（通常是关掉再开一次，或查日志里 nft 的报错）。 -->
+          <div
+            v-if="tp.status.rulesOutOfSync"
+            class="mb-3 rounded-lg border border-red-300 bg-red-50 p-3 text-sm dark:border-red-500/40 dark:bg-red-500/10"
+          >
+            <div class="font-medium text-red-800 dark:text-red-300">
+              防火墙规则与当前配置不一致
+            </div>
+            <p class="mt-1 text-xs text-red-700 dark:text-red-400">
+              配置里的端口（TProxy / DNS / 内核 API）已变更，但规则重新下发失败，宿主上仍是旧规则。
+              此时部分流量会被转发到无人监听的端口而中断。请关闭再重新开启透明代理；若仍失败，请查看日志中 nft 的报错。
+            </p>
+          </div>
+
           <!-- 「配置了端口但未接管」的提示。
                放在开关上方而不是折叠进下面的说明里：用户此刻看到的是一个关着的
                开关，而基础配置里明明写着 tproxy-port，不解释清楚就会以为面板出错。
@@ -568,7 +645,13 @@ const navOpen = ref(false)
 
           <div v-if="tp.anyAvailable" class="mb-3">
             <Label class="mb-1 block text-sm text-fg-muted">模式</Label>
-            <Select v-model="transparentMode" :disabled="tp.saving">
+            <!-- 不用 v-model：已启用时换模式要先确认再提交，且失败/取消后要能
+                 把选项拨回真实状态。v-model 会在这些之前就把本地值改掉。 -->
+            <Select
+              :model-value="transparentMode"
+              :disabled="tp.saving"
+              @update:model-value="onTransparentModeChange"
+            >
               <SelectTrigger class="w-full sm:w-72">
                 <SelectValue placeholder="选择模式" />
               </SelectTrigger>

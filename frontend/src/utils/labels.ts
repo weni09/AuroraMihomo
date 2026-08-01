@@ -34,6 +34,20 @@ export const appLogLevelLabel = (s?: string): string =>
   s ||
   '日志'
 
+// 内核日志级别（mihomo 自身的 log-level 用词）。与应用日志级别刻意分成两张表：
+// mihomo 有 warning 而无 slow/stat/severe，合成一张会让筛选下拉框
+// 出现永远筛不出内容的选项。
+export const kernelLogLevelLabel = (s?: string): string =>
+  ({
+    debug: '调试',
+    info: '信息',
+    warning: '告警',
+    error: '错误',
+    silent: '静默',
+  })[s || ''] ||
+  s ||
+  '日志'
+
 export const mihomoStatusLabel = (s?: string): string =>
   ({ running: '运行中', stopped: '已停止', unknown: '状态未知' }[s || ''] || '状态未知')
 

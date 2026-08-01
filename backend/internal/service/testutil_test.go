@@ -57,7 +57,7 @@ func (m *mockMihomo) ValidateConfig(ctx context.Context, configPath string) erro
 }
 
 func (m *mockMihomo) Version(ctx context.Context) (string, error) { return "mock", nil }
-func (m *mockMihomo) Logs(limit int) []mihomo.LogLine             { return nil }
+func (m *mockMihomo) Logs(int, mihomo.Level) []mihomo.LogLine     { return nil }
 func (m *mockMihomo) SubscribeLogs(fn mihomo.LogListener) func()  { return func() {} }
 
 func (m *mockMihomo) snapshot() (reloadConfigCalls, restartCalls int, controller, secret string) {

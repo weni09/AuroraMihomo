@@ -257,6 +257,7 @@ func toTransparentStatus(st *service.TransparentState, env *netcheck.Report) *ty
 		TProxyPort:         st.TProxyPort,
 		TUNStack:           st.TUNStack,
 		PortConfiguredOnly: st.PortConfiguredOnly,
+		RulesOutOfSync:     st.RulesOutOfSync,
 		Env: types.TransparentEnvReport{
 			OS:                  env.OS,
 			Arch:                env.Arch,

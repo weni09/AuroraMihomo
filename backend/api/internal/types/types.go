@@ -103,6 +103,11 @@ type FileTokenReq struct {
 	Token string `path:"token"`
 }
 
+type GetMihomoLogsReq struct {
+	Limit int    `form:"limit,optional"`
+	Level string `form:"level,optional"`
+}
+
 type IdPathReq struct {
 	Id int64 `path:"id"`
 }
@@ -110,6 +115,7 @@ type IdPathReq struct {
 type LogLine struct {
 	Time    string `json:"time"`
 	Stream  string `json:"stream"`
+	Level   string `json:"level,omitempty"`
 	Message string `json:"message"`
 }
 
@@ -397,6 +403,7 @@ type TransparentStatusResp struct {
 	TProxyPort         int                  `json:"tproxyPort"`
 	TUNStack           string               `json:"tunStack"`
 	PortConfiguredOnly bool                 `json:"portConfiguredOnly"`
+	RulesOutOfSync     bool                 `json:"rulesOutOfSync"`
 	Env                TransparentEnvReport `json:"env"`
 }
 
