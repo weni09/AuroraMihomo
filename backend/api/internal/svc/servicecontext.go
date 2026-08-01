@@ -160,6 +160,10 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	}
 
 	cfgSvc := service.NewConfigService(db, mergeEngine, mihomoManager, subStoreManager, dataDir)
+	// 新装库无 base 时写入开箱默认（从真实部署提炼、已去个人数据）
+	if err := cfgSvc.EnsureDefaultBase(); err != nil {
+		log.Printf("写入开箱默认基础配置失败: %v", err)
+	}
 	// 设计 §16：合并时读取用户配置的策略
 	cfgSvc.SetPolicyProvider(settingsService.GetMergePolicy)
 	// 合并时读取用户选定的远程来源（单条订阅 / 组合 / 文件模板）

@@ -5,7 +5,7 @@
 # 而 Alpine 是本项目的主要目标平台之一。
 #
 # 一键覆盖的范围：下载解压、装服务单元（systemd 或 OpenRC）、补齐透明代理
-# 依赖（包 + 内核模块）、启用并启动服务。想只装程序不动系统，
+# 依赖（包 + 内核模块 + sysctl 转发/rp_filter）、启用并启动服务。想只装程序不动系统，
 # 用 --no-deps / --no-service / --no-start 逐项关掉。
 #
 # 用法：
@@ -51,7 +51,7 @@ while [ $# -gt 0 ]; do
   --dir <path>      安装目录（默认 /opt/auroramihomo）
   --repo <o/r>      GitHub 仓库
   --no-service      跳过服务单元安装（systemd / OpenRC）
-  --no-deps         跳过透明代理依赖补齐（包与内核模块）
+  --no-deps         跳过透明代理依赖补齐（包、内核模块与 sysctl）
   --no-start        安装后不自动启用/启动服务
   --dry-run         只打印将要执行的动作，不下载也不改动系统
 
@@ -395,6 +395,100 @@ install_deps() {
 	fi
 }
 
+# apply_sysctl 写入透明代理/网关所需的内核参数并立即生效。
+#
+# 内容与 scripts/sysctl-auroramihomo.conf、面板 provision 的键一致：
+#   - net.ipv4.ip_forward / net.ipv6.conf.all.forwarding：网关与旁路由转发
+#   - rp_filter=2：避免 TProxy 打标回环被严格反向路径校验丢掉
+#
+# 安装阶段写「推荐全集」；面板「自动准备」仍按探测结果只写不合规项。
+# 容器内跳过（与装包/modprobe 同理）：host 网络下会改到宿主，非特权会被拒绝。
+apply_sysctl() {
+	if ! have sysctl; then
+		warn "无 sysctl，跳过内核参数写入（网关/TProxy 可能需要手工设置转发）"
+		return 0
+	fi
+	write_file /etc/sysctl.d/99-auroramihomo.conf <<'EOF'
+# 由 AuroraMihomo 安装脚本写入，用于透明代理与网关/旁路由。
+# 与 backend/internal/netcheck/provision.go、scripts/sysctl-auroramihomo.conf 一致。
+# 不再需要时删除本文件即可。
+
+# 作为局域网网关转发其它设备的 IPv4 流量
+net.ipv4.ip_forward = 1
+
+# 作为局域网网关/旁路由转发其它设备的 IPv6 流量
+net.ipv6.conf.all.forwarding = 1
+
+# 严格反向路径校验会丢弃 TProxy 打标后回环的包
+net.ipv4.conf.all.rp_filter = 2
+
+# 新建网卡的默认值，否则后出现的网卡仍是严格模式
+net.ipv4.conf.default.rp_filter = 2
+EOF
+	# BusyBox 的 sysctl 不认 --system；-p <文件> 在 procps-ng 与 BusyBox 上都可用。
+	# 对已存在的严格 rp_filter 网卡，面板「自动准备」还会按网卡补写；安装阶段
+	# 先把 all/default 落到位，覆盖绝大多数场景。
+	if run_cmd sysctl -p /etc/sysctl.d/99-auroramihomo.conf; then
+		info "已写入并加载 /etc/sysctl.d/99-auroramihomo.conf（含 IPv4/IPv6 转发）"
+	else
+		warn "sysctl -p 失败，请手工执行: sysctl -p /etc/sysctl.d/99-auroramihomo.conf"
+	fi
+}
+
+# bbr_supported 判断当前内核能否使用 BBR（已启用、已在 available 列表、或可加载模块）。
+#
+# 不把 BBR 写进 99-auroramihomo.conf 的理由：它是整机 TCP 性能优化，不是
+# 透明代理硬依赖；内核不支持时若与转发项同文件，sysctl -p 失败会让人误以为
+# 网关参数也没配上。
+bbr_supported() {
+	avail=/proc/sys/net/ipv4/tcp_available_congestion_control
+	cur=/proc/sys/net/ipv4/tcp_congestion_control
+	[ -r "$cur" ] || return 1
+	# 已经在用
+	if [ "$(cat "$cur" 2>/dev/null)" = "bbr" ]; then
+		return 0
+	fi
+	# 已列在可用算法里
+	if [ -r "$avail" ] && grep -qw bbr "$avail" 2>/dev/null; then
+		return 0
+	fi
+	# 尝试加载模块后再看（模块名因发行版可能是 tcp_bbr）
+	if have modprobe; then
+		modprobe tcp_bbr >/dev/null 2>&1 || modprobe bbr >/dev/null 2>&1 || true
+		# fq 与 BBR 常一起用；加载失败不在这里判死，交给 sysctl -p 报错
+		modprobe sch_fq >/dev/null 2>&1 || true
+	fi
+	[ -r "$avail" ] && grep -qw bbr "$avail" 2>/dev/null
+}
+
+# apply_bbr_sysctl 在内核支持时写入独立的 BBR/fq drop-in 并加载。
+#
+# best-effort：不支持或加载失败只告警，不让安装失败；失败时删掉刚写的
+# drop-in，避免开机时 sysctl 服务反复报错。
+apply_bbr_sysctl() {
+	if ! have sysctl; then
+		return 0
+	fi
+	if ! bbr_supported; then
+		warn "内核不支持 BBR（或无法加载 tcp_bbr），已跳过拥塞控制优化。需要时见 scripts/sysctl-auroramihomo-bbr.conf"
+		return 0
+	fi
+	write_file /etc/sysctl.d/99-auroramihomo-bbr.conf <<'EOF'
+# 由 AuroraMihomo 安装脚本写入（可选 TCP 性能优化，与网关 sysctl 分离）。
+# 与 scripts/sysctl-auroramihomo-bbr.conf 一致。不需要时删除本文件即可。
+
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+	if run_cmd sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf; then
+		info "已启用 BBR（net.ipv4.tcp_congestion_control=bbr, default_qdisc=fq）"
+	else
+		# 不留会在每次启动失败的配置
+		rm -f /etc/sysctl.d/99-auroramihomo-bbr.conf 2>/dev/null || true
+		warn "写入 BBR 参数失败（已回滚 drop-in）。可稍后手工对照 scripts/sysctl-auroramihomo-bbr.conf"
+	fi
+}
+
 # load_modules 加载并持久化 tun 与 nft_tproxy。
 #
 # Alpine 上这两个模块默认未加载，/dev/net/tun 因此不存在，TUN 模式会直接
@@ -427,15 +521,18 @@ provision_deps() {
 		# macOS 只支持 TUN，由 utun 提供，没有这套包与模块
 		return 0
 	fi
-	# 容器里 modprobe 作用于宿主内核、装的包重建即丢，两者都不该由脚本
-	# 悄悄替用户决定。容器部署本来就该走 docker 镜像（已预装这些依赖）。
-	if [ -f /.dockerenv ] || grep -qa 'docker\|containerd\|lxc' /proc/1/cgroup 2>/dev/null; then
-		warn "检测到容器环境，跳过依赖补齐：装的包重建即丢，modprobe 会作用于宿主内核。请在宿主上处理"
-		return 0
-	fi
-	install_deps
-	load_modules
-}
+# 容器里 modprobe/sysctl 作用于宿主内核、装的包重建即丢，都不该由脚本
+		# 悄悄替用户决定。容器部署走 docker 镜像（依赖预装），sysctl 在宿主执行
+		# （见 docker/docker-compose.yml 注释与 scripts/sysctl-auroramihomo.conf）。
+		if [ -f /.dockerenv ] || grep -qa 'docker\|containerd\|lxc' /proc/1/cgroup 2>/dev/null; then
+			warn "检测到容器环境，跳过依赖补齐：装的包重建即丢，modprobe/sysctl 会作用于宿主内核。请在宿主上处理（sysctl 见 scripts/sysctl-auroramihomo.conf）"
+			return 0
+		fi
+		install_deps
+		load_modules
+		apply_sysctl
+		apply_bbr_sysctl
+	}
 
 # ---------- 下载与安装 ----------
 

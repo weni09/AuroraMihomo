@@ -36,22 +36,23 @@ func newFakeEnv(t *testing.T) *fakeEnv {
 	}
 	// 所有路径都指向临时目录下的同名文件；不写的文件即"不存在"
 	f.paths = probePaths{
-		procStatus:       filepath.Join(dir, "status"),
-		procModules:      filepath.Join(dir, "modules"),
-		osRelease:        filepath.Join(dir, "os-release"),
-		kernelRelease:    filepath.Join(dir, "osrelease"),
-		devNetTun:        filepath.Join(dir, "dev-net-tun"),
-		devTun:           filepath.Join(dir, "dev-tun"),
-		sysClassMiscTun:  filepath.Join(dir, "sys-class-misc-tun"),
-		dockerEnv:        filepath.Join(dir, "dockerenv"),
-		procOneCgroup:    filepath.Join(dir, "one-cgroup"),
-		selfNetNS:        filepath.Join(dir, "self-net"),
-		oneNetNS:         filepath.Join(dir, "one-net"),
-		sysctlIPForward:  filepath.Join(dir, "ip_forward"),
-		sysctlRPFilter:   filepath.Join(dir, "rp_filter"),
-		resolvConf:       filepath.Join(dir, "resolv.conf"),
-		procNetIPv6Route: filepath.Join(dir, "ipv6_route"),
-		procNetIfInet6:   filepath.Join(dir, "if_inet6"),
+		procStatus:        filepath.Join(dir, "status"),
+		procModules:       filepath.Join(dir, "modules"),
+		osRelease:         filepath.Join(dir, "os-release"),
+		kernelRelease:     filepath.Join(dir, "osrelease"),
+		devNetTun:         filepath.Join(dir, "dev-net-tun"),
+		devTun:            filepath.Join(dir, "dev-tun"),
+		sysClassMiscTun:   filepath.Join(dir, "sys-class-misc-tun"),
+		dockerEnv:         filepath.Join(dir, "dockerenv"),
+		procOneCgroup:     filepath.Join(dir, "one-cgroup"),
+		selfNetNS:         filepath.Join(dir, "self-net"),
+		oneNetNS:          filepath.Join(dir, "one-net"),
+		sysctlIPForward:   filepath.Join(dir, "ip_forward"),
+		sysctlIPv6Forward: filepath.Join(dir, "ipv6_forwarding"),
+		sysctlRPFilter:    filepath.Join(dir, "rp_filter"),
+		resolvConf:        filepath.Join(dir, "resolv.conf"),
+		procNetIPv6Route:  filepath.Join(dir, "ipv6_route"),
+		procNetIfInet6:    filepath.Join(dir, "if_inet6"),
 	}
 	f.cmd = commandProbe{
 		lookPath: func(name string) bool { return f.present[name] },
@@ -264,6 +265,7 @@ func TestWarnsOnIPForwardAndRPFilter(t *testing.T) {
 	f := newFakeEnv(t)
 	f.write(t, f.paths.procStatus, "CapEff:\t0000000000001000\n")
 	f.write(t, f.paths.sysctlIPForward, "0")
+	f.write(t, f.paths.sysctlIPv6Forward, "0")
 	f.write(t, f.paths.sysctlRPFilter, "1")
 	f.haveTools()
 
@@ -272,8 +274,14 @@ func TestWarnsOnIPForwardAndRPFilter(t *testing.T) {
 	if !strings.Contains(joined, "ip_forward") {
 		t.Error("应警告 ip_forward 未开启")
 	}
+	if !strings.Contains(joined, "ipv6.conf.all.forwarding") {
+		t.Error("应警告 ipv6 forwarding 未开启")
+	}
 	if !strings.Contains(joined, "rp_filter") {
 		t.Error("应警告 rp_filter 严格模式会导致 TProxy 丢包")
+	}
+	if r.SysctlIPv6Forward != "0" {
+		t.Errorf("SysctlIPv6Forward = %q，期望 0", r.SysctlIPv6Forward)
 	}
 }
 

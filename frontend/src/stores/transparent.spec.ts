@@ -30,6 +30,7 @@ function env(patch: Partial<TransparentEnvReport> = {}): TransparentEnvReport {
     inContainer: false,
     hostNetwork: true,
     tunDevice: '/dev/net/tun',
+    iptablesBackend: 'nf_tables',
     modes: [],
     warnings: [],
     ...patch,
@@ -507,5 +508,77 @@ describe('规则与配置不一致的提示', () => {
     await s.fetch()
 
     expect(s.status.rulesOutOfSync).toBe(false)
+  })
+})
+
+describe('自定义防火墙规则', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('fetchRules 拉取规则与内置规则展示数据', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n',
+        iptablesBackend: 'nf_tables',
+        builtinNFTRules: 'table inet aurora_tproxy { }',
+        policyRoutes: ['ip rule add fwmark 1 table 100'],
+        activeRules: 'table inet aurora_tproxy { }',
+      },
+    })
+    const s = useTransparentStore()
+    await s.fetchRules()
+
+    expect(s.rules?.customRules).toContain('-t nat -A')
+    expect(s.rules?.iptablesBackend).toBe('nf_tables')
+    expect(s.rules?.policyRoutes).toEqual(['ip rule add fwmark 1 table 100'])
+    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules')
+  })
+
+  it('saveRules 提交原文并在成功后刷新展示数据', async () => {
+    mockedApi.put.mockResolvedValue({ data: { message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: {
+        customRules: 'iptables -A INPUT -j ACCEPT\n',
+        iptablesBackend: 'legacy',
+        builtinNFTRules: '',
+        policyRoutes: [],
+        activeRules: '',
+      },
+    })
+    const s = useTransparentStore()
+    s.status.enabled = true
+    s.status.mode = 'tproxy'
+
+    const ok = await s.saveRules('iptables -A INPUT -j ACCEPT\n')
+
+    expect(ok).toBe(true)
+    expect(mockedApi.put).toHaveBeenCalledWith('/transparent/rules', {
+      customRules: 'iptables -A INPUT -j ACCEPT\n',
+    })
+    // 保存成功后重新拉取，内置规则文本可能随参数变化
+    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules')
+  })
+
+  it('saveRules 失败时返回 false 且不清空已有展示数据', async () => {
+    mockedApi.put.mockRejectedValue({ response: { data: { message: '自定义规则第 1 行必须以 iptables 开头' } } })
+    mockedApi.get.mockResolvedValue({
+      data: {
+        customRules: 'old',
+        iptablesBackend: '',
+        builtinNFTRules: '',
+        policyRoutes: [],
+        activeRules: '',
+      },
+    })
+    const s = useTransparentStore()
+    await s.fetchRules()
+    const before = s.rules
+
+    const ok = await s.saveRules('非法行')
+
+    expect(ok).toBe(false)
+    expect(s.rules).toBe(before)
   })
 })

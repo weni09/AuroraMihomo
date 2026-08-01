@@ -93,9 +93,9 @@ root、会改动宿主状态，而面板可能跑在容器里（容器内装的�
 | --- | --- |
 | 装 `iptables`/`nftables`/`iproute2`（包名硬编码） | 不接受调用方传入任何包名或命令 |
 | 写 `/etc/sysctl.d/99-auroramihomo.conf` | 不改 `/etc/sysctl.conf` 或别人的 drop-in |
-| 只写确实不合规的键 | 不无条件全写（用户可能有意关着转发） |
+| 只写确实不合规的键（含 `ip_forward` 与 `ipv6.conf.all.forwarding`） | 不无条件全写（已合规则跳过） |
 | 整体重写自己的文件（幂等） | 不追加（否则重复执行会堆积同名键） |
-| 容器内允许装包，但标注不持久 | 容器内不碰 sysctl（见下） |
+| 容器内允许装包，但标注不持久 | 容器内不碰 sysctl（见下）；Docker 请在**宿主**落盘，见 `scripts/sysctl-auroramihomo.conf` |
 | — | 不做 `modprobe`（重启即失效，容器内基本失败） |
 
 不接受外部传入命令是因为那等于开一个远程命令执行入口；容器内不碰 sysctl
@@ -132,7 +132,7 @@ root、会改动宿主状态，而面板可能跑在容器里（容器内装的�
 |        | `ip` 是否来自 busybox（不支持 `ip rule add fwmark`）                  |
 | 容器   | `/.dockerenv`、`/proc/1/cgroup`；netns 是否与 PID 1 相同（host 网络） |
 | 发行版 | `/etc/os-release` 的 `ID` / `ID_LIKE`；包管理器 `apk` / `apt-get`     |
-| sysctl | `ip_forward`、`rp_filter`（含逐网卡的 `rp_filter`）                   |
+| sysctl | `ip_forward`、`ipv6.conf.all.forwarding`、`rp_filter`（含逐网卡） |
 | 本机 DNS | `/etc/resolv.conf` 的 `nameserver` 是否指向回环（见第 5 节 ①）      |
 | IPv6   | `/proc/net/if_inet6` 有无全局地址、`/proc/net/ipv6_route` 有无默认路由（见第 5 节 ②） |
 
@@ -276,9 +276,54 @@ v6 的 `ip rule` 与 `local ::/0` 路由，日志却报告"规则已拆除"。�
 1. `nft --check -f -` 干跑校验（只解析不应用，能挡住语法错误与内核不支持的表达式）
 2. 建立策略路由
 3. 下发规则
+4. 逐条执行用户自定义规则（iptables 语法）
 
 第 2 步必须在第 3 步之前。反序会出现"规则已生效、路由未就绪"的黑洞，
-表现就是应用瞬间断网。任一步失败都会自动拆除已完成的部分。
+表现就是应用瞬间断网。任一步失败都会自动拆除已完成的部分（自定义规则
+失败同样整体回滚，避免"内置生效但自定义没生效"的半应用状态）。
+
+### 自定义防火墙规则
+
+面板的 TProxy 规则是 nftables 的（专用表 `inet aurora_tproxy`），但用户
+可能还需要 iptables 语法的灵活性（自定义放行、DNAT/SNAT、按源地址分流等），
+因此提供「自定义防火墙规则」：在系统设置 → 透明代理页维护，每行一条
+iptables 命令，完整命令或裸参数均可（裸参数自动补 `iptables` 前缀；
+`ip6tables` 请写完整命令），空行与 `#` 注释忽略。
+
+#### iptables 后端版本提示
+
+iptables 有 `legacy` 与 `nf_tables` 两套后端，**同一台机器上两套规则互不可见**
+（规则看着存在却永不匹配，是这类环境最常见的故障之一）。面板在启用前探测
+`iptables --version` 区分二者，并在规则编辑区显示徽章：
+
+- `nf_tables`：iptables 规则与 nftables 规则由同一内核子系统执行，可与面板内置规则共存；
+- `legacy`：iptables 走旧内核接口，与 nftables 规则互不可见——面板内置规则（nft）
+  与自定义规则（iptables）可能"各管各的"，排查时先确认流量到底命中哪套。
+
+#### 生效与拆除语义
+
+- 应用：内置 nft 规则下发成功后，**先按「上次已应用快照」逆序 `-D` 拆除旧批**，
+  再逐条追加本批自定义规则。iptables `-A` 不幂等；不做这步会叠规则，
+  改 A→B 还会留下 A 的孤儿。快照键为 `transparent.custom_rules_applied`；
+- 拆除：关闭 TProxy、切换模式、自动回滚、ReconcileState 清理时，合并
+  「已应用快照 + 当前目标」后逆序 `-D`（`-A` 直接转 `-D`，`-I` 去掉位置参数；
+  带引号参数用 shell 分词回拼，避免 `--comment "a b"` 拆碎）。
+  规则已不在宿主上（如主机重启后 iptables 状态被清空）时视为成功；
+  `-N` / `-F` / `-X` 等链管理命令无法安全自动逆反，**需自行清理**；
+- 失败：任一条执行失败 → 拆除旧批与本批 + 拆除内置规则 + 报错（含第几行
+  与命令输出），本次启用整体回滚（与内置规则失败的处理一致）；
+- 保存即生效：TProxy 运行中保存规则会立即重新应用（走 Resync 路径，
+  按规则指纹判断，内容没变时不重下发）。**重应用失败会向上返回错误**，
+  不会谎报「已立即生效」；
+- 仅 TProxy 模式应用，TUN 模式不适用（TUN 的规则由 mihomo 自管）。
+
+#### 与内置规则的交互顺序
+
+自定义规则在**内置规则之后**追加。iptables（nf_tables 后端）的 PREROUTING
+hook 优先级（dstnat）晚于内置链（mangle），因此对已命中 TPROXY 的流量，
+后加的自定义规则可能不再有机会处理——需要在内置接管**之前**介入的场景
+（如先放行某些目标），应使用 `-t mangle -A PREROUTING ...` 并理解两者
+的优先级关系。这属于灵活性的边界，面板不做隐式干预。
 
 ---
 
@@ -443,7 +488,14 @@ bind-address: "*"
 ```bash
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
-# 持久化：写入 /etc/sysctl.d/99-aurora.conf
+# 持久化（与在线安装 / 面板自动准备同一文件名）：
+#   cp scripts/sysctl-auroramihomo.conf /etc/sysctl.d/99-auroramihomo.conf
+#   sysctl -p /etc/sysctl.d/99-auroramihomo.conf
+# 模板还包含 rp_filter=2（TProxy 所需）。BusyBox 环境请用 -p，不要用 --system。
+#
+# 可选 TCP 性能（BBR，与上项分文件；安装脚本会在支持时 best-effort 启用）：
+#   cp scripts/sysctl-auroramihomo-bbr.conf /etc/sysctl.d/99-auroramihomo-bbr.conf
+#   sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf
 ```
 
 终端设备二选一：

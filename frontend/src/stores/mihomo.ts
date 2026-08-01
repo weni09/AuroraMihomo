@@ -7,6 +7,10 @@ interface Status {
   version: string
   pid: number
   appVersion?: string
+  /** 宿主当前时间 RFC3339 */
+  serverTime?: string
+  /** IANA 时区名，如 Asia/Shanghai */
+  timezone?: string
 }
 
 export const useMihomoStore = defineStore('mihomo', {
@@ -15,6 +19,9 @@ export const useMihomoStore = defineStore('mihomo', {
     version: '未知',
     appVersion: '未知',
     pid: 0,
+    /** 最近一次状态接口带回的宿主时间（RFC3339），供控制台时钟对齐 */
+    serverTime: '' as string,
+    timezone: '' as string,
     isLoading: false,
     recentLogs: [] as Array<{ time: string; stream: string; message: string }>,
     wsStatus: 'connecting',
@@ -25,6 +32,8 @@ export const useMihomoStore = defineStore('mihomo', {
       if (payload.version) this.version = payload.version
       if (payload.appVersion) this.appVersion = payload.appVersion
       if (typeof payload.pid === 'number') this.pid = payload.pid
+      if (payload.serverTime) this.serverTime = payload.serverTime
+      if (payload.timezone) this.timezone = payload.timezone
     },
     pushLog(line: { time?: string; stream?: string; message?: string }) {
       this.recentLogs.push({

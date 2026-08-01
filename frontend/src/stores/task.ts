@@ -19,6 +19,11 @@ const TASK_LABELS: Record<string, string> = {
   config_merge: '配置合并',
   mihomo_reload: '内核重载',
   version_check: '版本检查',
+  // 以下三项来自系统设置驱动的 Scheduler，不在 tasks 表；
+  // 由 GET /tasks 与 DB 任务合并返回（见 listTasksLogic）
+  applog_cleanup: '日志归档清理',
+  auto_update: '组件自动更新',
+  remote_config_pull: '远程配置拉取',
 }
 
 export const useTaskStore = defineStore('task', {

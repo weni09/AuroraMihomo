@@ -160,7 +160,42 @@ TProxy 所需的 `iptables` / `ip6tables` / `nftables` / `iproute2` **已预装�
 时不必映射设备（已实测：不映射设备时 TUN 报不可用而 TProxy 正常工作）。
 
 host 网络下容器内改 sysctl 会影响宿主，且 Docker 会拒绝
-`--sysctl net.ipv4.ip_forward`，网关模式所需的转发开关要在宿主上设置。
+`--sysctl net.ipv4.ip_forward`（以及 `net.ipv6.conf.all.forwarding`），
+网关/旁路由所需的转发与 TProxy 所需的 `rp_filter` **必须在宿主机上设置**。
+
+推荐一次性落盘（与在线安装脚本、面板 provision 键名一致）：
+
+```bash
+# 透明代理 / 网关硬依赖相关
+sudo cp scripts/sysctl-auroramihomo.conf /etc/sysctl.d/99-auroramihomo.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo.conf
+
+# 可选：BBR + fq（整机 TCP 性能；与上项分文件，内核不支持时不要强行合并）
+sudo cp scripts/sysctl-auroramihomo-bbr.conf /etc/sysctl.d/99-auroramihomo-bbr.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf
+```
+
+`99-auroramihomo.conf` 内容包含：
+
+| 键 | 值 | 用途 |
+| --- | --- | --- |
+| `net.ipv4.ip_forward` | `1` | IPv4 网关转发 |
+| `net.ipv6.conf.all.forwarding` | `1` | IPv6 网关/旁路由转发 |
+| `net.ipv4.conf.all.rp_filter` | `2` | 避免 TProxy 打标回环被丢 |
+| `net.ipv4.conf.default.rp_filter` | `2` | 新建网卡默认宽松校验 |
+
+`99-auroramihomo-bbr.conf`（可选）包含：
+
+| 键 | 值 | 用途 |
+| --- | --- | --- |
+| `net.core.default_qdisc` | `fq` | 与 BBR 搭配的排队规则 |
+| `net.ipv4.tcp_congestion_control` | `bbr` | TCP 拥塞控制（影响整机出站） |
+
+`docker/docker-compose.yml` 头部注释也写了同一套步骤。二进制在线安装
+（`scripts/install.sh`，未加 `--no-deps`）会自动写入转发类 conf；BBR 仅在
+探测到内核支持时 best-effort 启用，失败只告警、不阻断安装，且不会把失败的
+ bbr drop-in 留在磁盘上。面板「自动准备」**不**写入 BBR（避免把性能优化
+当成透明代理必需步骤）。
 
 详见 `AuroraMihomo-Transparent-Proxy.md`。实测记录有三份：
 
@@ -199,17 +234,28 @@ Debian/Ubuntu 走同一条命令。
 装机镜像里它不存在，但用户仍希望 unit 文件落地；真没跑起来时后面的
 `enable`/`start` 会失败并给出提示，比预先判死不容易误伤。
 
-依赖补齐这一步是脚本里唯一会改动"系统层"的部分，判据与后端
-`netcheck` 保持一致（防火墙工具有 `nft` 或 `iptables` 之一即可，
-`ip` 必须是真 iproute2 而非 busybox applet），不一致会出现"脚本说装好了、
-面板仍报缺"这种白费排查时间的情况。已就绪时整步跳过，因此多数
-Debian/Ubuntu 机器上不会触发一次 `apt-get update`。
+依赖补齐这一步是脚本里唯一会改动"系统层"的部分，包括：
 
-容器内会主动跳过依赖补齐：装的包重建即丢，`modprobe` 又会作用于宿主内核，
-两者都不该由脚本悄悄替用户决定（容器部署本就该用镜像，依赖已预装）。
+1. 包与模块：防火墙工具、`iproute2`、`tun` / `nft_tproxy`（判据与后端
+   `netcheck` 一致）
+2. **sysctl（网关）**：写入 `/etc/sysctl.d/99-auroramihomo.conf`（IPv4/IPv6
+   转发 + `rp_filter=2`）并用 `sysctl -p` 立即加载；模板见
+   `scripts/sysctl-auroramihomo.conf`，与面板 provision 键名一致
+3. **sysctl（BBR，可选）**：若内核支持，另写
+   `/etc/sysctl.d/99-auroramihomo-bbr.conf`（`fq` + `bbr`）；不支持或加载
+   失败只告警并回滚该文件，见 `scripts/sysctl-auroramihomo-bbr.conf`
 
-三个关闭开关：`--no-deps`（不动系统层）、`--no-service`（不装服务单元，
-旧名 `--no-systemd` 保留为别名）、`--no-start`（装好不启用不启动）。
+已就绪时装包会跳过；网关 sysctl 文件每次安装仍会重写为推荐全集（幂等）。
+因此多数 Debian/Ubuntu 机器上不会无谓触发 `apt-get update`，但仍会确保
+转发开关落盘。
+
+容器内会主动跳过依赖补齐：装的包重建即丢，`modprobe`/`sysctl` 又会作用于
+宿主内核，都不该由脚本悄悄替用户决定。容器部署用镜像（依赖已预装），
+sysctl 请在**宿主**按上一节或 `docker-compose.yml` 注释执行。
+
+三个关闭开关：`--no-deps`（不动系统层：包、模块与 sysctl）、
+`--no-service`（不装服务单元，旧名 `--no-systemd` 保留为别名）、
+`--no-start`（装好不启用不启动）。
 另有 `--dry-run` 只打印将要执行的动作，不下载也不改动系统——所有副作用
 都经由 `run_cmd` / `write_file` 两个函数，因此拦一层即可全覆盖。
 
@@ -233,6 +279,11 @@ cd /opt/auroramihomo && ./auroramihomo -f etc/aurora-api.yaml
 ```
 
 包内含二进制、前端静态资源（`public/`）与默认配置。**不含 mihomo 内核**：
+
+首次启动时，若库中无 `base` 配置，服务会调用 `ConfigService.EnsureDefaultBase()`，
+把嵌入的 `backend/internal/service/default_base.yaml` 写入数据库。该文件是开箱
+骨架（DNS/DoH、nameserver-policy、私网 DIRECT、MATCH 兜底等），**不含**订阅、
+节点、设备规则与认证信息；已有 base 不会被覆盖。
 内核由面板首次启动时下载。完全离线的环境需要手工放置：
 
 ```bash

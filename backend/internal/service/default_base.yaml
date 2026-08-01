@@ -1,0 +1,120 @@
+# AuroraMihomo 开箱默认基础配置（base）
+#
+# 来源：从真实部署提炼的公共默认，已剔除个人数据（内网 DNS、特定设备
+# SRC-IP 规则、订阅/节点、认证口令、远程来源 ID 等）。
+#
+# 设计原则：
+# - 无订阅时也能启动：规则以 DIRECT 收尾，不引用尚未存在的策略组
+# - DNS 用公共 DoH/DoT 与国内解析，并过滤常见污染占位（2001::1）
+# - 不预写 tproxy-port / tun.enable：由「透明代理」开关按需写入，避免
+#   「只配了端口、规则未接管」的半启用状态
+# - external-controller 监听 0.0.0.0 便于局域网打开 Zashboard；生产环境
+#   可在配置中心改为 127.0.0.1 并加 secret
+
+mode: rule
+allow-lan: true
+bind-address: "*"
+log-level: info
+find-process-mode: off
+unified-delay: true
+tcp-concurrent: false
+ipv6: true
+mixed-port: 7890
+port: 7889
+external-controller: 0.0.0.0:9090
+
+geodata-mode: true
+geodata-loader: memconservative
+geosite-matcher: succinct
+geo-auto-update: true
+geo-update-interval: 24
+
+dns:
+  enable: true
+  # 1053 非特权端口，降低与 systemd-resolved/dnsmasq 抢 53 的概率；
+  # 启用 TProxy 时面板会按此 listen 做 DNS 劫持目标
+  listen: 0.0.0.0:1053
+  ipv6: true
+  enhanced-mode: redir-host
+  fake-ip-range: 198.18.0.1/16
+  # 仅用于解析 DoH 域名本身，须为 IP
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  # 默认上游：国内 DoH（可在配置中心按环境调整）
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+  # 污染回退：境外 DoH（经代理可达时更稳）
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
+      - 127.0.0.0/8
+      - ::1/128
+      - 2001:db8::/32
+      - 2001::1/128
+      - 0.0.0.0/32
+  # 按域名指定上游，优先于默认 nameserver（可防 Google 等被污染）
+  nameserver-policy:
+    "geosite:cn,private":
+      - https://doh.pub/dns-query
+      - https://dns.alidns.com/dns-query
+    "+.google.com":
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.google/dns-query
+    "+.googleapis.com":
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.google/dns-query
+    "+.gstatic.com":
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.google/dns-query
+    "+.youtube.com":
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.google/dns-query
+    "+.googlevideo.com":
+      - https://cloudflare-dns.com/dns-query
+      - https://dns.google/dns-query
+  proxy-server-nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  direct-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+    - 114.114.114.114
+  use-system-hosts: true
+  respect-rules: true
+  prefer-h3: false
+
+tun:
+  enable: false
+  stack: mixed
+  auto-route: true
+  auto-detect-interface: true
+  # 默认关 auto-redirect：部分 Alpine/virt 上开启会导致 mihomo 静默关闭整个 TUN
+  #（无 Meta 网卡）。需要网关级防火墙劫持时再在配置中心显式改为 true。
+  auto-redirect: false
+  # 私网与特殊地址不走 TUN 路由（旁路由/网关场景更稳）
+  route-exclude-address:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 224.0.0.0/4
+    - 240.0.0.0/4
+    - 255.255.255.255/32
+
+# 仅保留与具体订阅无关的兜底规则；MATCH 保证无节点时流量直连可用
+rules:
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,1.1.1.1/32,DIRECT,no-resolve
+  - IP-CIDR,8.8.8.8/32,DIRECT,no-resolve
+  - MATCH,DIRECT

@@ -9,11 +9,15 @@ info (
 // 本文件与 backend/api/internal/{types,handler} 下的生成物保持一致。
 // 改接口时两侧需同步：规格是唯一的对外契约描述，落后于代码会误导调用方。
 type Status {
-	Status     string `json:"status"`
-	Version    string `json:"version"`
-	AppVersion string `json:"appVersion"`
-	Pid        int    `json:"pid"`
-}
+		Status     string `json:"status"`
+		Version    string `json:"version"`
+		AppVersion string `json:"appVersion"`
+		Pid        int    `json:"pid"`
+		// ServerTime 宿主当前时间（RFC3339，含时区偏移），供控制台时钟与调度对齐
+		ServerTime string `json:"serverTime,optional"`
+		// Timezone IANA 时区名（如 Asia/Shanghai）；读不到时可能是 Local / UTC
+		Timezone string `json:"timezone,optional"`
+	}
 
 type Result {
 	Success bool   `json:"success"`
@@ -227,8 +231,12 @@ type TransparentEnvReport {
 	InContainer         bool `json:"inContainer"`
 	HostNetwork         bool `json:"hostNetwork"`
 	// TunDevice /dev/net/tun 的实际路径，不存在时为空
-	TunDevice string                  `json:"tunDevice"`
-	Modes     []TransparentModeStatus `json:"modes"`
+	TunDevice string `json:"tunDevice"`
+	// IPTablesBackend iptables 命令的后端类型：nf_tables / legacy / 空。
+	// 自定义防火墙规则按 iptables 语法执行，用户需要知道规则落在哪套后端
+	// ——legacy 与 nftables 两套规则互不可见，写错地方等于没写。
+	IPTablesBackend string                  `json:"iptablesBackend"`
+	Modes           []TransparentModeStatus `json:"modes"`
 	// Warnings 不阻止启用但需要用户知道的问题
 	Warnings []string `json:"warnings"`
 }
@@ -312,6 +320,29 @@ type TransparentProvisionResp {
 	ManualCommands []string `json:"manualCommands"`
 	// Env 执行后重新探测的环境报告
 	Env TransparentEnvReport `json:"env"`
+}
+
+// 自定义防火墙规则与内置规则查看。
+//
+// 自定义规则走 iptables 语法（每行一条，完整命令或裸参数），在面板内置
+// nft 规则生效后逐条追加执行，关闭/回滚时逆序 -D 拆除（仅 -A/-I 形式）。
+type TransparentRulesResp {
+	// CustomRules 用户自定义规则原文（未规范化，保留注释与空行）
+	CustomRules string `json:"customRules"`
+	// IptablesBackend iptables 命令的后端类型：nf_tables / legacy / 空
+	IptablesBackend string `json:"iptablesBackend"`
+	// BuiltinNFTRules 面板内置 nft 规则文本（按当前配置参数生成）
+	BuiltinNFTRules string `json:"builtinNFTRules"`
+	// PolicyRoutes 策略路由命令（每行一条，如 ip rule add fwmark 1 …）
+	PolicyRoutes []string `json:"policyRoutes"`
+	// ActiveRules 宿主上实际生效的面板 nft 规则（nft list table 输出）。
+	// TProxy 未开启时为空字符串。
+	ActiveRules string `json:"activeRules"`
+}
+
+type TransparentRulesReq {
+	// CustomRules 自定义防火墙规则（多行文本）
+	CustomRules string `json:"customRules"`
 }
 
 // ---------- 转换与预览 ----------
@@ -797,6 +828,14 @@ service aurora-api {
 	// 装包可能耗时数十秒，受全局 Timeout 约束。
 	@handler provisionTransparent
 	post /api/v1/transparent/provision (TransparentProvisionReq) returns (TransparentProvisionResp)
+
+	// 自定义防火墙规则：读取（含内置规则展示数据）
+	@handler getTransparentRules
+	get /api/v1/transparent/rules returns (TransparentRulesResp)
+
+	// 自定义防火墙规则：保存。TProxy 运行中保存会立即重新应用。
+	@handler updateTransparentRules
+	put /api/v1/transparent/rules (TransparentRulesReq) returns (Result)
 
 	@handler getRemoteSource
 	get /api/v1/settings/remote-source returns (RemoteSourceResp)

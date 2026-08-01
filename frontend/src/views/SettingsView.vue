@@ -35,7 +35,38 @@ onMounted(async () => {
   syncForm()
   await loadPolicy()
   await tp.fetch()
+  // 自定义规则与内置规则展示数据独立拉取（见 store 的 fetchRules 注释）
+  await tp.fetchRules()
+  if (tp.rules) customRulesDraft.value = tp.rules.customRules
 })
+
+/** 自定义规则草稿：textarea 直接双向绑定（与 CDN 列表同款），保存时才提交 */
+const customRulesDraft = ref('')
+
+/**
+ * iptables 后端徽章文案。
+ *
+ * iptables 有 legacy 与 nf_tables 两套后端，同一台机器上两套规则互不可见
+ * ——用户写自定义规则必须知道它落到了哪套，否则规则看着存在却永不匹配。
+ * 优先用规则接口返回的（与书写通道一致），缺失时回落到环境检测值。
+ */
+const backendLabel = computed(() => {
+  const b = tp.rules?.iptablesBackend || tp.status.env.iptablesBackend
+  if (!b) return ''
+  return b === 'nf_tables'
+    ? 'iptables 后端：nf_tables（与 nftables 互通）'
+    : 'iptables 后端：legacy（与 nftables 规则互不可见）'
+})
+const backendIsLegacy = computed(
+  () => (tp.rules?.iptablesBackend || tp.status.env.iptablesBackend) === 'legacy',
+)
+
+const onSaveCustomRules = async () => {
+  if (await tp.saveRules(customRulesDraft.value)) {
+    // 后端存原文，保存成功后把服务端原文回填草稿（含注释排版）
+    customRulesDraft.value = tp.rules?.customRules ?? customRulesDraft.value
+  }
+}
 
 // 倒计时定时器属于本页面，离开时必须停掉；
 // 真正的回滚计时在后端且已持久化，前端停表不影响它
@@ -238,9 +269,11 @@ function transparentConfirmMessage(mode: TransparentMode, switching: boolean): s
     mode === 'tproxy'
       ? 'TProxy 会修改本机的防火墙规则与路由表。若配置不当，可能导致 SSH 与面板都无法访问。\n\n' +
         '启用后需在 90 秒内点击"网络正常，确认"，否则将自动回滚。\n确定继续？'
-      : 'TUN 由 mihomo 自行管理路由与防火墙规则，进程退出时会自动清理，' +
-        '随时可以再关掉。\n\n' +
-        '该操作会写入基础配置的 tun.enable，并立即重新下发配置。\n确定继续？'
+      : 'TUN 由 mihomo 自行管理本机路由（auto-route）等；进程退出时会清理。\n\n' +
+        '开启时会写入基础配置的 tun.enable，并默认将 auto-redirect 设为关闭：' +
+        '该项是防火墙级重定向，部分环境开启会导致 TUN 静默失效（无 Meta 网卡）。' +
+        '若本机需做网关劫持局域网流量，请到「配置中心 → 虚拟网卡」再手动打开。\n\n' +
+        '该操作会立即重新下发配置。\n确定继续？'
   return head + body
 }
 
@@ -768,6 +801,74 @@ const navOpen = ref(false)
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- 自定义防火墙规则：iptables 语法，TProxy 生效时一并应用。
+               与内置 nft 规则是两个通道：内置由面板生成，自定义由用户书写，
+               在内置规则生效后逐条追加执行。 -->
+          <div class="mt-4 border-t border-line pt-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="text-sm font-semibold">自定义防火墙规则</h3>
+              <Badge v-if="backendLabel" :variant="backendIsLegacy ? 'neutral' : 'ok'">
+                {{ backendLabel }}
+              </Badge>
+            </div>
+            <p class="text-xs text-fg-subtle mt-1">
+              每行一条 iptables 命令（完整命令或裸参数均可，如
+              <code class="font-mono">-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN</code>），
+              在 TProxy 规则生效后追加执行；关闭或回滚时 -A/-I 规则自动拆除，
+              -N/-F 等链管理命令需自行清理。任一条执行失败会导致本次启用整体回滚。
+              仅 TProxy 模式应用，TUN 模式不适用。
+            </p>
+            <Textarea
+              v-model="customRulesDraft"
+              rows="6"
+              class="mt-2 font-mono text-xs"
+              placeholder="# 示例：放行内网回程&#10;iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN"
+            />
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <Button size="sm" :disabled="tp.savingRules" @click="onSaveCustomRules">
+                {{ tp.savingRules ? '保存中…' : '保存规则' }}
+              </Button>
+              <span v-if="tp.status.enabled && tp.status.mode === 'tproxy'" class="text-xs text-fg-subtle">
+                保存后立即重新应用
+              </span>
+            </div>
+
+            <!-- 内置规则查看：实际生效 + 按当前配置生成的两份，便于对照
+                 "配置改了什么、规则有没有跟上" -->
+            <details class="mt-3">
+              <summary class="cursor-pointer text-xs text-fg-muted">查看面板内置防火墙规则</summary>
+              <div v-if="tp.rules" class="mt-2 space-y-3">
+                <div>
+                  <div class="mb-1 text-xs text-fg-muted">实际生效规则（nft list table）</div>
+                  <pre
+                    class="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated p-2 font-mono text-xs"
+                    >{{
+                      tp.rules.activeRules ||
+                      (tp.status.enabled && tp.status.mode === 'tproxy'
+                        ? '（读取失败）'
+                        : 'TProxy 未开启，当前无实际生效规则')
+                    }}</pre
+                  >
+                </div>
+                <div>
+                  <div class="mb-1 text-xs text-fg-muted">按当前配置生成的规则</div>
+                  <pre
+                    class="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated p-2 font-mono text-xs"
+                    >{{ tp.rules.builtinNFTRules }}</pre
+                  >
+                </div>
+                <div v-if="tp.rules.policyRoutes.length">
+                  <div class="mb-1 text-xs text-fg-muted">策略路由命令</div>
+                  <pre
+                    class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated p-2 font-mono text-xs"
+                    >{{ tp.rules.policyRoutes.join('\n') }}</pre
+                  >
+                </div>
+              </div>
+              <p v-else class="text-xs text-fg-subtle mt-1">规则数据未加载。</p>
+            </details>
           </div>
 
           <details class="mt-3">

@@ -107,6 +107,12 @@ type Report struct {
 	// 在界面上可区分——两者的修复动作完全不同（映射设备 vs 调整权限）。
 	TunDevice string `json:"tunDevice,omitempty"`
 
+	// IPTablesBackend 是 iptables 命令的后端类型：nf_tables / legacy / 空。
+	// 自定义防火墙规则按 iptables 语法执行，用户需要知道规则落在哪套后端：
+	// legacy 与 nftables 规则互不可见，写错地方等于没写（见 Warnings 里
+	// 的同名告警）。detect 阶段一次探测，随 env 返回前端展示。
+	IPTablesBackend string `json:"iptablesBackend,omitempty"`
+
 	// Modes 按 tun、tproxy 顺序给出各模式结论
 	Modes []ModeStatus `json:"modes"`
 
@@ -120,6 +126,9 @@ type Report struct {
 	//
 	// SysctlIPForward 是 net.ipv4.ip_forward 的当前值，读不到时为空
 	SysctlIPForward string `json:"-"`
+	// SysctlIPv6Forward 是 net.ipv6.conf.all.forwarding 的当前值，读不到时为空。
+	// 网关/旁路由要转发局域网 IPv6 时必须为 1；与 ip_forward 成对处理。
+	SysctlIPv6Forward string `json:"-"`
 	// SysctlRPFilter 是 net.ipv4.conf.all.rp_filter 的当前值，读不到时为空
 	SysctlRPFilter string `json:"-"`
 	// RPFilterStrictIfaces 是当前 rp_filter 仍为 1（严格）的具体网卡名。

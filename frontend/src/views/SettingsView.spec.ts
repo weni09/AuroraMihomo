@@ -42,13 +42,25 @@ class FakeIntersectionObserver {
  */
 function stubApi() {
   mockedApi.get.mockImplementation((url: string) => {
+    // 规则接口独立于 status 返回骨架：字段缺了规则块会渲染「未加载」分支
+    if (url.includes('/transparent/rules')) {
+      return Promise.resolve({
+        data: {
+          customRules: '',
+          iptablesBackend: 'nf_tables',
+          builtinNFTRules: 'table inet aurora_tproxy { }',
+          policyRoutes: ['ip rule add fwmark 1 table 100'],
+          activeRules: '',
+        },
+      })
+    }
     if (url.includes('transparent')) {
       return Promise.resolve({
         data: {
           enabled: false,
           mode: 'off',
           pendingConfirm: false,
-          env: { modes: [], warnings: [] },
+          env: { modes: [], warnings: [], iptablesBackend: 'nf_tables' },
         },
       })
     }
@@ -228,6 +240,59 @@ describe('SettingsView 底部悬浮操作条', () => {
         `「${label}」不应被并入悬浮条`,
       ).toBe(false)
     }
+
+    wrapper.unmount()
+  })
+})
+
+describe('SettingsView 自定义防火墙规则', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    FakeIntersectionObserver.instances = []
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    stubApi()
+  })
+
+  async function mountLoaded() {
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    // 徽章文案由接口数据驱动，等它出现说明 onMounted 的请求链已走完
+    await vi.waitFor(() => {
+      expect(wrapper.text()).toContain('iptables 后端：nf_tables')
+    })
+    return wrapper
+  }
+
+  it('渲染规则编辑器、iptables 后端徽章与内置规则查看入口', async () => {
+    const wrapper = await mountLoaded()
+
+    expect(wrapper.text()).toContain('iptables 后端：nf_tables（与 nftables 互通）')
+    expect(wrapper.find('textarea').exists()).toBe(true)
+    expect(wrapper.text()).toContain('查看面板内置防火墙规则')
+    // 内置规则文本按当前配置参数生成，应已渲染
+    expect(wrapper.text()).toContain('table inet aurora_tproxy { }')
+
+    wrapper.unmount()
+  })
+
+  it('点保存规则提交 PUT 并提示已保存', async () => {
+    mockedApi.put.mockResolvedValue({ data: { message: 'ok' } })
+    const wrapper = await mountLoaded()
+
+    await wrapper.find('textarea').setValue('-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN')
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存规则')
+    expect(saveBtn).toBeDefined()
+    await saveBtn!.trigger('click')
+
+    await vi.waitFor(() => {
+      expect(mockedApi.put).toHaveBeenCalledWith('/transparent/rules', {
+        customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN',
+      })
+    })
 
     wrapper.unmount()
   })

@@ -199,9 +199,12 @@ func TestProvisionMarksNotPersistentInContainer(t *testing.T) {
 
 // ---- sysctl ----
 
-func sysctlReport(ipForward, rpFilter string, ifaces ...string) *Report {
+// sysctlReport 构造 sysctl 相关测试报告。
+// ipv6Forward 传空表示"内核无此开关 / 未读到"，与线上 detect 读失败时一致。
+func sysctlReport(ipForward, ipv6Forward, rpFilter string, ifaces ...string) *Report {
 	r := linuxReport("apt-get")
 	r.SysctlIPForward = ipForward
+	r.SysctlIPv6Forward = ipv6Forward
 	r.SysctlRPFilter = rpFilter
 	r.RPFilterStrictIfaces = ifaces
 	return r
@@ -212,7 +215,7 @@ func TestProvisionWritesSysctlDropIn(t *testing.T) {
 	r := newFakeRunner()
 
 	res, err := newProvisioner(r, root).Provision(context.Background(),
-		sysctlReport("0", "1", "ens18"), ProvisionOptions{ApplySysctl: true})
+		sysctlReport("0", "0", "1", "ens18"), ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
 	}
@@ -227,6 +230,7 @@ func TestProvisionWritesSysctlDropIn(t *testing.T) {
 	s := string(body)
 	for _, want := range []string{
 		"net.ipv4.ip_forward = 1",
+		"net.ipv6.conf.all.forwarding = 1",
 		"net.ipv4.conf.all.rp_filter = 2",
 		// default 管新出现的网卡，漏了它之后新建网卡仍是严格模式
 		"net.ipv4.conf.default.rp_filter = 2",
@@ -254,7 +258,7 @@ func TestProvisionSysctlFallsBackWhenSystemFlagUnsupported(t *testing.T) {
 		"BusyBox v1.37.0 multi-call binary."
 
 	res, err := newProvisioner(r, root).Provision(context.Background(),
-		sysctlReport("0", "1", "eth0"), ProvisionOptions{ApplySysctl: true})
+		sysctlReport("0", "0", "1", "eth0"), ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
 	}
@@ -276,7 +280,7 @@ func TestProvisionSysctlReportsFailureWhenFallbackAlsoFails(t *testing.T) {
 	r.failOn["sysctl"] = "sysctl: permission denied"
 
 	res, err := newProvisioner(r, root).Provision(context.Background(),
-		sysctlReport("0", "1", "eth0"), ProvisionOptions{ApplySysctl: true})
+		sysctlReport("0", "0", "1", "eth0"), ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
 	}
@@ -289,7 +293,7 @@ func TestProvisionSysctlReportsFailureWhenFallbackAlsoFails(t *testing.T) {
 // --system —— 用户照抄会得到和面板一样的错误，却没有回退可依赖。
 func TestProvisionManualSysctlCommandWorksOnBusybox(t *testing.T) {
 	res, err := newProvisioner(newFakeRunner(), t.TempDir()).
-		Provision(context.Background(), sysctlReport("0", "1", "eth0"),
+		Provision(context.Background(), sysctlReport("0", "0", "1", "eth0"),
 			ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
@@ -300,13 +304,13 @@ func TestProvisionManualSysctlCommandWorksOnBusybox(t *testing.T) {
 	}
 }
 
-// rp_filter 本来就宽松、转发也开着时不该白写文件
+// rp_filter 本来就宽松、v4/v6 转发也开着时不该白写文件
 func TestProvisionSkipsSysctlWhenCompliant(t *testing.T) {
 	root := t.TempDir()
 	r := newFakeRunner()
 
 	res, err := newProvisioner(r, root).Provision(context.Background(),
-		sysctlReport("1", "2"), ProvisionOptions{ApplySysctl: true})
+		sysctlReport("1", "1", "2"), ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
 	}
@@ -321,12 +325,12 @@ func TestProvisionSkipsSysctlWhenCompliant(t *testing.T) {
 	}
 }
 
-// 只有 ip_forward 需要改时，不该顺手把 rp_filter 也写进去——改得越少越好
+// 只有转发需要改时，不该顺手把 rp_filter 也写进去——改得越少越好
 func TestProvisionOnlyWritesNeededKeys(t *testing.T) {
 	root := t.TempDir()
 
 	_, err := newProvisioner(newFakeRunner(), root).Provision(context.Background(),
-		sysctlReport("0", "2"), ProvisionOptions{ApplySysctl: true})
+		sysctlReport("0", "0", "2"), ProvisionOptions{ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)
 	}
@@ -337,15 +341,58 @@ func TestProvisionOnlyWritesNeededKeys(t *testing.T) {
 	if !strings.Contains(string(body), "net.ipv4.ip_forward") {
 		t.Error("应写入 ip_forward")
 	}
+	if !strings.Contains(string(body), "net.ipv6.conf.all.forwarding") {
+		t.Error("应写入 ipv6 forwarding")
+	}
 	if strings.Contains(string(body), "rp_filter") {
 		t.Errorf("rp_filter 已合规，不该写入:\n%s", body)
+	}
+}
+
+// 仅 IPv6 转发不合规时也要写 drop-in（与安装脚本/网关双栈需求对齐）
+func TestProvisionWritesIPv6ForwardingWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := newProvisioner(newFakeRunner(), root).Provision(context.Background(),
+		sysctlReport("1", "0", "2"), ProvisionOptions{ApplySysctl: true})
+	if err != nil {
+		t.Fatalf("不该报错: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(sysctlDropInRelPath)))
+	if err != nil {
+		t.Fatalf("应写出文件: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "net.ipv6.conf.all.forwarding = 1") {
+		t.Errorf("应写入 ipv6 forwarding，实际:\n%s", s)
+	}
+	if strings.Contains(s, "net.ipv4.ip_forward") {
+		t.Errorf("v4 已合规，不该写入:\n%s", s)
+	}
+}
+
+// 读不到 ipv6 forwarding（空）时不写入，避免无 IPv6 的内核上 sysctl -p 失败
+func TestProvisionSkipsIPv6ForwardingWhenUnreadable(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := newProvisioner(newFakeRunner(), root).Provision(context.Background(),
+		sysctlReport("0", "", "2"), ProvisionOptions{ApplySysctl: true})
+	if err != nil {
+		t.Fatalf("不该报错: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(sysctlDropInRelPath)))
+	if err != nil {
+		t.Fatalf("应写出文件: %v", err)
+	}
+	if strings.Contains(string(body), "ipv6") {
+		t.Errorf("读不到 ipv6 forwarding 时不该写入:\n%s", body)
 	}
 }
 
 // 重复执行不能让同名键在文件里堆积：整体重写而非追加
 func TestProvisionSysctlIsIdempotent(t *testing.T) {
 	root := t.TempDir()
-	rep := sysctlReport("0", "1", "ens18")
+	rep := sysctlReport("0", "0", "1", "ens18")
 	p := newProvisioner(newFakeRunner(), root)
 
 	for i := 0; i < 3; i++ {
@@ -359,12 +406,15 @@ func TestProvisionSysctlIsIdempotent(t *testing.T) {
 	if n := strings.Count(string(body), "net.ipv4.ip_forward = 1"); n != 1 {
 		t.Errorf("重复执行后 ip_forward 应只出现 1 次，实际 %d 次:\n%s", n, body)
 	}
+	if n := strings.Count(string(body), "net.ipv6.conf.all.forwarding = 1"); n != 1 {
+		t.Errorf("重复执行后 ipv6 forwarding 应只出现 1 次，实际 %d 次:\n%s", n, body)
+	}
 }
 
 // 容器内不动 sysctl：非特权容器会被拒绝，host 网络下会直接改到宿主
 func TestProvisionRefusesSysctlInContainer(t *testing.T) {
 	root := t.TempDir()
-	rep := sysctlReport("0", "1")
+	rep := sysctlReport("0", "0", "1")
 	rep.InContainer = true
 	r := newFakeRunner()
 
@@ -394,7 +444,7 @@ func TestProvisionReportsPartialFailure(t *testing.T) {
 	r.failOn["sysctl --system"] = "sysctl: cannot stat /proc/sys/net/ipv4/xxx"
 
 	res, err := newProvisioner(r, root).Provision(context.Background(),
-		sysctlReport("0", "1"),
+		sysctlReport("0", "0", "1"),
 		ProvisionOptions{InstallPackages: true, ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该整体报错: %v", err)
@@ -427,7 +477,7 @@ func TestProvisionReportsPartialFailure(t *testing.T) {
 // 手动命令必须始终提供：失败时是兜底，成功时用户也常要记进部署脚本
 func TestProvisionAlwaysProvidesManualCommands(t *testing.T) {
 	res, err := newProvisioner(newFakeRunner(), t.TempDir()).
-		Provision(context.Background(), sysctlReport("0", "1"),
+		Provision(context.Background(), sysctlReport("0", "0", "1"),
 			ProvisionOptions{InstallPackages: true, ApplySysctl: true})
 	if err != nil {
 		t.Fatalf("不该报错: %v", err)

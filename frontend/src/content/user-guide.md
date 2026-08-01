@@ -265,7 +265,7 @@ function operator(proxies) {
 | **GeoData 规则库** | GeoIP/GeoSite 数据源与自动更新间隔 |
 | **运行状态持久化** | 记住手选节点（建议开启）、记住 fake-ip 映射 |
 | **域名解析** | DNS 全部行为：enhanced-mode（推荐 fake-ip）、fake-ip 段与过滤、各类 nameserver、respect-rules 等，以及**自定义 hosts 映射**（域名 → IP 的行编辑器，需同组的「使用 hosts 映射」开启才生效）。**用 TUN 时必须开 dns.enable** |
-| **虚拟网卡** | TUN 的 enable / stack / auto-route / dns-hijack / mtu / strict-route 等 |
+| **虚拟网卡** | TUN 的 enable / stack / auto-route / **auto-redirect** / dns-hijack / mtu / strict-route 等。单机自用重点看 auto-route；auto-redirect 见「常见问题」里那条坑 |
 | **域名嗅探** | 从流量还原域名。注意：只开总开关不配 `sniffer.sniff` 的话嗅探不会生效 |
 | **策略组** | YAML 数组定义本地策略组，与订阅中同名组合并 |
 | **基础路由规则** | 每行一条，会被置顶插入最终配置，顺序即优先级 |
@@ -386,7 +386,9 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 | 谁改防火墙 | mihomo 自己，退出时自动清理 | 本面板 |
 | 风险 | 较低 | 较高，配错可能导致主机失联 |
 
-**默认选 TUN。** 它把路由与防火墙交给 mihomo 管，进程退出规则自动回收。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
+**默认选 TUN。** 单机接管本机流量靠 mihomo 的 **auto-route**（改路由表）即可；进程退出时相关状态会回收。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
+
+> **坑（必读）**：`tun.auto-redirect`（自动防火墙重定向）与 auto-route 不是一回事。前者让 mihomo 自己写 nftables/iptables，主要服务**旁路由/网关**把局域网设备流量拐进 TUN。部分环境（尤其 Alpine virt、精简 nft 组合）开启后 mihomo 可能**静默关掉整个 TUN**：配置里仍是 `enable: true`，系统却没有 `Meta` 虚拟网卡。单机自用请保持 **auto-redirect 关闭**；详见下方「常见问题」。
 
 **启用流程**
 
@@ -409,13 +411,13 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 模式显示不可用、原因是缺工具时，卡片上会有「尝试自动准备环境」按钮。它做两件事，可以分别勾选：
 
 - **安装缺失的软件包**：按检测到的包管理器执行 `apt-get install` 或 `apk add`，装 `iptables`/`nftables`/`iproute2`
-- **调整系统参数**：往 `/etc/sysctl.d/99-auroramihomo.conf` 写本程序需要的内核参数，然后加载它让参数立即生效。加载优先用 `sysctl --system`；Alpine 这类 BusyBox 环境不认这个选项，会自动回退成 `sysctl -p <该文件>`，两步都会在结果里如实列出
+- **调整系统参数**：往 `/etc/sysctl.d/99-auroramihomo.conf` 写本程序需要的内核参数，然后加载它让参数立即生效。加载优先用 `sysctl --system`；Alpine 这类 BusyBox 环境不认这个选项，会自动回退成 `sysctl -p <该文件>`，两步都会在结果里如实列出。会按需写入的项包括：`net.ipv4.ip_forward`、`net.ipv6.conf.all.forwarding`（网关/旁路由转发），以及把严格的 `rp_filter` 调成 `2`（否则 TProxy 打标回环可能被丢掉）。在线安装脚本会把同一套推荐值写成全集；Docker 请在**宿主机**复制仓库里的 `scripts/sysctl-auroramihomo.conf`。**BBR / fq** 属于可选整机 TCP 优化，由安装脚本在内核支持时单独写入 `99-auroramihomo-bbr.conf`，**不会**出现在面板「自动准备」的默认动作里（避免和不支持 BBR 的环境纠缠）
 
 几个刻意的限制，避免它变成一个乱动系统的黑箱：
 
 - 需要 root。不是 root 会直接拒绝并让你用手动命令，而不是跑一半失败留下装了一半的状态
 - 只装写死在程序里的那几个包，不接受任何外部传入的命令或包名
-- sysctl 只写它自己那个文件，不碰 `/etc/sysctl.conf`，也只写**确实不合规**的项（比如你有意关着转发，它不会顺手给你打开）
+- sysctl 只写它自己那个文件，不碰 `/etc/sysctl.conf`，也只写**确实不合规**的项（已经是 `1` 的转发、已经是宽松的 `rp_filter` 不会再动）
 - 重复点没有副作用：包已装齐会跳过，配置文件是整体重写而不是往后追加
 - 写文件与让参数生效是分开报告的两步。只看到「已写入」不等于已经生效，要看后面那步的结果——尤其 `rp_filter` 没真正改掉时，TProxy 会静默收不到包
 - 不会碰防火墙规则，也不会顺手把透明代理开关打开——这两件事仍然要你自己操作
@@ -515,7 +517,12 @@ systemctl restart systemd-resolved
 ```bash
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
-# 持久化：写入 /etc/sysctl.d/99-aurora.conf
+# 持久化（推荐，与安装脚本/面板同一文件）：
+#   cp scripts/sysctl-auroramihomo.conf /etc/sysctl.d/99-auroramihomo.conf
+#   sysctl -p /etc/sysctl.d/99-auroramihomo.conf
+# 可选 BBR：
+#   cp scripts/sysctl-auroramihomo-bbr.conf /etc/sysctl.d/99-auroramihomo-bbr.conf
+#   sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf
 ```
 
 然后二选一：路由器 DHCP 把网关与 DNS 都指向面板主机，或各设备手动改。
@@ -674,9 +681,35 @@ chmod +x <数据目录>/bin/mihomo
 
 `.gz`（gzip 压缩的裸二进制，不是 tar 归档），只有 Windows 是 `.zip`。手工解压用 `gunzip -c xxx.gz > mihomo`。
 
+**TUN 显示已开启，但系统没有 Meta 虚拟网卡 / 完全不生效？**（常见坑）
+
+多半是开了 **`tun.auto-redirect`（自动防火墙重定向）**。
+
+| | auto-route | auto-redirect |
+|---|---|---|
+| 改什么 | 本机**路由表** | 本机**防火墙**（nftables/iptables） |
+| 主要服务谁 | **本机**进程出网 | 经本机**转发**的流量（旁路由/网关下的局域网设备） |
+| 单机自用 | 需要开 | **一般保持关** |
+
+部分 Linux 环境（已复现：Alpine virt 等）上，`auto-redirect: true` 会让 mihomo **静默停用整个 TUN**：
+
+- 配置 / 面板仍可能显示 `tun.enable: true`
+- 运行时 `tun.enable` 实为 `false`，`ip link` 看不到 `Meta`
+- 没有 900x 段策略路由；外网表现像「透明代理开了但没用」
+- 外部控制器 API 对 PATCH 仍可能返回成功，**不会给出显眼报错**
+
+处理：
+
+1. 打开 **配置中心 → 虚拟网卡 (TUN)**，关闭 **「自动防火墙重定向 (Auto Redirect)」**
+2. 点 **保存并应用**（或系统设置里关开一次 TUN）
+3. 在宿主执行 `ip -br link`，应能看到 `Meta`；也可用内核 API `GET /configs` 确认 `tun.enable` 为 true
+
+仅在本机确实充当网关、且确认环境能正常建出 `Meta` 之后，再考虑打开 auto-redirect。macOS 会忽略该字段。
+
 **TUN 开了但局域网设备没走代理？**
 
-容器部署最常见的是网络模式问题——桥接网络里的规则只对容器自己生效，必须用 `network_mode: host`。另外查「系统设置 → 透明代理 → 环境检测详情」，它会明确指出缺 capability、缺设备还是缺 host 网络。
+先排除上一条（本机都没有 Meta 时，谈不上给局域网设备分流）。  
+容器部署最常见的是网络模式问题——桥接网络里的规则只对容器自己生效，必须用 `network_mode: host`。另外查「系统设置 → 透明代理 → 环境检测详情」，它会明确指出缺 capability、缺设备还是缺 host 网络。做网关时还需要正确的客户端网关/DHCP/静态路由，以及按需开启 auto-redirect 或自行维护防火墙转发规则。
 
 **忘记管理员密码？**
 

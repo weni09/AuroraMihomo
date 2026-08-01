@@ -28,6 +28,8 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+
+	_ "embed"
 )
 
 // mergedBaseFingerprintKey 记录「最近一次成功合并时 base 内容的哈希」。
@@ -85,14 +87,15 @@ type ConfigService struct {
 	// 规则里烧进了 tproxy-port / DNS 端口 / 内核 API 端口，而这些值用户随时能在
 	// 配置中心改。少了这个回调，改完端口只有 config.yaml 变了、防火墙还是旧的。
 	// 同样用注入打破循环依赖（理由见 tproxyManagedProvider）。
-	transparentResyncFn func(ctx context.Context)
+	// 返回 error 供需要如实上报的调用方使用；合并流程末尾仍忽略错误。
+	transparentResyncFn func(ctx context.Context) error
 }
 
 // SetTransparentResyncFn 注入"让防火墙规则跟上当前配置"的回调。
 //
 // 用注入而不是直接持有 TransparentService：那个服务在本服务之后构造且依赖本服务
 // （读写 base.yaml、读端口），直接互持会形成循环依赖。
-func (s *ConfigService) SetTransparentResyncFn(fn func(ctx context.Context)) {
+func (s *ConfigService) SetTransparentResyncFn(fn func(ctx context.Context) error) {
 	s.transparentResyncFn = fn
 }
 
@@ -105,7 +108,7 @@ func (s *ConfigService) resyncTransparent(ctx context.Context) {
 	if s.transparentResyncFn == nil {
 		return
 	}
-	s.transparentResyncFn(ctx)
+	_ = s.transparentResyncFn(ctx)
 }
 
 // SetTProxyManagedProvider 注入"TProxy 规则是否由本面板下发"的判据来源。
@@ -204,12 +207,31 @@ func (s *ConfigService) backupDir() string {
 	return filepath.Join(s.configDir, "backups")
 }
 
+// default_base.yaml 是开箱默认基础配置：从真实部署提炼并去掉个人数据
+// （内网 DNS、设备 SRC-IP、订阅/节点等）。详见文件头注释。
+//
+//go:embed default_base.yaml
+var defaultBaseYAMLFile string
+
 func (s *ConfigService) defaultBaseYAML() string {
-	return `mode: rule
-allow-lan: true
-log-level: info
-external-controller: 127.0.0.1:9090
-`
+	// embed 可能带尾部空白；保持与手写 YAML 一致的可读性
+	return strings.TrimSpace(defaultBaseYAMLFile) + "\n"
+}
+
+// EnsureDefaultBase 在库中尚无 base 配置时写入开箱默认值。
+//
+// 只在「完全没有 base」时落库：已有任意内容（含用户清空后的占位）都不覆盖，
+// 避免升级/迁移误伤。新装部署走这里即可在配置中心看到完整可编辑默认。
+func (s *ConfigService) EnsureDefaultBase() error {
+	cfg, err := s.db.GetConfigByType("base")
+	if err == nil && cfg != nil && strings.TrimSpace(cfg.Content) != "" {
+		return nil
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	s.logger.Info("未检测到基础配置，写入开箱默认 base（default_base.yaml）")
+	return s.UpdateBaseConfig(s.defaultBaseYAML())
 }
 
 func (s *ConfigService) loadBaseYAML() (string, error) {

@@ -271,6 +271,7 @@ func toTransparentStatus(st *service.TransparentState, env *netcheck.Report) *ty
 			InContainer:         env.InContainer,
 			HostNetwork:         env.HostNetwork,
 			TunDevice:           env.TunDevice,
+			IPTablesBackend:     env.IPTablesBackend,
 			// 切片显式初始化为空而非 nil：前端拿到 null 需要额外判空，
 			// 而 JSON 里 [] 可以直接遍历
 			Modes:    make([]types.TransparentModeStatus, 0, len(env.Modes)),

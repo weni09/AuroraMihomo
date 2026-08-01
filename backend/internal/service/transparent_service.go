@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +62,17 @@ const (
 	// 存指纹而不是每次合并都无条件重下发：重下发有瞬时丢包，定时拉取也会走合并
 	// 流程，无条件重写等于每次拉订阅都抖一次网络。只有指纹变了才动。
 	settingTProxyAppliedSig = "transparent.tproxy_applied_sig"
+	// settingCustomRules 用户自定义防火墙规则（iptables 语法，多行文本）。
+	//
+	// 与内置 nft 规则是两个通道：内置由面板生成，自定义由用户书写，在
+	// TProxy 规则生效后逐条追加执行、拆除时逆序 -D（仅 -A/-I 形式）。
+	// 保存后若 TProxy 正在运行会立即重新应用（指纹变化触发 Resync）。
+	settingCustomRules = "transparent.custom_rules"
+	// settingCustomRulesApplied 上次成功应用到宿主的自定义规则（规范化后、
+	// 每行一条）。与 settingCustomRules（用户编辑原文）分开存：
+	// Apply 重入时必须先按本键拆除旧批，再按新目标追加，否则 iptables -A
+	// 会叠规则、改 A→B 会留下 A 的孤儿。
+	settingCustomRulesApplied = "transparent.custom_rules_applied"
 )
 
 // ConfirmWindow 启用后必须确认的时限。
@@ -115,11 +129,14 @@ type transparentStore interface {
 // 声明为接口类型，未赋值时才是真正的 nil 接口。
 type TransparentApplier interface {
 	Apply(ctx context.Context, p netcheck.TProxyParams) error
-	Teardown(ctx context.Context) error
+	Teardown(ctx context.Context, customRules ...[]string) error
 	Snapshot(ctx context.Context) (string, error)
 	// RulesActive 探测宿主上是否还存在本项目下发的防火墙规则。
 	// 用于 ReconcileState 核实"已确认启用"的记录是否仍与实际状态一致。
 	RulesActive(ctx context.Context) (bool, error)
+	// DumpRules 输出本面板 nft 表的当前规则集，供界面展示内置规则。
+	// TProxy 未开启时返回空字符串。
+	DumpRules(ctx context.Context) (string, error)
 }
 
 // transparentProvisioner 补齐系统条件（装包、写 sysctl）。
@@ -380,8 +397,18 @@ func (s *TransparentService) Update(ctx context.Context, enabled bool, mode stri
 	// 关闭是任何环境下都允许的操作——包括环境已经变得不支持的情况，
 	// 否则用户会陷入"开着但关不掉"。
 	if !enabled || mode == string(netcheck.ModeOff) {
-		return s.disable(ctx)
+		prev := s.state()
+		s.logger.Infof("透明代理关闭请求: 当前 enabled=%v mode=%s tproxyPort=%d managed=%v",
+			prev.Enabled, prev.Mode, prev.TProxyPort, s.tproxyManaged())
+		if err := s.disable(ctx); err != nil {
+			s.logger.Errorf("透明代理关闭失败: %v", err)
+			return err
+		}
+		return nil
 	}
+
+	s.logger.Infof("透明代理开启/切换请求: mode=%s tproxyPort=%d tunStack=%q managed=%v",
+		mode, tproxyPort, tunStack, s.tproxyManaged())
 
 	status := s.detect().ModeStatusOf(netcheck.Mode(mode))
 	if !status.Available {
@@ -394,10 +421,16 @@ func (s *TransparentService) Update(ctx context.Context, enabled bool, mode stri
 		if status.InstallHint != "" {
 			msg += "。可执行：" + status.InstallHint
 		}
-		return fmt.Errorf("无法启用 %s 模式: %s", mode, msg)
+		err := fmt.Errorf("无法启用 %s 模式: %s", mode, msg)
+		s.logger.Errorf("透明代理开启被拒绝: %v", err)
+		return err
 	}
 
-	return s.enable(ctx, mode, tproxyPort, tunStack)
+	if err := s.enable(ctx, mode, tproxyPort, tunStack); err != nil {
+		s.logger.Errorf("透明代理开启失败 mode=%s tproxyPort=%d: %v", mode, tproxyPort, err)
+		return err
+	}
+	return nil
 }
 
 // Provision 尝试补齐透明代理所需的系统条件（装依赖、写 sysctl）。
@@ -479,10 +512,15 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	var patches map[string]interface{}
 	switch mode {
 	case string(netcheck.ModeTUN):
+		// auto-redirect 默认写 false 并落进 base：合并注入对已声明键只补不覆盖，
+		// 避免 Linux 上无条件注入 true 时，在部分 Alpine/virt 环境把整个 TUN
+		// 静默打挂（runtime enable=false、看不见 Meta 网卡）。
+		// 需要网关级劫持的用户可在配置中心改回 true。
 		patches = map[string]interface{}{
-			"tun.enable":  true,
-			"tun.stack":   tunStack,
-			"tproxy-port": nil,
+			"tun.enable":        true,
+			"tun.stack":         tunStack,
+			"tun.auto-redirect": false,
+			"tproxy-port":       nil,
 		}
 	case string(netcheck.ModeTProxy):
 		patches = map[string]interface{}{
@@ -568,7 +606,7 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	//
 	// 只在确实托管过时拆：没托管说明规则（如果有）是用户自己管的，不该替他动。
 	if s.hasApplier() && s.tproxyManaged() {
-		if err := s.applier.Teardown(ctx); err != nil {
+		if err := s.applier.Teardown(ctx, s.customRulesForTeardown()); err != nil {
 			// 拆除失败不阻断切换：TUN 那边的配置已经写好，继续下发让它先生效。
 			// 但标记要留着，这样用户下次关闭时还会再拆一次。
 			s.logger.Errorf("切换到 TUN 前拆除 TProxy 规则失败，宿主上可能残留规则: %v", err)
@@ -603,6 +641,67 @@ func (s *TransparentService) tproxyParams(tproxyPort int) netcheck.TProxyParams 
 		// 等于建了一条通往空路由的路；有能力却不下发则会让 v6 包被打标
 		// 后无处可去（兜底规则的家族限定处理了这一侧，见 BuildNFTRules）。
 		EnableIPv6: s.detect().HasIPv6Egress,
+		// 自定义规则读库现取：SaveCustomRules 保存后立即重应用依赖指纹
+		// 变化，这里必须与应用时的取值来自同一份数据。
+		CustomRules: s.customRules(),
+		// 上一批已成功应用的规则：Apply 在追加本批前先拆掉它们，
+		// 防止 iptables -A 叠规则、改内容时留下孤儿。
+		PreviousCustomRules: s.appliedCustomRules(),
+	}
+}
+
+// customRules 读取并规范化用户自定义防火墙规则。
+//
+// 读取或规范化失败时返回 nil：规则有问题不该让 TProxy 整体起不来
+// （保存时已校验过格式，这里只是兜底防御）。
+func (s *TransparentService) customRules() []string {
+	raw := s.getString(settingCustomRules, "")
+	rules, err := netcheck.NormalizeCustomRules(raw)
+	if err != nil {
+		s.logger.Errorf("自定义防火墙规则解析失败（本批规则不生效）: %v", err)
+		return nil
+	}
+	return rules
+}
+
+// appliedCustomRules 读取"上次成功应用到宿主"的自定义规则快照。
+//
+// 存的是规范化后的完整命令（每行一条），与 NormalizeCustomRules 输出同形，
+// 可直接交给 removeCustomRules / Teardown，无需再规范化。
+func (s *TransparentService) appliedCustomRules() []string {
+	raw := s.getString(settingCustomRulesApplied, "")
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// customRulesForTeardown 合并"已应用快照"与"当前目标"，用于关闭/回滚/失败清理。
+// 只拆当前目标会漏掉改 A→B 后仍在链上的 A；只拆快照会漏掉本批已追加的几条。
+func (s *TransparentService) customRulesForTeardown() []string {
+	return netcheck.MergeCustomRuleLists(s.appliedCustomRules(), s.customRules())
+}
+
+// persistAppliedCustomRules 在 Apply 成功后落库本批自定义规则快照。
+// 失败只记日志：规则已经在宿主上，缺快照最坏是下次多拆几次（幂等）。
+func (s *TransparentService) persistAppliedCustomRules(rules []string) {
+	value := strings.Join(rules, "\n")
+	if err := s.store.SetSetting(settingCustomRulesApplied, value); err != nil {
+		s.logger.Errorf("记录已应用自定义规则快照失败: %v", err)
+	}
+}
+
+// clearAppliedCustomRules 清除已应用快照（Teardown 成功后调用）。
+func (s *TransparentService) clearAppliedCustomRules() {
+	if err := s.store.SetSetting(settingCustomRulesApplied, ""); err != nil {
+		s.logger.Errorf("清除已应用自定义规则快照失败: %v", err)
 	}
 }
 
@@ -610,9 +709,21 @@ func (s *TransparentService) tproxyParams(tproxyPort int) netcheck.TProxyParams 
 //
 // 只包含真正会改变规则文本的字段。LAN 网段不在其中：它由 Normalize 补默认值，
 // 目前没有用户可改的入口，纳入只会让指纹无谓地变长。
+// 自定义规则必须纳入：它直接追加进规则集，内容变了而指纹不变，
+// Resync 就不会重下发，用户保存的规则等于没生效。
 func paramsSignature(p netcheck.TProxyParams) string {
-	return fmt.Sprintf("tp=%d;dns=%d;keep=%v;v6=%t",
-		p.TProxyPort, p.DNSPort, p.KeepPorts, p.EnableIPv6)
+	return fmt.Sprintf("tp=%d;dns=%d;keep=%v;v6=%t;rules=%s",
+		p.TProxyPort, p.DNSPort, p.KeepPorts, p.EnableIPv6, rulesHash(p.CustomRules))
+}
+
+// rulesHash 把自定义规则列表压成指纹片段（sha256 前 4 字节的 hex）。
+// 空列表返回空串，让"没有自定义规则"在指纹里一目了然。
+func rulesHash(rules []string) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(rules, "\n")))
+	return hex.EncodeToString(sum[:4])
 }
 
 func (s *TransparentService) applyMode(ctx context.Context, mode string, tproxyPort int) error {
@@ -627,6 +738,8 @@ func (s *TransparentService) applyMode(ctx context.Context, mode string, tproxyP
 		if err := s.store.SetSetting(settingTProxyAppliedSig, paramsSignature(p)); err != nil {
 			s.logger.Errorf("记录规则参数指纹失败（不影响本次生效）: %v", err)
 		}
+		// 同步"已应用自定义规则"快照：下次重应用/改内容时据此先拆旧批。
+		s.persistAppliedCustomRules(p.CustomRules)
 	}
 	// 配置注入在合并流程里完成，这里触发一次重新下发使其生效
 	return s.reload(ctx)
@@ -675,9 +788,12 @@ func dedupPorts(in []int) []int {
 
 // Confirm 确认网络正常，取消自动回滚。
 func (s *TransparentService) Confirm(_ context.Context) error {
-	if s.pendingUntil().IsZero() {
+	until := s.pendingUntil()
+	if until.IsZero() {
+		s.logger.Error("透明代理确认请求被拒绝：当前没有待确认的启用操作")
 		return errors.New("当前没有待确认的启用操作")
 	}
+	s.logger.Infof("透明代理确认请求：取消自动回滚（原截止 %s）", until.Format(time.RFC3339))
 	s.mu.Lock()
 	if s.cancel != nil {
 		s.cancel()
@@ -686,6 +802,7 @@ func (s *TransparentService) Confirm(_ context.Context) error {
 	s.mu.Unlock()
 
 	if err := s.clearPending(); err != nil {
+		s.logger.Errorf("透明代理确认失败（清除 pending 失败）: %v", err)
 		return err
 	}
 	s.logger.Info("透明代理已确认，自动回滚已取消")
@@ -708,14 +825,20 @@ func (s *TransparentService) disable(ctx context.Context) error {
 	// 都会让规则永久留在宿主上，而用户已经点过关闭、界面也显示已关闭。
 	// 托管标记是专门记录这件事的，且 Teardown 本身幂等，多拆一次无害。
 	tproxyManaged := s.tproxyManaged()
+	s.logger.Infof("透明代理关闭执行: managed=%v hasApplier=%v customRules=%d",
+		tproxyManaged, s.hasApplier(), len(s.customRulesForTeardown()))
 	if s.hasApplier() && tproxyManaged {
-		if err := s.applier.Teardown(ctx); err != nil {
+		if err := s.applier.Teardown(ctx, s.customRulesForTeardown()); err != nil {
 			// 拆除失败时刻意不清标记：规则可能还在宿主上，标记留着才能让
 			// 下一次关闭（或启动时的 ReconcileState）再尝试拆一次
 			s.logger.Errorf("拆除透明代理规则失败: %v", err)
 		} else if merr := s.setTProxyManaged(false); merr != nil {
 			s.logger.Errorf("清理规则托管标记失败: %v", merr)
+		} else {
+			s.logger.Info("透明代理防火墙规则与托管标记已清除")
 		}
+	} else if !tproxyManaged {
+		s.logger.Info("透明代理关闭：未托管，跳过防火墙拆除（仅落关闭状态）")
 	}
 
 	// 关闭要写进 base.yaml，且必须显式写 tun.enable: false，不能只把键删掉。
@@ -878,7 +1001,7 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		// 跟上它。
 		s.logger.Error("检测到本面板下发的 TProxy 规则已与基础配置不符" +
 			"（配置里已无 tproxy-port 或已切到 TUN），拆除残留规则")
-		if err := s.applier.Teardown(ctx); err != nil {
+		if err := s.applier.Teardown(ctx, s.customRulesForTeardown()); err != nil {
 			// 拆除失败时保留标记，下次启动或用户点关闭时还会再试一次
 			s.logger.Errorf("拆除残留 TProxy 规则失败: %v", err)
 			return
@@ -908,7 +1031,7 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 	// 走 disable() 会让每次"带 TProxy 开关的宿主重启"都白拉一遍所有订阅，
 	// 且那一次合并用的是没有超时约束的 rootCtx。
 	// 这里只做"拆规则 + 落状态"，配置由后续那次合并按新状态重新生成。
-	if err := s.applier.Teardown(ctx); err != nil {
+	if err := s.applier.Teardown(ctx, s.customRulesForTeardown()); err != nil {
 		// 规则本来就不存在，Teardown 是幂等的；失败只记录不阻断落状态，
 		// 否则状态会卡在"记录说开着、规则确实没有"的原样
 		s.logger.Errorf("拆除透明代理规则失败（继续回落状态）: %v", err)
@@ -968,21 +1091,25 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 //
 // 只在已托管 TProxy 时动作。未托管（用户手填 tproxy-port、自己维护规则）时
 // 什么都不做——那些规则不属于面板。
-func (s *TransparentService) Resync(ctx context.Context) {
+//
+// 返回 error 供 SaveCustomRules 等需要如实上报"是否已立即生效"的调用方使用；
+// 合并流程末尾的 resyncTransparent 仍可忽略返回值（配置已落盘，规则同步
+// 失败不该让"保存配置"报失败）。
+func (s *TransparentService) Resync(ctx context.Context) error {
 	if !s.hasApplier() || !s.tproxyManaged() {
-		return
+		return nil
 	}
 	st := s.state()
 	if !st.Enabled || st.Mode != string(netcheck.ModeTProxy) {
 		// 配置已经不是"面板托管的 TProxy"了。这属于状态不一致，由
 		// ReconcileState 在启动时处理（它会拆掉孤儿规则）；
 		// 这里不越权拆规则——合并流程每次都跑，误判的代价太大。
-		return
+		return nil
 	}
 	// 待确认状态下不介入：此时用户正在验证网络，重下发会打断他的验证，
 	// 且回滚逻辑依赖当前那套规则。
 	if !s.pendingUntil().IsZero() {
-		return
+		return nil
 	}
 
 	want := s.tproxyParams(st.TProxyPort)
@@ -990,23 +1117,103 @@ func (s *TransparentService) Resync(ctx context.Context) {
 	if sig == s.getString(settingTProxyAppliedSig, "") {
 		// 配置没漂移。这是绝大多数合并的情形（改节点、换订阅都不影响规则），
 		// 直接返回避免无谓的重下发——Apply 会先删表再建，期间有瞬时丢包。
-		return
+		return nil
 	}
 
 	s.logger.Infof("检测到透明代理相关配置已变更，重新下发防火墙规则（%s -> %s）",
 		s.getString(settingTProxyAppliedSig, "(无记录)"), sig)
 	if err := s.applier.Apply(ctx, want); err != nil {
-		// 下发失败时保留旧指纹：下次合并还会再试一次。
+		// 下发失败时保留旧指纹与旧 applied 快照：下次合并还会再试一次。
 		// 不拆旧规则——旧规则至少还能工作（只是端口对不上新配置），
 		// 拆了就是彻底断网。Apply 内部失败时已自行清理到一致状态。
 		s.logger.Errorf("重新下发防火墙规则失败，规则仍是变更前的状态，"+
 			"透明代理可能与当前配置不一致: %v", err)
-		return
+		return fmt.Errorf("重新下发防火墙规则失败: %w", err)
 	}
 	if err := s.store.SetSetting(settingTProxyAppliedSig, sig); err != nil {
 		s.logger.Errorf("记录规则参数指纹失败: %v", err)
 	}
+	s.persistAppliedCustomRules(want.CustomRules)
 	s.logger.Info("防火墙规则已与当前配置同步")
+	return nil
+}
+
+// GetCustomRules 返回用户自定义防火墙规则原文。
+//
+// 返回未规范化的原始文本（保留注释与空行），用户重新编辑时看到的是
+// 自己写的样子，而不是被格式化过的版本。
+func (s *TransparentService) GetCustomRules() string {
+	return s.getString(settingCustomRules, "")
+}
+
+// SaveCustomRules 校验并保存用户自定义防火墙规则。
+//
+// 存原文（非规范化结果）：应用时才规范化，用户再次编辑时保留自己的
+// 排版。校验失败时返回带行号的错误，由接口原样透出给界面。
+//
+// 保存后若 TProxy 正在运行，立即重新应用让新规则生效。走 Resync 而非
+// 90 秒确认窗口：规则只是增量变化（内置规则未动），风险远低于首次启用；
+// Resync 按指纹判断，规则没变时是幂等空转。
+//
+// Resync 失败会向上返回：库已写入新文本，但宿主可能仍是旧规则——
+// 绝不能对调用方谎报"已立即重新应用"。
+func (s *TransparentService) SaveCustomRules(ctx context.Context, text string) error {
+	normalized, err := netcheck.NormalizeCustomRules(text)
+	if err != nil {
+		s.logger.Errorf("保存自定义防火墙规则被拒绝（格式校验失败）: %v", err)
+		return err
+	}
+	s.logger.Infof("保存自定义防火墙规则: lines=%d tproxyManaged=%v",
+		len(normalized), s.tproxyManaged())
+	if err := s.store.SetSetting(settingCustomRules, text); err != nil {
+		s.logger.Errorf("保存自定义防火墙规则失败: %v", err)
+		return fmt.Errorf("保存自定义防火墙规则失败: %w", err)
+	}
+	if err := s.Resync(ctx); err != nil {
+		s.logger.Errorf("自定义防火墙规则已落库，但重新应用失败: %v", err)
+		return fmt.Errorf("规则已保存到数据库，但重新应用到宿主失败（请检查系统设置里的「规则不同步」提示后重试）: %w", err)
+	}
+	if s.tproxyManaged() {
+		s.logger.Info("自定义防火墙规则已保存并已尝试同步到宿主")
+	} else {
+		s.logger.Info("自定义防火墙规则已保存（当前未托管 TProxy，仅落库）")
+	}
+	return nil
+}
+
+// BuiltinRules 返回面板内置 nft 规则文本与策略路由命令（按当前参数生成）。
+//
+// 供界面"查看内置规则"使用——注意这是"按当前配置该下发的样子"，
+// 与实际生效的规则（ActiveRules）可能不同：用户改过端口但还没合并时，
+// 两者会有短暂差异。
+func (s *TransparentService) BuiltinRules() (string, []string, error) {
+	p := s.tproxyParams(s.state().TProxyPort)
+	rules, err := netcheck.BuildNFTRules(p)
+	if err != nil {
+		return "", nil, err
+	}
+	cmds := make([]string, 0, len(netcheck.PolicyRouteCommands(p.EnableIPv6)))
+	for _, c := range netcheck.PolicyRouteCommands(p.EnableIPv6) {
+		cmds = append(cmds, strings.Join(c, " "))
+	}
+	return rules, cmds, nil
+}
+
+// ActiveRules 返回宿主上实际生效的面板 nft 规则文本。
+// TProxy 未开启或表不存在时返回空字符串（界面据此提示"未开启"）。
+func (s *TransparentService) ActiveRules(ctx context.Context) (string, error) {
+	if !s.hasApplier() {
+		return "", nil
+	}
+	return s.applier.DumpRules(ctx)
+}
+
+// IPTablesBackend 返回 iptables 命令的后端类型：nf_tables / legacy / 空。
+//
+// 自定义防火墙规则按 iptables 语法执行，用户需要知道规则最终落到了哪套
+// 后端：legacy 与 nftables 两套规则互不可见，写错地方等于没写。
+func (s *TransparentService) IPTablesBackend() string {
+	return s.detect().IPTablesBackend
 }
 
 // startRollbackTimer 启动内存中的回滚定时器。
@@ -1067,10 +1274,14 @@ func (s *TransparentService) tproxyManaged() bool {
 }
 
 // setTProxyManaged 落库托管标记。
+// 关闭托管时同步清空"已应用自定义规则"快照：宿主规则已拆（或即将视为
+// 不再由面板托管），快照留着只会让下次启用误以为有一批旧规则要先拆。
 func (s *TransparentService) setTProxyManaged(managed bool) error {
 	v := ""
 	if managed {
 		v = "1"
+	} else {
+		s.clearAppliedCustomRules()
 	}
 	return s.store.SetSetting(settingTProxyManaged, v)
 }

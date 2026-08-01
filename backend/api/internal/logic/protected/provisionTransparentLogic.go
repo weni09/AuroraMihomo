@@ -31,12 +31,16 @@ func NewProvisionTransparentLogic(ctx context.Context, svcCtx *svc.ServiceContex
 // 单步失败不算 error：那种情况要连着"哪一步失败、命令原始输出是什么"
 // 一起返回，否则用户只知道"失败了"却不知道去修什么。
 func (l *ProvisionTransparentLogic) ProvisionTransparent(req *types.TransparentProvisionReq) (resp *types.TransparentProvisionResp, err error) {
+	l.Infof("面板操作：透明代理环境准备 installPackages=%v applySysctl=%v",
+		req.InstallPackages, req.ApplySysctl)
 	res, env, err := l.svcCtx.TransparentService.Provision(l.ctx, netcheck.ProvisionOptions{
 		InstallPackages: req.InstallPackages,
 		ApplySysctl:     req.ApplySysctl,
 	})
 	if err != nil {
+		l.Errorf("面板操作：透明代理环境准备失败: %v", err)
 		return nil, err
 	}
+	l.Infof("面板操作：透明代理环境准备结束 success=%v message=%s", res.Success, res.Message)
 	return toTransparentProvision(res, env), nil
 }

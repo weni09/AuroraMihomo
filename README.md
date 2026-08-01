@@ -97,6 +97,16 @@ docker compose -f docker/docker-compose.yml up -d --build
 
 默认配置不支持透明代理。需要时编辑 `docker/docker-compose.yml`，取消 `user: "0:0"` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
 
+另外在**宿主机**写入转发与 `rp_filter`（容器内不会改 sysctl；host 网络下 Docker 也会拒绝相关 `--sysctl`）：
+
+```bash
+sudo cp scripts/sysctl-auroramihomo.conf /etc/sysctl.d/99-auroramihomo.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo.conf
+# 可选：BBR（内核需支持；与转发项分文件）
+sudo cp scripts/sysctl-auroramihomo-bbr.conf /etc/sysctl.d/99-auroramihomo-bbr.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf
+```
+
 TProxy 需要的 `iptables`/`nftables`/`iproute2` 已预装在镜像里，开箱可用。两种模式的依赖不同：TUN 需要映射 `/dev/net/tun` 但不需要这些命令行工具（mihomo 自己走 netlink）；TProxy 反之，不需要 tun 设备。
 
 ---
@@ -116,9 +126,15 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 
 1. 探测系统、架构与服务管理器（systemd 或 OpenRC）
 2. 从 Release 拉对应包、校验 sha256、解压到 `/opt/auroramihomo`
-3. 补齐透明代理依赖：缺失时装 `iptables`/`nftables`/`iproute2`（Alpine 还有独立的 `ip6tables`），加载 `tun` 与 `nft_tproxy` 并写 `/etc/modules-load.d/` 持久化
+3. 补齐透明代理依赖：缺失时装 `iptables`/`nftables`/`iproute2`（Alpine 还有独立的 `ip6tables`），加载 `tun` 与 `nft_tproxy` 并写 `/etc/modules-load.d/` 持久化；**写入 `/etc/sysctl.d/99-auroramihomo.conf`**（`ip_forward`、`ipv6.conf.all.forwarding`、`rp_filter=2`，见 `scripts/sysctl-auroramihomo.conf`）并 `sysctl -p` 加载；内核支持时 **best-effort 启用 BBR**（独立文件 `99-auroramihomo-bbr.conf` / `scripts/sysctl-auroramihomo-bbr.conf`，失败只告警不阻断安装）
 4. 装服务单元 —— systemd 装 unit，Alpine 装 OpenRC 脚本（用 `supervise-daemon`，面板的「重启」依赖它）
 5. 启用开机自启并启动服务
+
+**开箱默认配置：** 首次启动若数据库中还没有基础配置（base），会自动写入
+`backend/internal/service/default_base.yaml`（构建时嵌入二进制）。内容从真实部署
+提炼并去掉个人数据：公共 DNS/DoH、`nameserver-policy`、私网直连规则、`MATCH,DIRECT`
+兜底、TUN 排除地址等。**不会**预写订阅节点、设备 SRC-IP、内网 DNS、口令或
+`tproxy-port`（透明代理仍由面板开关写入）。已有 base 时不会覆盖。
 
 升级时重跑同一条命令：保留现有配置与已有服务单元，自动停服替换再拉起。
 
@@ -134,12 +150,22 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 ```bash
 sudo sh install.sh --version v0.2.0      # 装指定版本
 sudo sh install.sh --dir /srv/aurora     # 换安装目录
-sudo sh install.sh --no-deps             # 不动系统：不装包、不加载内核模块
+sudo sh install.sh --no-deps             # 不动系统：不装包、不加载内核模块、不写 sysctl
 sudo sh install.sh --no-service          # 不装服务单元（旧名 --no-systemd 仍可用）
 sudo sh install.sh --no-start            # 装好但不启用/不启动
 ```
 
-`--no-deps` 之后透明代理仍需手工补齐依赖，命令见下面「Alpine 补充说明」。容器内运行时脚本会跳过依赖补齐（装的包重建即丢、`modprobe` 会作用于宿主内核），容器部署请用 Docker 镜像，依赖已预装。
+`--no-deps` 之后透明代理仍需手工补齐依赖，命令见下面「Alpine 补充说明」。容器内运行时脚本会跳过依赖补齐（装的包重建即丢、`modprobe`/`sysctl` 会作用于宿主内核），容器部署请用 Docker 镜像；**宿主机**请另执行：
+
+```bash
+sudo cp scripts/sysctl-auroramihomo.conf /etc/sysctl.d/99-auroramihomo.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo.conf
+# 可选 BBR
+sudo cp scripts/sysctl-auroramihomo-bbr.conf /etc/sysctl.d/99-auroramihomo-bbr.conf
+sudo sysctl -p /etc/sysctl.d/99-auroramihomo-bbr.conf
+```
+
+（`docker/docker-compose.yml` 注释里也有同一套步骤。）
 
 #### 离线安装
 

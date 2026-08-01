@@ -93,6 +93,24 @@ func (s *Scheduler) SetLogCleanupJob(enabled bool, spec string, cmd func()) erro
 	return s.SetJob(JobLogCleanup, enabled, spec, cmd)
 }
 
+// NextRun 返回具名任务下一次计划执行时间。
+//
+// 任务未注册或调度器尚未给出下一次时刻时返回零值。供任务列表把
+// settings 驱动的定时任务（日志清理 / 自动更新 / 远程拉取）与 DB 任务
+// 一并展示「下次运行」，避免控制台只看到一半调度。
+func (s *Scheduler) NextRun(name string) time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.named[name]
+	if !ok {
+		return time.Time{}
+	}
+	return s.cron.Entry(id).Next
+}
+
 func (s *Scheduler) Start(ctx context.Context) {
 	logx.Info("Starting background scheduler...")
 	s.cron.Start()

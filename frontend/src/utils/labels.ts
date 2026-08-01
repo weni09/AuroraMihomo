@@ -5,7 +5,16 @@ export const subStatusLabel = (s?: string): string =>
   ({ ok: '正常', error: '失败', pending: '待刷新' }[s || ''] || '未刷新')
 
 export const taskStatusLabel = (s?: string): string =>
-  ({ ok: '成功', success: '成功', error: '失败', running: '执行中', idle: '待运行' }[s || ''] || '待运行')
+  ({
+    ok: '成功',
+    success: '成功',
+    error: '失败',
+    running: '执行中',
+    idle: '待运行',
+    // settings 调度任务：已装入 cron 或已关闭
+    scheduled: '已调度',
+    disabled: '已关闭',
+  })[s || ''] || '待运行'
 
 export const wsStatusLabel = (s?: string): string =>
   ({

@@ -38,6 +38,12 @@ export interface TransparentEnvReport {
   hostNetwork: boolean
   /** /dev/net/tun 的实际路径，不存在时为空 */
   tunDevice: string
+  /**
+   * iptables 命令的后端类型：nf_tables / legacy / 空。
+   * 自定义防火墙规则按 iptables 语法执行，用户需要知道规则落在哪套后端
+   * ——legacy 与 nftables 两套规则互不可见，写错地方等于没写。
+   */
+  iptablesBackend: string
   modes: TransparentModeStatus[]
   /** 不阻止启用但需要用户知道的问题 */
   warnings: string[]
@@ -111,9 +117,26 @@ const emptyEnv = (): TransparentEnvReport => ({
   inContainer: false,
   hostNetwork: false,
   tunDevice: '',
+  iptablesBackend: '',
   modes: [],
   warnings: [],
 })
+
+/**
+ * 自定义防火墙规则与内置规则展示数据（GET /transparent/rules）。
+ */
+export interface TransparentRules {
+  /** 用户自定义规则原文（未规范化，保留注释与空行） */
+  customRules: string
+  /** iptables 命令的后端类型：nf_tables / legacy / 空 */
+  iptablesBackend: string
+  /** 面板内置 nft 规则文本（按当前配置参数生成） */
+  builtinNFTRules: string
+  /** 策略路由命令（每行一条） */
+  policyRoutes: string[]
+  /** 宿主上实际生效的面板 nft 规则；TProxy 未开启时为空 */
+  activeRules: string
+}
 
 /**
  * 透明代理开关。
@@ -148,6 +171,14 @@ export const useTransparentStore = defineStore('transparent', {
      * 失败时用户需要对着命令原始输出排查，切走再回来不该丢失。
      */
     provisionResult: null as TransparentProvisionResult | null,
+    /**
+     * 自定义防火墙规则与内置规则展示数据。独立于 status 加载：
+     * status 每次请求都做实时环境检测（读 /proc、exec 子进程），
+     * 规则数据只在需要编辑/查看时拉取。
+     */
+    rules: null as TransparentRules | null,
+    /** 自定义规则是否正在保存（按钮禁用与文案反馈） */
+    savingRules: false,
     /** 本地倒计时定时器 id */
     timer: 0 as unknown as ReturnType<typeof setInterval> | 0,
   }),
@@ -288,6 +319,48 @@ export const useTransparentStore = defineStore('transparent', {
         return false
       } finally {
         this.provisioning = false
+      }
+    },
+
+    /**
+     * 拉取自定义防火墙规则与内置规则展示数据（GET /transparent/rules）。
+     *
+     * 与 status 分开请求：status 每次调用都做实时环境检测（读 /proc、
+     * exec 出 ip/iptables 子进程），而规则数据只在编辑/查看时有用，
+     * 为一次展示付一次环境检测的代价不成比例。
+     */
+    async fetchRules() {
+      try {
+        const res = await api.get<TransparentRules>('/transparent/rules')
+        this.rules = res.data
+      } catch (e) {
+        useNotifyStore().error(apiErrorMessage(e, '加载防火墙规则失败'))
+      }
+    },
+
+    /**
+     * 保存自定义防火墙规则（PUT /transparent/rules）。
+     *
+     * 后端会校验每行格式并在 TProxy 运行中时立即重新应用；
+     * 保存成功后重新拉取展示数据（内置规则文本可能随参数变化）。
+     */
+    async saveRules(text: string): Promise<boolean> {
+      this.savingRules = true
+      try {
+        const res = await api.put<{ message?: string }>('/transparent/rules', { customRules: text })
+        // 成功文案以后端为准：重应用失败时后端会返回错误，不会走到这里
+        useNotifyStore().success(res.data?.message || '自定义防火墙规则已保存')
+        await this.fetchRules()
+        // 重应用成功/跳过都可能改变 rulesOutOfSync，顺带刷新状态
+        if (this.status.enabled && this.status.mode === 'tproxy') {
+          await this.fetch()
+        }
+        return true
+      } catch (e) {
+        useNotifyStore().error(apiErrorMessage(e, '保存防火墙规则失败'))
+        return false
+      } finally {
+        this.savingRules = false
       }
     },
 

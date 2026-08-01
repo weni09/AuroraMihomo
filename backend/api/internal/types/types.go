@@ -261,6 +261,10 @@ type Status struct {
 	Version    string `json:"version"`
 	AppVersion string `json:"appVersion"`
 	Pid        int    `json:"pid"`
+	// ServerTime 宿主当前时间（RFC3339，含时区偏移）
+	ServerTime string `json:"serverTime,optional"`
+	// Timezone IANA 时区名（如 Asia/Shanghai）
+	Timezone string `json:"timezone,optional"`
 }
 
 type SubFile struct {
@@ -366,6 +370,7 @@ type TransparentEnvReport struct {
 	InContainer         bool                    `json:"inContainer"`
 	HostNetwork         bool                    `json:"hostNetwork"`
 	TunDevice           string                  `json:"tunDevice"`
+	IPTablesBackend     string                  `json:"iptablesBackend"`
 	Modes               []TransparentModeStatus `json:"modes"`
 	Warnings            []string                `json:"warnings"`
 }
@@ -398,6 +403,18 @@ type TransparentProvisionStep struct {
 	Success bool   `json:"success"`
 	Detail  string `json:"detail"`
 	Skipped bool   `json:"skipped"`
+}
+
+type TransparentRulesReq struct {
+	CustomRules string `json:"customRules"`
+}
+
+type TransparentRulesResp struct {
+	CustomRules     string   `json:"customRules"`
+	IptablesBackend string   `json:"iptablesBackend"`
+	BuiltinNFTRules string   `json:"builtinNFTRules"`
+	PolicyRoutes    []string `json:"policyRoutes"`
+	ActiveRules     string   `json:"activeRules"`
 }
 
 type TransparentStatusResp struct {

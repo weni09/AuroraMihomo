@@ -70,6 +70,24 @@ func TestInjectTUNAutoRedirectOptional(t *testing.T) {
 	}
 }
 
+// 用户在 base 显式关闭 auto-redirect 时，注入不得再强行改回 true：
+// 部分环境上 auto-redirect 会让 mihomo 静默关掉整个 TUN。
+func TestInjectTUNAutoRedirectRespectsUserFalse(t *testing.T) {
+	cfg := &domain.Config{}
+	cfg.TUN.Enable = true
+	cfg.TUN.Extra = map[string]interface{}{"auto-redirect": false}
+	if err := Inject(cfg, InjectOptions{AutoRedirect: true}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+	v, ok := cfg.TUN.Extra["auto-redirect"]
+	if !ok {
+		t.Fatal("用户声明的 auto-redirect 不应被删掉")
+	}
+	if v != false {
+		t.Errorf("用户写的 auto-redirect: false 应保留，实际 %v", v)
+	}
+}
+
 func TestInjectTUNAcceptsAllValidStacks(t *testing.T) {
 	for _, s := range []string{"system", "gvisor", "mixed"} {
 		c := &domain.Config{}

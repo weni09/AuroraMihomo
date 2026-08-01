@@ -274,7 +274,7 @@ func (p *Provisioner) applySysctl(ctx context.Context, report *Report) []Provisi
 			Name:    "写入 sysctl 配置",
 			Success: true,
 			Skipped: true,
-			Detail:  "ip_forward 与 rp_filter 均已合规，无需改动",
+			Detail:  "ip_forward / ipv6.forwarding 与 rp_filter 均已合规，无需改动",
 		}}
 	}
 
@@ -357,15 +357,25 @@ func isUnsupportedOptionError(out string) bool {
 
 // neededSysctl 只返回确实需要改的项。
 //
-// 刻意不无条件全写：ip_forward 只在网关场景需要，用户可能有意关着；
-// rp_filter 已经是宽松值时也没必要动。改得越少越好。
+// 刻意不无条件全写：转发与 rp_filter 已经合规时没必要动。
+// 改得越少越好。键名与 scripts/sysctl-auroramihomo.conf、install.sh
+// 的 apply_sysctl 保持一致，避免"面板准备"与"在线安装"写出两套内容。
 func (p *Provisioner) neededSysctl(report *Report) []sysctlSetting {
 	var out []sysctlSetting
 	if report.SysctlIPForward == "0" {
 		out = append(out, sysctlSetting{
 			key:   "net.ipv4.ip_forward",
 			value: "1",
-			why:   "作为局域网网关转发其它设备的流量",
+			why:   "作为局域网网关转发其它设备的 IPv4 流量",
+		})
+	}
+	// IPv6 转发与 v4 成对写入：只开 v4 时双栈局域网的 v6 流量仍无法经本机转发。
+	// 读不到（空）表示当前内核没有该开关，不写入，以免 sysctl -p 报错。
+	if report.SysctlIPv6Forward == "0" {
+		out = append(out, sysctlSetting{
+			key:   "net.ipv6.conf.all.forwarding",
+			value: "1",
+			why:   "作为局域网网关/旁路由转发其它设备的 IPv6 流量",
 		})
 	}
 	// rp_filter=1 是严格反向路径校验，会丢掉 TPROXY 打标后回环的包。

@@ -68,11 +68,15 @@ func (f *fakeApplier) Apply(_ context.Context, p netcheck.TProxyParams) error {
 	return f.applyErr
 }
 
-func (f *fakeApplier) Teardown(_ context.Context) error {
+func (f *fakeApplier) Teardown(_ context.Context, _ ...[]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tornDown++
 	return nil
+}
+
+func (f *fakeApplier) DumpRules(_ context.Context) (string, error) {
+	return "table inet aurora_tproxy { }", nil
 }
 
 func (f *fakeApplier) Snapshot(_ context.Context) (string, error) {
@@ -1554,5 +1558,115 @@ func TestResyncFailureSurfacesAsOutOfSync(t *testing.T) {
 	}
 	if _, down, _ := app.counts(); down != 0 {
 		t.Errorf("不该拆旧规则（那会让 DNS 彻底不可用），实际拆除 %d 次", down)
+	}
+}
+
+// ---------- 自定义防火墙规则 ----------
+
+// 非法规则（sudo 前缀、既非命令也非参数）必须在保存时拒绝，且不落库。
+func TestSaveCustomRulesRejectsInvalid(t *testing.T) {
+	s, store, _, _ := newResyncSvc(t)
+
+	if err := s.SaveCustomRules(context.Background(), "sudo iptables -A INPUT -j ACCEPT"); err == nil {
+		t.Fatal("sudo 前缀应被拒绝")
+	}
+	if err := s.SaveCustomRules(context.Background(), "随便写的行"); err == nil {
+		t.Fatal("非命令行应被拒绝")
+	}
+	if _, err := store.GetSetting(settingCustomRules); err == nil {
+		t.Fatal("校验失败时不应落库")
+	}
+}
+
+// 保存自定义规则后指纹变化，Resync 必须重下发，且新规则进入下发参数。
+func TestSaveCustomRulesTriggersResync(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	// 裸参数形式：保存后 customRules() 会补 iptables 前缀
+	ruleText := "# 放行内网回程\n-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n"
+	if err := s.SaveCustomRules(context.Background(), ruleText); err != nil {
+		t.Fatalf("保存规则失败: %v", err)
+	}
+
+	if applied, _, _ := app.counts(); applied != 2 {
+		t.Fatalf("保存规则后应立即重下发，实际下发 %d 次", applied)
+	}
+	got := app.lastParams.CustomRules
+	if len(got) != 1 || got[0] != "iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN" {
+		t.Fatalf("重下发应携带规范化后的自定义规则，实际 %v", got)
+	}
+}
+
+// 保存与当前内容一致的规则时不重下发（指纹相同，幂等空转）。
+func TestSaveCustomRulesSameContentSkipsResync(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	ruleText := "iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n"
+	if err := s.SaveCustomRules(context.Background(), ruleText); err != nil {
+		t.Fatalf("保存规则失败: %v", err)
+	}
+	if applied, _, _ := app.counts(); applied != 2 {
+		t.Fatalf("首次保存应重下发，实际 %d 次", applied)
+	}
+
+	// 相同内容再保存：指纹没变，不应重下发
+	if err := s.SaveCustomRules(context.Background(), ruleText); err != nil {
+		t.Fatalf("重复保存失败: %v", err)
+	}
+	if applied, _, _ := app.counts(); applied != 2 {
+		t.Errorf("内容未变的保存不应重下发，实际 %d 次", applied)
+	}
+}
+
+// Apply 成功后应落库已应用自定义规则快照；关闭托管后快照清空。
+func TestAppliedCustomRulesSnapshotLifecycle(t *testing.T) {
+	s, store, _, _ := newResyncSvc(t)
+	ruleText := "iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n"
+	if err := store.SetSetting(settingCustomRules, ruleText); err != nil {
+		t.Fatalf("预置规则失败: %v", err)
+	}
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	applied, err := store.GetSetting(settingCustomRulesApplied)
+	if err != nil || !strings.Contains(applied, "iptables -t nat -A") {
+		t.Fatalf("启用后应落库已应用快照, got %q err=%v", applied, err)
+	}
+	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+	if v := store.kv[settingCustomRulesApplied]; v != "" {
+		t.Fatalf("关闭托管后应清空已应用快照, got %q", v)
+	}
+}
+
+// SaveCustomRules 在重应用失败时必须返回 error，不能谎报成功。
+func TestSaveCustomRulesReturnsResyncError(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	app.applyErr = errors.New("模拟下发失败")
+	err := s.SaveCustomRules(context.Background(), "iptables -A INPUT -j ACCEPT\n")
+	if err == nil {
+		t.Fatal("重应用失败时应返回 error")
+	}
+	if !strings.Contains(err.Error(), "重新应用") && !strings.Contains(err.Error(), "重新下发") {
+		t.Fatalf("错误应说明重应用失败: %v", err)
 	}
 }

@@ -69,22 +69,12 @@
       "count": 2
     }
   },
-  "src/views/DashboardView.vue": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
   "src/views/FilesView.vue": {
     "@typescript-eslint/no-explicit-any": {
       "count": 15
     }
   },
   "src/views/LoginView.vue": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
-  "src/views/MihomoView.vue": {
     "@typescript-eslint/no-explicit-any": {
       "count": 1
     }

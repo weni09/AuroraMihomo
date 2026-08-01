@@ -206,6 +206,23 @@ export const baseConfigSchema: FormSection[] = [
         help: '这些域名不使用 fake-ip 而返回真实 IP，每行一条，支持 + 通配前缀。',
       },
       { key: 'dns.nameserver', title: '名称服务器 (Nameserver)', type: 'string-array', placeholder: 'https://223.5.5.5/dns-query, https://1.12.12.12/dns-query', help: '默认 DNS 服务器，多个用逗号分隔。支持 udp/tcp/tls/https/quic 等格式。' },
+      {
+        // 按域名/规则集指定上游，优先于默认 nameserver。值可以是单个服务器字符串，
+        // 也可以是服务器列表；键支持 geosite:、规则集名、+.domain 等官方写法。
+        key: 'dns.nameserver-policy',
+        title: '域名解析策略 (Nameserver Policy)',
+        type: 'yaml-object',
+        code: 'yaml',
+        codeHeight: '220px',
+        placeholder:
+          '"geosite:cn,private":\n  - https://doh.pub/dns-query\n  - https://dns.alidns.com/dns-query\n"+.google.com":\n  - https://cloudflare-dns.com/dns-query\n  - https://dns.google/dns-query\n"www.baidu.com": https://doh.pub/dns-query',
+        help:
+          '按域名指定使用哪组 DNS 上游，匹配到的规则优先于上方「名称服务器」。' +
+          '键可以是具体域名、+.example.com 通配、geosite:cn / rule-set:xxx 等；' +
+          '值可以是单个服务器字符串，或 YAML 列表（多个上游）。' +
+          '常用于国内域名走国内 DoH、Google 等走境外 DoH，避免污染。' +
+          '留空表示不使用策略，全部走默认 nameserver。',
+      },
       { key: 'dns.fallback', title: '备用服务器 (Fallback)', type: 'string-array', placeholder: 'https://1.1.1.1/dns-query, https://8.8.8.8/dns-query', help: '备用 DNS，用于 nameserver 结果被判定为污染时回退查询。建议用 DoH（https://1.1.1.1/dns-query）：透明代理环境下，直连的 UDP 上游（裸 IP:53）可能不可达或被劫持，而 DoH 走 443 经代理可达。' },
       {
         key: 'dns.fallback-filter',
@@ -260,8 +277,21 @@ export const baseConfigSchema: FormSection[] = [
         ],
         help: 'system 兼容性最好；gvisor 为官方默认，用户态实现更安全；mixed 为混合模式。',
       },
-      { key: 'tun.auto-route', title: '自动路由 (Auto Route)', type: 'switch', help: '自动接管系统路由表，使全部流量进入 TUN。关闭则需手动配路由。' },
+      { key: 'tun.auto-route', title: '自动路由 (Auto Route)', type: 'switch', help: '自动接管本机路由表，使本机发出的流量进入 TUN。单机代理的核心开关；关闭则需手动配路由。' },
       { key: 'tun.auto-detect-interface', title: '自动检测接口', type: 'switch', help: '自动探测真实出口网卡，网络切换（如 WiFi 转有线）时更稳。' },
+      {
+        key: 'tun.auto-redirect',
+        title: '自动防火墙重定向 (Auto Redirect)',
+        type: 'switch',
+        help:
+          '让 mihomo 自行下发并在退出时清理 nftables/iptables 重定向规则（仅 Linux 生效，macOS 会忽略）。' +
+          '与「自动路由」不同：auto-route 改的是本机路由表，管本机进程出网；auto-redirect 改的是防火墙，' +
+          '用于把经过本机转发的流量（旁路由/网关场景下的局域网设备）也拐进 TUN。' +
+          '单机自用一般保持关闭即可——开着 auto-route + dns-hijack 已能接管本机流量。' +
+          '部分环境（如 Alpine virt、精简内核/nft 组合）开启后 mihomo 可能静默关掉整个 TUN：' +
+          '配置里仍写 enable: true，但运行时无 Meta 虚拟网卡、策略路由也不出现，表现为「TUN 开了却完全不生效」。' +
+          '若遇此现象请关闭本项并重新保存下发。仅在确认本机要做网关、且环境能正常建立 Meta 网卡时再开启。',
+      },
       { key: 'tun.dns-hijack', title: 'DNS 劫持 (DNS Hijack)', type: 'string-array', placeholder: 'any:53, tcp://any:53', help: '劫持这些地址的 DNS 请求，多个用逗号分隔。不写协议默认为 udp://。' },
       { key: 'tun.device', title: '网卡名称 (Device)', type: 'text', placeholder: 'utun0', help: '留空由内核自动命名，如 utun0。' },
       { key: 'tun.mtu', title: 'MTU', type: 'number', placeholder: '9000', help: '最大传输单元，影响吞吐上限。不确定时留空使用默认值。' },

@@ -612,6 +612,8 @@ const displayValue = (key: string, type: string) => {
               </RouterLink>
               的开关是同一项配置，两边改的都是它。在本页修改后需点「保存并应用」才会生效，
               系统设置里的开关状态也在那时同步。只点「保存基础配置」不会重新下发配置。
+              若开启后系统看不到 Meta 虚拟网卡，请先关闭下方「自动防火墙重定向 (Auto Redirect)」再保存下发——
+              部分 Linux 环境上该项会导致 mihomo 静默停用整个 TUN。
             </p>
           </div>
           

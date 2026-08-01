@@ -70,6 +70,16 @@ type TProxyParams struct {
 	// 为 false 时兜底规则会被限定为仅 IPv4，避免 v6 包被打了标却没有对应的
 	// v6 策略路由可走——那会变成静默丢包的黑洞。
 	EnableIPv6 bool
+	// CustomRules 用户自定义防火墙规则（iptables 语法，已由
+	// NormalizeCustomRules 规范化为完整命令）。在内置 nft 规则生效后
+	// 逐条追加执行；Teardown 时逆序 -D 拆除（仅 -A/-I 形式）。
+	CustomRules []string
+	// PreviousCustomRules 宿主上"上一批已成功应用"的自定义规则。
+	//
+	// iptables -A 不幂等：重复 Apply 会叠规则；改 A→B 时若只按新列表
+	// 追加，旧 A 会永久留在链里。Apply 在追加 CustomRules 前会先逆序
+	// 拆除本列表。首次启用时为空。
+	PreviousCustomRules []string
 }
 
 // defaultLANCIDRs 私有网段。用户未指定时用这一组。

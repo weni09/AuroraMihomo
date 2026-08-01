@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"testing"
+	"time"
 )
 
 // 可重装任务此前每类都有一对 xxxID/hasXxx 字段与一个几乎相同的
@@ -110,6 +111,29 @@ func TestSetJobDisableWhenNeverEnabled(t *testing.T) {
 	// 从未装载过就直接禁用，不得 panic
 	if err := s.SetJob("never", false, "", func() {}); err != nil {
 		t.Errorf("不应报错: %v", err)
+	}
+}
+
+// NextRun 应对已注册任务给出非零下次时刻，未注册返回零值。
+func TestNextRun(t *testing.T) {
+	s := NewScheduler()
+	if !s.NextRun(JobLogCleanup).IsZero() {
+		t.Fatal("未注册任务的 NextRun 应为零值")
+	}
+	if err := s.SetLogCleanupJob(true, "0 30 3 * * *", func() {}); err != nil {
+		t.Fatal(err)
+	}
+	// robfig/cron 在 Start 前也可能填 Entry.Next；若仍为零，至少不应 panic
+	_ = s.NextRun(JobLogCleanup)
+	s.cron.Start()
+	defer s.cron.Stop()
+	// 给调度器一丁点时间计算 Next
+	next := s.NextRun(JobLogCleanup)
+	if next.IsZero() {
+		t.Fatal("已启动且已注册的清理任务应有下次运行时间")
+	}
+	if next.Before(time.Now().Add(-time.Minute)) {
+		t.Errorf("下次运行时间异常偏旧: %v", next)
 	}
 }
 

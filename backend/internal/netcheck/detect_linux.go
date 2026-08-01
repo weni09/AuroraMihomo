@@ -15,19 +15,20 @@ import (
 // probePaths 把所有被探测的路径收成一处，测试可替换成临时目录里的假数据。
 // 生产代码只用 defaultProbePaths。
 type probePaths struct {
-	procStatus      string // /proc/self/status，读 CapEff/CapBnd
-	procModules     string // /proc/modules，查内核模块
-	osRelease       string // /etc/os-release，判发行版
-	kernelRelease   string // /proc/sys/kernel/osrelease
-	devNetTun       string // /dev/net/tun
-	devTun          string // /dev/tun，sing-tun 的备选路径
-	sysClassMiscTun string // /sys/class/misc/tun，模块内建时也存在
-	dockerEnv       string // /.dockerenv
-	procOneCgroup   string // /proc/1/cgroup
-	selfNetNS       string // /proc/self/ns/net
-	oneNetNS        string // /proc/1/ns/net
-	sysctlIPForward string
-	sysctlRPFilter  string
+	procStatus        string // /proc/self/status，读 CapEff/CapBnd
+	procModules       string // /proc/modules，查内核模块
+	osRelease         string // /etc/os-release，判发行版
+	kernelRelease     string // /proc/sys/kernel/osrelease
+	devNetTun         string // /dev/net/tun
+	devTun            string // /dev/tun，sing-tun 的备选路径
+	sysClassMiscTun   string // /sys/class/misc/tun，模块内建时也存在
+	dockerEnv         string // /.dockerenv
+	procOneCgroup     string // /proc/1/cgroup
+	selfNetNS         string // /proc/self/ns/net
+	oneNetNS          string // /proc/1/ns/net
+	sysctlIPForward   string
+	sysctlIPv6Forward string // net.ipv6.conf.all.forwarding；无 IPv6 的内核上可能不存在
+	sysctlRPFilter    string
 	// sysctlConfDir 是 /proc/sys/net/ipv4/conf，用于枚举每个网卡的 rp_filter。
 	// 内核对某网卡取 max(all, <该网卡>)，只看 all 会漏掉"all 已宽松但网卡仍严格"
 	// 的情况——那种机器上 TProxy 依然丢包。
@@ -44,23 +45,24 @@ type probePaths struct {
 
 func defaultProbePaths() probePaths {
 	return probePaths{
-		procStatus:       "/proc/self/status",
-		procModules:      "/proc/modules",
-		osRelease:        "/etc/os-release",
-		kernelRelease:    "/proc/sys/kernel/osrelease",
-		devNetTun:        "/dev/net/tun",
-		devTun:           "/dev/tun",
-		sysClassMiscTun:  "/sys/class/misc/tun",
-		dockerEnv:        "/.dockerenv",
-		procOneCgroup:    "/proc/1/cgroup",
-		selfNetNS:        "/proc/self/ns/net",
-		oneNetNS:         "/proc/1/ns/net",
-		sysctlIPForward:  "/proc/sys/net/ipv4/ip_forward",
-		sysctlRPFilter:   "/proc/sys/net/ipv4/conf/all/rp_filter",
-		sysctlConfDir:    "/proc/sys/net/ipv4/conf",
-		resolvConf:       "/etc/resolv.conf",
-		procNetIPv6Route: "/proc/net/ipv6_route",
-		procNetIfInet6:   "/proc/net/if_inet6",
+		procStatus:        "/proc/self/status",
+		procModules:       "/proc/modules",
+		osRelease:         "/etc/os-release",
+		kernelRelease:     "/proc/sys/kernel/osrelease",
+		devNetTun:         "/dev/net/tun",
+		devTun:            "/dev/tun",
+		sysClassMiscTun:   "/sys/class/misc/tun",
+		dockerEnv:         "/.dockerenv",
+		procOneCgroup:     "/proc/1/cgroup",
+		selfNetNS:         "/proc/self/ns/net",
+		oneNetNS:          "/proc/1/ns/net",
+		sysctlIPForward:   "/proc/sys/net/ipv4/ip_forward",
+		sysctlIPv6Forward: "/proc/sys/net/ipv6/conf/all/forwarding",
+		sysctlRPFilter:    "/proc/sys/net/ipv4/conf/all/rp_filter",
+		sysctlConfDir:     "/proc/sys/net/ipv4/conf",
+		resolvConf:        "/etc/resolv.conf",
+		procNetIPv6Route:  "/proc/net/ipv6_route",
+		procNetIfInet6:    "/proc/net/if_inet6",
 	}
 }
 
@@ -129,6 +131,7 @@ func detectWith(p probePaths, c commandProbe, euid int) *Report {
 	// 人话提示，Provisioner 需要它们判断哪几项真的要改。此前只在
 	// collectWarnings 里读完即丢，准备逻辑只能重新读一遍。
 	r.SysctlIPForward = readFileTrim(p.sysctlIPForward)
+	r.SysctlIPv6Forward = readFileTrim(p.sysctlIPv6Forward)
 	r.SysctlRPFilter = readFileTrim(p.sysctlRPFilter)
 	r.RPFilterStrictIfaces = strictRPFilterIfaces(p.sysctlConfDir)
 
@@ -142,6 +145,10 @@ func detectWith(p probePaths, c commandProbe, euid int) *Report {
 		checkTUN(r, p, c),
 		checkTProxy(r, p, c),
 	}
+	// iptables 后端类型（nf_tables / legacy / 空）：自定义防火墙规则用
+	// iptables 语法书写，用户需要知道规则最终落到了哪套后端——
+	// legacy 与 nftables 两套规则互不可见，写错地方等于没写。
+	r.IPTablesBackend = iptablesBackend(c)
 	r.Warnings = collectWarnings(r, p, c)
 	return r
 }
@@ -359,7 +366,14 @@ func collectWarnings(r *Report, p probePaths, c commandProbe) []string {
 	// 网关模式必须开转发，否则局域网设备的流量到不了内核
 	if r.SysctlIPForward == "0" {
 		w = append(w, "net.ipv4.ip_forward 为 0，作为局域网网关时需要开启："+
-			"sysctl -w net.ipv4.ip_forward=1（持久化写 /etc/sysctl.d/）")
+			"sysctl -w net.ipv4.ip_forward=1（持久化写 /etc/sysctl.d/99-auroramihomo.conf）")
+	}
+	// IPv6 转发与 v4 成对：只开 v4 时局域网设备的 IPv6 仍无法经本机转发。
+	// 读不到（空）表示内核无该开关（极少见），不告警以免误导。
+	if r.SysctlIPv6Forward == "0" {
+		w = append(w, "net.ipv6.conf.all.forwarding 为 0，作为 IPv6 网关/旁路由时需要开启："+
+			"sysctl -w net.ipv6.conf.all.forwarding=1（持久化写 /etc/sysctl.d/99-auroramihomo.conf；"+
+			"安装脚本与面板「自动准备」会写入该项）")
 	}
 	// rp_filter=1（严格）会丢掉 TPROXY 打标后回环的包；Debian/Ubuntu 默认 2（宽松）可用
 	if r.SysctlRPFilter == "1" {

@@ -26,9 +26,12 @@ func NewConfirmTransparentLogic(ctx context.Context, svcCtx *svc.ServiceContext)
 func (l *ConfirmTransparentLogic) ConfirmTransparent() (resp *types.TransparentStatusResp, err error) {
 	// 确认即取消自动回滚。能走到这里说明请求真的到达了面板，
 	// 也就间接证明网络仍通——这正是确认机制要验证的事。
+	l.Info("面板操作：透明代理确认网络正常")
 	if err := l.svcCtx.TransparentService.Confirm(l.ctx); err != nil {
+		l.Errorf("面板操作：透明代理确认失败: %v", err)
 		return nil, err
 	}
 	st, env := l.svcCtx.TransparentService.Status()
+	l.Infof("面板操作：透明代理确认成功 enabled=%v mode=%s", st.Enabled, st.Mode)
 	return toTransparentStatus(st, env), nil
 }

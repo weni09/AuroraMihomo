@@ -273,6 +273,16 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodGet,
+				Path:    "/api/v1/transparent/rules",
+				Handler: protected.GetTransparentRulesHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/transparent/rules",
+				Handler: protected.UpdateTransparentRulesHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
 				Path:    "/api/v1/transparent/status",
 				Handler: protected.GetTransparentStatusHandler(serverCtx),
 			},

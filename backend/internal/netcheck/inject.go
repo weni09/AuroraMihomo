@@ -132,10 +132,15 @@ func injectTUNTechnicalParams(cfg *domain.Config, opt InjectOptions) error {
 	}
 	// auto-redirect 让 mihomo 自己管防火墙规则并在退出时清理，
 	// 面板就不必碰 nftables。仅 Linux 生效，macOS 上 mihomo 会忽略。
-	if opt.AutoRedirect {
-		t.Extra["auto-redirect"] = true
-	} else {
-		delete(t.Extra, "auto-redirect")
+	//
+	// 只补不覆盖：用户在 base 里显式写了 true/false 必须留下。
+	// 曾无条件写成 true，结果在部分 Alpine/virt 环境上 mihomo 会静默把
+	// 整个 TUN 关掉（runtime enable=false、无 Meta 网卡、无策略路由），
+	// 面板却仍显示「TUN 已启用」——与真实网卡对不上。
+	if _, declared := t.Extra["auto-redirect"]; !declared {
+		if opt.AutoRedirect {
+			t.Extra["auto-redirect"] = true
+		}
 	}
 
 	// auto-detect-interface 与 interface-name 互斥：两者同时存在时

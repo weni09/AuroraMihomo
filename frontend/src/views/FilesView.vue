@@ -26,7 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Copy, Eye, MoreHorizontal, Pencil, Plus, RefreshCw, Save, Share2, Trash2, Wand2, X } from 'lucide-vue-next'
+import { Copy, Eye, ExternalLink, MoreHorizontal, Pencil, Plus, RefreshCw, Save, Share2, Trash2, Wand2, X } from 'lucide-vue-next'
 
 const notify = useNotifyStore()
 const { copy } = useCopy()
@@ -119,6 +119,31 @@ const jsOverridePlaceholder = [
   '}',
 ].join('\n')
 
+/**
+ * 三种模板语法的完整参考示例（公开仓库，可对照抄写/改写）。
+ * 与下方 templateLang 选项一一对应，编辑器旁会按当前语言高亮对应链接。
+ */
+const TEMPLATE_EXAMPLES = [
+  {
+    lang: 'yaml' as const,
+    title: 'YAML 覆写',
+    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo.yaml',
+  },
+  {
+    lang: 'gotemplate' as const,
+    title: 'Go 模板',
+    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo-gotemplate.yaml',
+  },
+  {
+    lang: 'javascript' as const,
+    title: 'JS 脚本覆写',
+    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo-jstemplate.yaml',
+  },
+] as const
+
+const currentTemplateExample = computed(
+  () => TEMPLATE_EXAMPLES.find((e) => e.lang === form.templateLang) ?? TEMPLATE_EXAMPLES[0],
+)
 // 占位示例随类型切换，降低「不知道该填什么」的成本
 const contentPlaceholder = computed(() => {
   if (isTemplate.value) {
@@ -402,8 +427,25 @@ const sourceLabel = (f: any) => {
 
 <template>
   <main class="max-w-6xl mx-auto space-y-4 sm:space-y-6">
-    <div class="flex justify-between items-center">
-      <h1 class="text-2xl sm:text-3xl font-bold text-fg">模板文件</h1>
+    <div class="flex justify-between items-center gap-3 flex-wrap">
+      <div class="min-w-0">
+        <h1 class="text-2xl sm:text-3xl font-bold text-fg">模板文件</h1>
+        <p class="text-xs sm:text-sm text-fg-subtle mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5">
+          <span>原样输出或 Mihomo 配置模板。语法参考：</span>
+          <template v-for="(ex, i) in TEMPLATE_EXAMPLES" :key="ex.lang">
+            <a
+              :href="ex.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary hover:underline inline-flex items-center gap-0.5"
+            >
+              {{ ex.title }}
+              <ExternalLink class="size-3 opacity-70" aria-hidden="true" />
+            </a>
+            <span v-if="i < TEMPLATE_EXAMPLES.length - 1" class="text-fg-subtle" aria-hidden="true">·</span>
+          </template>
+        </p>
+      </div>
       <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建模板文件</Button>
     </div>
 
@@ -413,8 +455,24 @@ const sourceLabel = (f: any) => {
          与订阅页、组合页共享同一套排版与状态配色。 -->
     <div class="space-y-3 sm:space-y-4">
       <Card v-if="store.files.length === 0" class="border-dashed shadow-none">
-        <CardContent class="p-10 text-center text-sm italic text-fg-subtle">
-          当前暂无模板文件。
+        <CardContent class="p-8 sm:p-10 text-center text-sm text-fg-subtle flex flex-col gap-3 items-center">
+          <p class="italic">当前暂无模板文件。</p>
+          <p class="text-xs max-w-md">
+            新建时可选择 YAML 覆写、Go 模板或 JS 脚本。三种语法的完整示例：
+          </p>
+          <div class="flex flex-wrap justify-center gap-2">
+            <a
+              v-for="ex in TEMPLATE_EXAMPLES"
+              :key="ex.lang"
+              :href="ex.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2.5 py-1 text-xs text-primary hover:bg-elevated"
+            >
+              <ExternalLink class="size-3" aria-hidden="true" />
+              {{ ex.title }}
+            </a>
+          </div>
         </CardContent>
       </Card>
 
@@ -576,6 +634,25 @@ const sourceLabel = (f: any) => {
               Go 模板需要自己写全 proxies/proxy-groups/rules；YAML 覆写与 JS 脚本覆写则是在系统按所选节点来源
               自动生成的基础配置上做增量修改，对齐官方 Sub-Store 的「覆写」用法。
             </p>
+            <!-- 三种语法各给一条可打开的完整示例，降低从零开写的门槛 -->
+            <div class="rounded-lg border border-line bg-elevated/60 px-3 py-2 text-xs text-fg-muted flex flex-col gap-1.5">
+              <div class="font-medium text-fg">参考完整示例（GitHub）</div>
+              <ul class="flex flex-col gap-1">
+                <li v-for="ex in TEMPLATE_EXAMPLES" :key="ex.lang">
+                  <a
+                    :href="ex.url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center gap-1 hover:underline"
+                    :class="form.templateLang === ex.lang ? 'text-primary font-medium' : 'text-fg-muted'"
+                  >
+                    <ExternalLink class="size-3 shrink-0" aria-hidden="true" />
+                    {{ ex.title }}
+                    <span v-if="form.templateLang === ex.lang" class="text-[10px] text-primary/80">（当前）</span>
+                  </a>
+                </li>
+              </ul>
+            </div>
           </div>
           <div class="space-y-1 md:col-span-2">
             <Label for="file-traffic-url" class="text-sm font-semibold text-fg-muted">流量显示链接（可选）</Label>
@@ -686,15 +763,36 @@ const sourceLabel = (f: any) => {
           aria-labelledby="file-content-label"
         />
         <p v-if="isTemplate && form.templateLang === 'gotemplate'" class="text-xs text-fg-subtle">
-          可用变量：<code class="text-fg-muted">.Nodes</code>（节点数组，每项含 Name / Type / Server / Port / UDP / Extra）
+          可用变量：<code class="text-fg-muted">.Nodes</code>（节点数组，每项含 Name / Type / Server / Port / UDP / Extra）。
+          完整写法见
+          <a
+            :href="currentTemplateExample.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary hover:underline inline-flex items-center gap-0.5"
+          >Go 模板示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
         </p>
         <p v-else-if="isTemplate && form.templateLang === 'yaml'" class="text-xs text-fg-subtle">
           与自动生成的基础配置深度合并：标量/对象递归合并，数组默认整体替换；
           <code class="text-fg-muted">+key</code> 前插、<code class="text-fg-muted">key+</code> 追加、
-          <code class="text-fg-muted">key!</code> 强制整体覆盖
+          <code class="text-fg-muted">key!</code> 强制整体覆盖。
+          完整写法见
+          <a
+            :href="currentTemplateExample.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary hover:underline inline-flex items-center gap-0.5"
+          >YAML 覆写示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
         </p>
         <p v-else-if="isTemplate && form.templateLang === 'javascript'" class="text-xs text-fg-subtle">
-          必须定义 <code class="text-fg-muted">function main(config)</code> 并 return，config 为自动生成的基础配置对象
+          必须定义 <code class="text-fg-muted">function main(config)</code> 并 return，config 为自动生成的基础配置对象。
+          完整写法见
+          <a
+            :href="currentTemplateExample.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-primary hover:underline inline-flex items-center gap-0.5"
+          >JS 脚本示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
         </p>
       </div>
       <p v-else class="text-xs text-fg-muted bg-elevated border border-line rounded p-3">

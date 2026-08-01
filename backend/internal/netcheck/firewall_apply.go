@@ -197,6 +197,10 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 		return fmt.Errorf("规则校验失败（未做任何改动）: %w: %s", err, strings.TrimSpace(out))
 	}
 
+	// 失败回滚时必须同时覆盖「上一批已应用」与「本批目标」：
+	// 只拆本批会漏掉改 A→B 时的旧 A；只拆上一批会漏掉本批已追加的几条。
+	teardownRules := MergeCustomRuleLists(p.PreviousCustomRules, p.CustomRules)
+
 	// 2. 策略路由。必须在规则之前，理由见函数头注释。
 	for _, cmd := range PolicyRouteCommands(p.EnableIPv6) {
 		if out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...); err != nil {
@@ -204,18 +208,53 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 			if strings.Contains(strings.ToLower(out), "file exists") {
 				continue
 			}
-			_ = a.Teardown(ctx)
+			// 自定义规则一并拆：可能是上次应用残留（重复应用场景）
+			_ = a.Teardown(ctx, teardownRules)
 			return fmt.Errorf("配置策略路由失败 %v: %w: %s", cmd, err, strings.TrimSpace(out))
 		}
 	}
 
 	// 3. 下发规则
 	if out, err := a.Runner.RunWithStdin(ctx, rules, "nft", "-f", "-"); err != nil {
-		_ = a.Teardown(ctx)
+		_ = a.Teardown(ctx, teardownRules)
 		return fmt.Errorf("下发规则失败: %w: %s", err, strings.TrimSpace(out))
 	}
 
+	// 4. 先拆上一批自定义规则，再追加本批。
+	//
+	// iptables -A 不幂等：重复 Apply 会叠规则；改 A→B 时若不拆 A，
+	// A 会永久留在链里，而 Teardown 只按当前 DB 列表拆，孤儿永远清不掉。
+	// 内置 nft 靠 delete table 重建天然幂等，自定义通道没有这层保护。
+	// Previous 为空（首次启用）时 removeCustomRules 是空转。
+	a.removeCustomRules(ctx, p.PreviousCustomRules)
+
+	// 5. 用户自定义规则（iptables 语法），在内置规则生效后逐条追加。
+	//
+	// 用 sh -c 而不是拆词 exec：iptables 参数可能含引号（如
+	// -m comment --comment "xxx"），拆词会把引号语义吃掉。
+	// 规则由管理员自己书写，shell 执行不存在注入面。
+	//
+	// 任一条失败：整体回滚（拆内置 + 逆序拆旧批与本批），
+	// 避免"内置生效但自定义没生效"的半应用状态让用户误判。
+	if err := a.applyCustomRules(ctx, p.CustomRules); err != nil {
+		_ = a.Teardown(ctx, teardownRules)
+		return err
+	}
+
 	a.logf("透明代理规则已生效（tproxy=%d, 放行端口=%v）", p.TProxyPort, p.KeepPorts)
+	return nil
+}
+
+// applyCustomRules 逐条执行自定义防火墙规则。
+//
+// 失败时返回带行号与命令输出的错误，由调用方决定是否整体回滚
+// （Apply 里会拆内置并逆序拆已执行的自定义规则）。
+func (a *Applier) applyCustomRules(ctx context.Context, rules []string) error {
+	for i, rule := range rules {
+		if out, err := a.Runner.Run(ctx, "sh", "-c", rule); err != nil {
+			return fmt.Errorf("自定义防火墙规则第 %d 行执行失败: %w: %s", i+1, err, strings.TrimSpace(out))
+		}
+	}
 	return nil
 }
 
@@ -227,7 +266,14 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 //
 // 不接受"当初有没有启用 v6"这类参数：v4 与 v6 一律清理，
 // 理由见 PolicyRouteTeardownCommands 的注释。
-func (a *Applier) Teardown(ctx context.Context) error {
+// customRules 是用户自定义规则（可选，变参避免修改既有调用点）：
+// 逆序 -D 拆除，规则已不在宿主上（如主机重启）时容忍为成功。
+func (a *Applier) Teardown(ctx context.Context, customRules ...[]string) error {
+	var rules []string
+	if len(customRules) > 0 {
+		rules = customRules[0]
+	}
+
 	var firstErr error
 
 	// 先删规则再撤路由：反序会短暂出现"规则在、路由没了"的黑洞
@@ -253,10 +299,52 @@ func (a *Applier) Teardown(ctx context.Context) error {
 		}
 	}
 
+	// 自定义规则最后拆（与 nft 表/路由独立，顺序无硬性要求）。
+	// 失败只记录：拆除时系统可能已处于异常状态，不能卡在这里。
+	a.removeCustomRules(ctx, rules)
+
 	if firstErr == nil {
 		a.logf("透明代理规则已拆除")
 	}
 	return firstErr
+}
+
+// removeCustomRules 逆序拆除自定义规则（-A/-I → -D）。
+//
+// "Bad rule" 是 iptables 对 -D 找不到匹配规则的报错——宿主重启后
+// iptables 状态同样被清空，此时拆除等于重复删除，视为成功。
+// 无法自动逆反的规则（-N/-F/-X 等）跳过并记日志，提示用户手工清理。
+func (a *Applier) removeCustomRules(ctx context.Context, rules []string) {
+	for i := len(rules) - 1; i >= 0; i-- {
+		del := toDeleteCommand(rules[i])
+		if del == "" {
+			a.logf("自定义规则无法自动拆除（仅 -A/-I 支持），请手工清理: %s", rules[i])
+			continue
+		}
+		if out, err := a.Runner.Run(ctx, "sh", "-c", del); err != nil {
+			low := strings.ToLower(out)
+			if strings.Contains(low, "no such rule") || strings.Contains(low, "bad rule") {
+				continue
+			}
+			a.logf("拆除自定义规则失败 [%d] %s: %v: %s", i+1, del, err, strings.TrimSpace(out))
+		}
+	}
+}
+
+// DumpRules 输出本面板 nft 表的当前规则集，供界面展示实际生效的内置规则。
+//
+// 表不存在（TProxy 未开启或已拆除）时返回空字符串而非报错。
+func (a *Applier) DumpRules(ctx context.Context) (string, error) {
+	cmd := NFTRulesCheckCommand()
+	out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...)
+	if err != nil {
+		low := strings.ToLower(out)
+		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取防火墙规则失败: %w: %s", err, strings.TrimSpace(out))
+	}
+	return out, nil
 }
 
 // RulesActive 探测本项目的 nft 表是否还存在于宿主上。
