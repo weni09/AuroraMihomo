@@ -98,8 +98,12 @@ func (a *Applier) logf(format string, args ...interface{}) {
 // 任一处绑不上就认为端口已被占用——宁可保守，误判为"有监听"只会放过一次
 // 下发，而误判为"无监听"会拒绝一次合法的启用。
 func defaultUDPPortInUse(port int) bool {
+	// 短超时：探测只是绑一下端口，卡住说明内核/网络栈异常，不应拖死调用方。
+	lc := net.ListenConfig{}
 	for _, host := range []string{"0.0.0.0", "127.0.0.1"} {
-		pc, err := net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		pc, err := lc.ListenPacket(ctx, "udp", net.JoinHostPort(host, strconv.Itoa(port)))
+		cancel()
 		if err != nil {
 			return true
 		}
