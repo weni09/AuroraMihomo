@@ -188,12 +188,34 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 仓库上传后建议把 `scripts/install.sh` 里 `REPO` 的默认值改成真实地址，
 之后就不必每次传 `--repo`。脚本在未配置时会直接报错而不是去请求错误地址。
 
-脚本会探测 OS/架构、从 GitHub Release 拉取对应的压缩包、
-解压到 `/opt/auroramihomo`、生成默认配置并（可选）安装 systemd 单元。
+脚本会探测 OS/架构与服务管理器、从 GitHub Release 拉取对应压缩包并校验
+sha256、解压到 `/opt/auroramihomo`、补齐透明代理依赖、安装服务单元
+（systemd 或 OpenRC）、启用开机自启并启动。装完即可访问，Alpine 与
+Debian/Ubuntu 走同一条命令。
 
-服务安装由 `have systemctl` 守卫，因此在 Alpine 等无 systemd 的系统上
-会静默跳过：程序装好了但没有服务，且脚本末尾打印的仍是 `systemctl`
-命令。这类系统需按下面「OpenRC 单元」一节手工配置。
+服务管理器的分派逻辑：有 `systemctl` 走 systemd；否则有 `rc-update` 与
+`rc-service` 走 OpenRC；都没有则只装程序，末尾提示改为前台启动命令。
+刻意不查 `/run/systemd/system` 来判断 systemd 是否真在运行——chroot 与
+装机镜像里它不存在，但用户仍希望 unit 文件落地；真没跑起来时后面的
+`enable`/`start` 会失败并给出提示，比预先判死不容易误伤。
+
+依赖补齐这一步是脚本里唯一会改动"系统层"的部分，判据与后端
+`netcheck` 保持一致（防火墙工具有 `nft` 或 `iptables` 之一即可，
+`ip` 必须是真 iproute2 而非 busybox applet），不一致会出现"脚本说装好了、
+面板仍报缺"这种白费排查时间的情况。已就绪时整步跳过，因此多数
+Debian/Ubuntu 机器上不会触发一次 `apt-get update`。
+
+容器内会主动跳过依赖补齐：装的包重建即丢，`modprobe` 又会作用于宿主内核，
+两者都不该由脚本悄悄替用户决定（容器部署本就该用镜像，依赖已预装）。
+
+三个关闭开关：`--no-deps`（不动系统层）、`--no-service`（不装服务单元，
+旧名 `--no-systemd` 保留为别名）、`--no-start`（装好不启用不启动）。
+另有 `--dry-run` 只打印将要执行的动作，不下载也不改动系统——所有副作用
+都经由 `run_cmd` / `write_file` 两个函数，因此拦一层即可全覆盖。
+
+`--no-start` 有一处刻意的例外：升级路径上若服务原本在运行，装完仍会恢复
+运行（但不设自启）。那个开关的语义是"首次安装不要自动起"，不该把一台
+正在服务的机器留在停机状态。
 
 ## 离线安装
 
@@ -261,8 +283,9 @@ systemd 的 `Restart=always`。
 
 ## OpenRC 单元（Alpine）
 
-Alpine 没有 systemd。`scripts/install.sh` 目前只安装 systemd 单元，
-Alpine 上需手工放置服务脚本。
+Alpine 没有 systemd。`scripts/install.sh` 检测到 OpenRC 时会自动装下面这份
+脚本（内容与此处一致，`directory`/`command` 按 `--dir` 取值），
+以下内容供离线安装或自定义单元时参考。
 
 **必须用 `supervise-daemon` 而不是 `start-stop-daemon`。** 面板的
 `POST /api/v1/system/restart` 的约定是「优雅退出，等进程管理器拉起」，
@@ -311,20 +334,25 @@ supervise-daemon auroramihomo --start --chdir /opt/auroramihomo ...
 
 ## Alpine 的前置依赖
 
-Alpine 最小系统缺几样东西，装之前先补齐：
+Alpine 最小系统缺几样东西。第一组与第三组由 `install.sh` 自动补齐
+（`--no-deps` 可关掉），离线安装时手工执行：
 
 ```bash
 # 透明代理必需。ip6tables 在 Alpine 是独立包；iproute2 会把
 # /sbin/ip 从 busybox 软链替换成真 iproute2，因此不存在 PATH 优先级问题
-apk add --no-cache nftables iproute2 ip6tables
+apk add --no-cache iptables ip6tables nftables iproute2
 
-# 排查用。Alpine 默认只有 busybox 的 wget，不支持 -x 与 --interface
+# 排查用，非运行必需，install.sh 不装。
+# Alpine 默认只有 busybox 的 wget，不支持 -x 与 --interface
 apk add --no-cache curl bind-tools
 
 # tun 与 nft_tproxy 默认未加载，/dev/net/tun 也不存在
 modprobe tun && modprobe nft_tproxy
 printf 'tun\nnft_tproxy\n' > /etc/modules-load.d/auroramihomo.conf
 ```
+
+模块加载失败一律只告警不中断：模块可能已编进内核（此时 `modprobe` 报错
+但功能正常），也可能内核根本没有对应模块，两种都不该让整个安装失败。
 
 `sysctl` 在 Alpine 是 BusyBox applet，不认 `--system`。面板的「自动准备」
 已能识别并回退为 `sysctl -p <文件>`；手工设置时也请用 `-p`。

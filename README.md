@@ -112,17 +112,34 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
   | sudo sh -s -- --repo OWNER/AuroraMihomo
 ```
 
-脚本会探测系统与架构、从 Release 拉对应包、解压到 `/opt/auroramihomo`、安装 systemd 单元。升级时重跑同一条命令即可，它会保留现有配置并自动停服替换。
+一条命令装完即可访问，Debian/Ubuntu 与 Alpine 都是。脚本会：
 
-Alpine 等无 systemd 的系统上，脚本检测不到 `systemctl` 会跳过服务安装（不报错），装完只有程序本身、末尾的提示也仍是 systemd 命令 —— 服务需按下面「作为服务运行」的 OpenRC 部分手工配置。
+1. 探测系统、架构与服务管理器（systemd 或 OpenRC）
+2. 从 Release 拉对应包、校验 sha256、解压到 `/opt/auroramihomo`
+3. 补齐透明代理依赖：缺失时装 `iptables`/`nftables`/`iproute2`（Alpine 还有独立的 `ip6tables`），加载 `tun` 与 `nft_tproxy` 并写 `/etc/modules-load.d/` 持久化
+4. 装服务单元 —— systemd 装 unit，Alpine 装 OpenRC 脚本（用 `supervise-daemon`，面板的「重启」依赖它）
+5. 启用开机自启并启动服务
+
+升级时重跑同一条命令：保留现有配置与已有服务单元，自动停服替换再拉起。
+
+想先看清它要做什么，加 `--dry-run` 只打印不执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/install.sh \
+  | sudo sh -s -- --repo OWNER/AuroraMihomo --dry-run
+```
 
 可选参数：
 
 ```bash
 sudo sh install.sh --version v0.2.0      # 装指定版本
 sudo sh install.sh --dir /srv/aurora     # 换安装目录
-sudo sh install.sh --no-systemd          # 不装 systemd 单元
+sudo sh install.sh --no-deps             # 不动系统：不装包、不加载内核模块
+sudo sh install.sh --no-service          # 不装服务单元（旧名 --no-systemd 仍可用）
+sudo sh install.sh --no-start            # 装好但不启用/不启动
 ```
+
+`--no-deps` 之后透明代理仍需手工补齐依赖，命令见下面「Alpine 补充说明」。容器内运行时脚本会跳过依赖补齐（装的包重建即丢、`modprobe` 会作用于宿主内核），容器部署请用 Docker 镜像，依赖已预装。
 
 #### 离线安装
 
@@ -157,7 +174,9 @@ sudo chmod +x /opt/auroramihomo/data/bin/mihomo
 
 #### 作为服务运行
 
-在线安装脚本已自动装好 systemd 单元。手工安装时：
+在线安装脚本已按系统自动装好服务单元（systemd 或 OpenRC）并启动，这一节只在离线安装或想自定义单元时才需要。
+
+**systemd（Debian/Ubuntu 等）**
 
 ```bash
 sudo tee /etc/systemd/system/auroramihomo.service >/dev/null <<'EOF'
@@ -192,7 +211,7 @@ sudo journalctl -u auroramihomo -f      # 看日志
 
 进程自身不做 fork 自重启，生产环境依赖 systemd 的 `Restart=always`。
 
-**Alpine（OpenRC）** 没有 systemd，`install.sh` 的 systemd 单元用不上，需手工放服务脚本。要点是用 `supervise-daemon` 而非 `start-stop-daemon` —— 面板的「重启」是「优雅退出、等进程管理器拉起」，后者不做拉起，会让重启变成单向关机：
+**OpenRC（Alpine）** 在线安装脚本会自动装下面这份脚本，离线安装时手工放。要点是用 `supervise-daemon` 而非 `start-stop-daemon` —— 面板的「重启」是「优雅退出、等进程管理器拉起」，后者不做拉起，会让重启变成单向关机：
 
 ```bash
 sudo tee /etc/init.d/auroramihomo >/dev/null <<'EOF'
@@ -214,19 +233,26 @@ sudo rc-service auroramihomo start
 sudo tail -f /var/log/auroramihomo.log
 ```
 
-Alpine 还需补几个默认没有的东西（透明代理必需项 + 排查工具）：
+#### Alpine 补充说明
+
+在线安装脚本已自动处理下面第一组（透明代理必需项）。离线安装、或用了 `--no-deps` 时需手工执行：
 
 ```bash
 # ip6tables 是独立包；iproute2 会把 /sbin/ip 从 busybox 换成真 iproute2
-sudo apk add --no-cache nftables iproute2 ip6tables
-# 默认只有 busybox 的 wget，不支持 -x 与 --interface
-sudo apk add --no-cache curl bind-tools
+sudo apk add --no-cache iptables ip6tables nftables iproute2
 # tun 与 nft_tproxy 默认未加载
 sudo modprobe tun && sudo modprobe nft_tproxy
 printf 'tun\nnft_tproxy\n' | sudo tee /etc/modules-load.d/auroramihomo.conf
 ```
 
-另外注意根分区余量：官方 cloud 镜像可能只有 100M 出头，而部署约需 55M（二进制 29M + 前端 3M + 内核 15M + 依赖包）。
+排查工具脚本不装（不是运行所必需，装不装取决于你的习惯）：
+
+```bash
+# 默认只有 busybox 的 wget，不支持 -x 与 --interface
+sudo apk add --no-cache curl bind-tools
+```
+
+根分区余量值得先确认：官方 cloud 镜像可能只有 100M 出头，而部署约需 55M（二进制 29M + 前端 3M + 内核 15M + 依赖包）。安装脚本会在可用空间不足时告警，但不阻断。
 
 取初始密码：
 
