@@ -59,6 +59,34 @@ type ConfigService struct {
 	// 返回渲染好的 mihomo YAML。
 	renderCollection func(ctx context.Context, id int64) (string, error)
 	renderFile       func(ctx context.Context, id int64) (string, error)
+
+	// tproxyManagedProvider 报告宿主上的 TProxy 防火墙规则是否由本面板下发。
+	//
+	// 合并流程需要它来决定是否注入 TProxy 的技术参数：只配了 tproxy-port
+	// 不构成启用 TProxy（把流量引到该端口的规则不在配置里，见 netcheck.Inject），
+	// 那种情况下注入 routing-mark 只会在用户配置里留下一个无用且误导的字段——
+	// 它的唯一用途是配合面板下发的防火墙规则放行内核自身流量。
+	//
+	// 用注入而不是在这里直接读 settings 表：那个键归 TransparentService 所有，
+	// 键名散落到两个包里会让将来改动漏掉一处。未注入时回落为 false，
+	// 即"未托管"——那是不会擅自改用户配置的安全一侧。
+	tproxyManagedProvider func() bool
+}
+
+// SetTProxyManagedProvider 注入"TProxy 规则是否由本面板下发"的判据来源。
+//
+// 单独用 setter 而不进构造函数：TransparentService 在本服务之后构造
+// （它依赖本服务读写 base.yaml），构造期还拿不到。
+func (s *ConfigService) SetTProxyManagedProvider(fn func() bool) {
+	s.tproxyManagedProvider = fn
+}
+
+// tproxyManaged 供合并流程判断是否注入 TProxy 技术参数。
+func (s *ConfigService) tproxyManaged() bool {
+	if s.tproxyManagedProvider == nil {
+		return false
+	}
+	return s.tproxyManagedProvider()
 }
 
 // SetPolicyProvider 注入合并策略来源，未注入时使用引擎默认策略
@@ -704,11 +732,17 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 	//
 	// 根据合并后配置的实际值决定注入内容：
 	//   - result.Config.TUN.Enable == true → 注入 TUN 技术参数
-	//   - result.Config.TProxyPort > 0 → 注入 TProxy 技术参数
+	//   - result.Config.TProxyPort > 0 且规则由面板托管 → 注入 TProxy 技术参数
+	//
+	// TProxy 那侧多一个托管条件：tproxy-port 只让内核监听端口，把流量引过去的
+	// 防火墙规则不在配置里，所以"配了端口"不等于"启用了 TProxy"。用户在
+	// 「配置中心 → 端口设置」里把它当普通端口填上是正常用法，此时注入
+	// routing-mark 会在他的配置里留下一个无用且误导排障的字段。
 	report := netcheck.Detect()
 	injectOpts := netcheck.InjectOptions{
-		TUNStack:     "mixed", // 默认协议栈
-		AutoRedirect: report.OS == "linux",
+		TUNStack:      "mixed", // 默认协议栈
+		AutoRedirect:  report.OS == "linux",
+		TProxyManaged: s.tproxyManaged(),
 	}
 	if err := netcheck.Inject(result.Config, injectOpts); err != nil {
 		s.logger.Errorf("注入透明代理技术参数失败: %v", err)

@@ -25,6 +25,16 @@ type InjectOptions struct {
 	// AutoRedirect 仅 Linux 有效：让 mihomo 自己写并清理防火墙规则。
 	// macOS 上 mihomo 会静默忽略该字段。
 	AutoRedirect bool
+	// TProxyManaged 表示宿主上的 TProxy 防火墙规则与策略路由由本面板下发。
+	//
+	// 与上面 InjectOptions 不设 Mode 的理由不冲突：模式确实该从配置里读，
+	// 但"规则是不是面板下发的"在配置里根本没有表达（那是 nftables 与策略路由
+	// 的状态），只能由调用方从托管标记传入。
+	//
+	// TProxy 唯一要注入的 routing-mark 只在配合面板下发的规则时才有意义
+	// （见 injectTProxyTechnicalParams），所以未托管时不该注入——
+	// 用户在「配置中心」把 tproxy-port 当普通端口设置填上，不构成启用 TProxy。
+	TProxyManaged bool
 }
 
 // defaultTUNStack 选 mixed：TCP 走内核栈（开销低），UDP 走 gvisor
@@ -42,7 +52,13 @@ const defaultTUNStack = "mixed"
 //
 // 根据合并后配置的实际值决定是否注入：
 //   - cfg.TUN.Enable == true → 注入 TUN 技术参数
-//   - cfg.TProxyPort > 0 → 注入 TProxy 技术参数
+//   - cfg.TProxyPort > 0 且 opt.TProxyManaged → 注入 TProxy 技术参数
+//
+// TProxy 那侧多一个托管条件，因为两种模式的"启用"由不同的东西构成：
+// tun.enable 一写、配置一下发，mihomo 自己就把网卡、路由、防火墙都建好了，
+// 配置即机制；而 tproxy-port 只让内核监听一个端口，把流量引过去的规则不在
+// 配置里，只有面板能放上去。所以"配了端口"不等于"启用了 TProxy"——用户在
+// 「配置中心 → 端口设置」里把它当普通端口填上是完全正常的用法。
 func Inject(cfg *domain.Config, opt InjectOptions) error {
 	if cfg == nil {
 		return fmt.Errorf("配置为空")
@@ -54,12 +70,15 @@ func Inject(cfg *domain.Config, opt InjectOptions) error {
 		return injectTUNTechnicalParams(cfg, opt)
 	}
 
-	if cfg.TProxyPort > 0 {
-		// TProxy 已配置端口（来自 base 或 remote），注入技术参数
+	if cfg.TProxyPort > 0 && opt.TProxyManaged {
+		// TProxy 端口已配置，且规则确实由本面板下发，注入技术参数
 		return injectTProxyTechnicalParams(cfg, opt)
 	}
 
-	// 两者都未启用，不注入
+	// 未启用透明代理（含"仅配置了 tproxy-port 但规则不是面板下发"）。
+	// 不注入，并且要把此前注入过的 routing-mark 清掉——否则那个值会永久留在
+	// 生成的配置里（理由见 clearInjectedRoutingMark）。
+	clearInjectedRoutingMark(cfg)
 	return nil
 }
 
@@ -128,6 +147,11 @@ func injectTUNTechnicalParams(cfg *domain.Config, opt InjectOptions) error {
 		cfg.InterfaceName = ""
 	}
 
+	// TUN 不需要 routing-mark：mihomo 自管防火墙规则，没有"内核自身流量被
+	// 自己的规则捕获"那个自环问题。从 TProxy 切过来时它会残留在配置里，
+	// 顺手清掉（只清本包注入的那个值）。
+	clearInjectedRoutingMark(cfg)
+
 	return nil
 }
 
@@ -141,4 +165,20 @@ func injectTProxyTechnicalParams(cfg *domain.Config, opt InjectOptions) error {
 	cfg.RoutingMark = KernelMark
 
 	return nil
+}
+
+// clearInjectedRoutingMark 清掉本包注入过的 routing-mark。
+//
+// 只清等于 KernelMark 的值：那是本包注入的特征值，别的值说明是用户自己配的
+// （routing-mark 是 mihomo 的通用字段，有人会用它做策略路由），不能动。
+//
+// 需要这一步是因为注入是"每次合并重新生成"，而清理不是自动的：一旦某次合并
+// 注入了 routing-mark，它就会一直留在生成的 config.yaml 里，即使后来
+// 透明代理已经关掉、或（本次修正的情形）当初根本就不该注入。
+// 而 routing-mark 的唯一用途是配合面板下发的防火墙规则放行内核自身流量，
+// 规则不存在时它对用户毫无意义，还会让排障的人以为透明代理是开着的。
+func clearInjectedRoutingMark(cfg *domain.Config) {
+	if cfg.RoutingMark == KernelMark {
+		cfg.RoutingMark = 0
+	}
 }

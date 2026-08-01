@@ -94,7 +94,9 @@ func TestInjectTUNAcceptsAllValidStacks(t *testing.T) {
 func TestInjectTProxySetsMatchingRoutingMark(t *testing.T) {
 	cfg := &domain.Config{}
 	cfg.TProxyPort = DefaultTProxyPort // 模拟 base.yaml 已设置端口
-	if err := Inject(cfg, InjectOptions{}); err != nil {
+	// TProxyManaged 是必需的前提：routing-mark 的作用就是配合面板下发的防火墙
+	// 规则放行内核自身流量，规则不存在时注入它没有任何意义
+	if err := Inject(cfg, InjectOptions{TProxyManaged: true}); err != nil {
 		t.Fatalf("注入失败: %v", err)
 	}
 	if cfg.TProxyPort != DefaultTProxyPort {
@@ -264,5 +266,92 @@ func TestInjectPrefersTUNWhenBothPresent(t *testing.T) {
 func TestInjectRejectsNilConfig(t *testing.T) {
 	if err := Inject(nil, InjectOptions{}); err == nil {
 		t.Error("配置为 nil 应报错")
+	}
+}
+
+// 仅配置了 tproxy-port 不构成启用 TProxy，不该注入任何技术参数。
+//
+// tproxy-port 只让内核监听一个端口；把流量引到该端口的防火墙规则与策略路由
+// 不在配置文件里，只有面板能放上去。用户在「配置中心 → 端口设置」里把它当成
+// 普通端口填上是正常用法（本项目的默认端口布局就带一个 tproxy-port）。
+// 此时注入 routing-mark 会在他的配置里留下一个无用字段：那个值的唯一作用是
+// 配合面板下发的规则放行内核自身流量，规则不存在时它什么也不做，
+// 却会让排障的人以为透明代理是开着的。
+func TestInjectSkipsTProxyWhenNotManaged(t *testing.T) {
+	cfg := &domain.Config{}
+	cfg.TProxyPort = 7894 // 用户自己填的端口
+
+	if err := Inject(cfg, InjectOptions{TProxyManaged: false}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+
+	if cfg.RoutingMark != 0 {
+		t.Errorf("规则不是面板下发时不该注入 routing-mark，实际 0x%x", cfg.RoutingMark)
+	}
+	// 端口是用户的配置，注入阶段一律不动
+	if cfg.TProxyPort != 7894 {
+		t.Errorf("不该改动用户填的 tproxy-port，实际 %d", cfg.TProxyPort)
+	}
+}
+
+// 托管关系结束后，此前注入的 routing-mark 必须被清掉。
+//
+// 注入是"每次合并重新生成"，但清理不是自动的：一旦某次注入写进了
+// routing-mark，它会一直留在生成的 config.yaml 里，哪怕透明代理已经关掉。
+// 这正是本次修正前的实际状态——面板对一个手填端口注入了 routing-mark: 0xff，
+// 而宿主上从来没有对应的规则。
+func TestInjectClearsStaleRoutingMarkWhenNoLongerManaged(t *testing.T) {
+	cfg := &domain.Config{}
+	cfg.TProxyPort = 7894
+	cfg.RoutingMark = KernelMark // 上一次合并注入留下的
+
+	if err := Inject(cfg, InjectOptions{TProxyManaged: false}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+
+	if cfg.RoutingMark != 0 {
+		t.Errorf("不再托管时应清掉此前注入的 routing-mark，实际 0x%x", cfg.RoutingMark)
+	}
+}
+
+// 清理只针对本包注入的特征值：routing-mark 是 mihomo 的通用字段，
+// 用户可能用它做自己的策略路由，那种值不能动。
+func TestInjectKeepsUserRoutingMarkWhenNotManaged(t *testing.T) {
+	cfg := &domain.Config{}
+	cfg.TProxyPort = 7894
+	cfg.RoutingMark = 0x1234 // 用户自己配的，与 KernelMark 不同
+
+	if err := Inject(cfg, InjectOptions{TProxyManaged: false}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+
+	if cfg.RoutingMark != 0x1234 {
+		t.Errorf("不该抹掉用户自己配的 routing-mark，实际 0x%x", cfg.RoutingMark)
+	}
+}
+
+// 从 TProxy 切到 TUN 后，TProxy 的 routing-mark 不该残留：
+// TUN 由 mihomo 自管防火墙，没有内核出站自环那个问题，这个字段纯属遗留。
+func TestInjectClearsRoutingMarkWhenSwitchedToTUN(t *testing.T) {
+	cfg := &domain.Config{}
+	cfg.TUN.Enable = true
+	cfg.RoutingMark = KernelMark // TProxy 时期注入的
+
+	if err := Inject(cfg, InjectOptions{}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+
+	if cfg.RoutingMark != 0 {
+		t.Errorf("切到 TUN 后应清掉 TProxy 的 routing-mark，实际 0x%x", cfg.RoutingMark)
+	}
+	// 但用户自己的值同样要留着
+	cfg2 := &domain.Config{}
+	cfg2.TUN.Enable = true
+	cfg2.RoutingMark = 0x1234
+	if err := Inject(cfg2, InjectOptions{}); err != nil {
+		t.Fatalf("注入失败: %v", err)
+	}
+	if cfg2.RoutingMark != 0x1234 {
+		t.Errorf("不该抹掉用户自己配的 routing-mark，实际 0x%x", cfg2.RoutingMark)
 	}
 }

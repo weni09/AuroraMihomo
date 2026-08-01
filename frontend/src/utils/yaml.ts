@@ -119,8 +119,13 @@ const tryNormalizeYaml = (text: string): string | null => {
  *
  * 只处理整行注释（行首 # ）：行内 `key: value # 说明` 里的 # 不能删，
  * 那会连带删掉合法的值。判断"是否只有注释"用不到那么精细。
+ *
+ * 对外导出是因为「怎样算只有注释」这条规则有多个消费方（文本对比与语义
+ * 对比都要在 loadYaml 之前挡掉纯注释文档，否则 js-yaml 会抛
+ * "expected a document, but the input is empty"，被当成解析失败）。
+ * 复制一份的话，两处对空文档的判定迟早会不一致。
  */
-const stripYamlComments = (text: string): string =>
+export const stripYamlComments = (text: string): string =>
   text
     .split(/\r?\n/)
     .filter((line) => {

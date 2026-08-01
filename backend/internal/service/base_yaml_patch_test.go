@@ -3,6 +3,10 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"auroramihomo/backend/internal/domain"
+
+	"gopkg.in/yaml.v3"
 )
 
 // 这份用例是整个改动的核心防线：开关切换写的是用户手写的 base.yaml，
@@ -227,5 +231,77 @@ func TestPatchIsIdempotent(t *testing.T) {
 	}
 	if once != twice {
 		t.Errorf("重复写入同一值产生了不同结果\n第一次:\n%s\n第二次:\n%s", once, twice)
+	}
+}
+
+// readBaseSwitchState 对同一份文本的理解必须与合并流程（yaml.Unmarshal 到
+// domain.Config）完全一致。
+//
+// 这条不变量是"面板状态"与"实际下发的配置"之间唯一的连接。早先这里用
+// node.Value == "true" 判布尔、用 fmt.Sscanf 解端口，两处都比 yaml 库更宽或更窄：
+//   - True / TRUE / yes / on 都是 YAML 的真值，字符串比较会漏掉，面板显示
+//     "已关闭"而 mihomo 实际跑着 TUN；
+//   - Sscanf 只要前缀匹配就算成功，"7893abc" 会被解成 7893，而合并流程会
+//     拒绝整份配置——面板据此下发的防火墙规则指向一个内核没在监听的端口。
+//
+// 用表驱动直接比对两条解析路径，而不是各自断言期望值：期望值要靠人算，
+// 而这里真正要保证的就是"两边一致"，让它们互为参照更难写错。
+func TestReadBaseSwitchStateMatchesMergeDecoding(t *testing.T) {
+	cases := []string{
+		"tun:\n  enable: true\n",
+		"tun:\n  enable: True\n",
+		"tun:\n  enable: TRUE\n",
+		"tun:\n  enable: yes\n",
+		"tun:\n  enable: on\n",
+		"tun:\n  enable: false\n",
+		"tun:\n  enable: off\n",
+		"tun:\n  enable: no\n",
+		"tproxy-port: 7893\n",
+		"tproxy-port: 0x1ed9\n",
+		"mode: rule\n",
+	}
+	for _, src := range cases {
+		t.Run(strings.ReplaceAll(strings.TrimSpace(src), "\n", " "), func(t *testing.T) {
+			tun, _, port, err := readBaseSwitchState(src)
+			if err != nil {
+				t.Fatalf("readBaseSwitchState 失败: %v", err)
+			}
+
+			var cfg domain.Config
+			if uerr := yaml.Unmarshal([]byte(src), &cfg); uerr != nil {
+				t.Fatalf("合并流程的解码失败（本用例只覆盖两边都该成功的输入）: %v", uerr)
+			}
+
+			if tun != cfg.TUN.Enable {
+				t.Errorf("tun.enable 判定与合并流程不一致: 面板 %v, 合并 %v", tun, cfg.TUN.Enable)
+			}
+			if port != cfg.TProxyPort {
+				t.Errorf("tproxy-port 判定与合并流程不一致: 面板 %d, 合并 %d", port, cfg.TProxyPort)
+			}
+		})
+	}
+}
+
+// 合并流程会拒绝的值，这里也必须报错而不是"尽力猜一个"。
+//
+// 猜出来的值比报错更危险：面板会拿它去下发防火墙规则，而内核因为配置无效
+// 根本没有监听那个端口，结果是流量被引进黑洞且界面显示一切正常。
+func TestReadBaseSwitchStateRejectsWhatMergeRejects(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{"布尔值是任意字符串", "tun:\n  enable: nope\n"},
+		{"端口带非数字后缀", "tproxy-port: 7893abc\n"},
+		{"端口被引号包成字符串", "tproxy-port: \"7893\"\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// 前提：合并流程确实拒绝这份输入
+			var cfg domain.Config
+			if uerr := yaml.Unmarshal([]byte(c.src), &cfg); uerr == nil {
+				t.Fatalf("前提不成立：合并流程接受了 %q", c.src)
+			}
+			if _, _, _, err := readBaseSwitchState(c.src); err == nil {
+				t.Errorf("合并流程拒绝的输入这里也应报错，而不是猜一个值: %q", c.src)
+			}
+		})
 	}
 }

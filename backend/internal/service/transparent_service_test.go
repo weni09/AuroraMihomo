@@ -208,6 +208,25 @@ func newSvcWithBase(t *testing.T, report *netcheck.Report, initialBase string) (
 	return s, store, app, base
 }
 
+// seedManagedTProxy 造出"面板此前经开关启用了 TProxy"这一初始状态。
+//
+// 光在 base.yaml 里写 tproxy-port 是不够的：那只表达"内核监听某端口"，
+// 与"用户在配置中心自己填了个端口"无从区分。面板托管着规则这件事记在
+// settings 里（见 settingTProxyManaged），构造初始状态时必须一并给上，
+// 否则用例实际测的是"用户手填端口"那条完全不同的路径。
+//
+// 收成一个 helper 而不是在每个用例里各写两行，是为了让这个前提只有一处定义：
+// 将来托管关系的表示方式若再变，用例不必逐个跟改。
+func seedManagedTProxy(t *testing.T, store *fakeStore) {
+	t.Helper()
+	if err := store.SetSetting(settingTransparentMode, string(netcheck.ModeTProxy)); err != nil {
+		t.Fatalf("构造初始状态失败（mode）: %v", err)
+	}
+	if err := store.SetSetting(settingTProxyManaged, "1"); err != nil {
+		t.Fatalf("构造初始状态失败（managed）: %v", err)
+	}
+}
+
 // 环境不支持时必须拒绝写入，并把原因与修复命令告诉用户
 func TestUpdateRejectsUnavailableMode(t *testing.T) {
 	s, _, _, base := newSvcWithBase(t, reportWith("linux"), "") // 两种模式都不可用
@@ -407,7 +426,7 @@ func TestRecoverPendingRollsBackExpiredEnable(t *testing.T) {
 	// 数据库里留着已过期的待确认记录
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 	_ = store.SetSetting(settingTransparentPendingUntil,
 		strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10))
 
@@ -427,7 +446,7 @@ func TestRecoverPendingRollsBackExpiredEnable(t *testing.T) {
 func TestRecoverPendingKeepsUnexpiredEnable(t *testing.T) {
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 	_ = store.SetSetting(settingTransparentPendingUntil,
 		strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
 
@@ -464,7 +483,7 @@ func TestReconcileStateDisablesWhenRulesGoneAfterReboot(t *testing.T) {
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
 	app.rulesActive = false
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 
 	s.ReconcileState(context.Background())
 
@@ -489,7 +508,7 @@ func TestReconcileStateDoesNotTriggerRedundantReload(t *testing.T) {
 	app := newFakeApplier()
 	app.rulesActive = false
 	base := newFakeBase("tproxy-port: 7893\n")
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 
 	reloads := 0
 	s := NewTransparentService(store, app, logx.WithContext(context.Background()),
@@ -511,7 +530,7 @@ func TestReconcileStateNoopWhenRulesStillActive(t *testing.T) {
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
 	app.rulesActive = true
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 
 	s.ReconcileState(context.Background())
 
@@ -529,7 +548,7 @@ func TestReconcileStateSkipsWhenStillPending(t *testing.T) {
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
 	app.rulesActive = false
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 	_ = store.SetSetting(settingTransparentPendingUntil,
 		strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
 
@@ -568,7 +587,7 @@ func TestReconcileStateKeepsStateWhenProbeFails(t *testing.T) {
 	s, store, app, base := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
 	app.rulesActiveErr = errors.New("nft: command not found")
-	_ = store.SetSetting(settingTransparentMode, "tproxy")
+	seedManagedTProxy(t, store)
 
 	s.ReconcileState(context.Background())
 
@@ -981,5 +1000,271 @@ func TestProvisionReturnsEnvOnFailure(t *testing.T) {
 	}
 	if env == nil {
 		t.Error("失败时也应返回环境报告")
+	}
+}
+
+// ---- TProxy 的"配置里有端口"与"规则已由面板下发"是两件事 ----
+//
+// 这一组是本次改动的核心回归防线。TProxy 生效需要两半：tproxy-port 让内核
+// 监听（配置能表达），以及防火墙规则与策略路由把流量引过去（只有面板能放上去，
+// 配置里没有痕迹）。早先两者被混为一谈——只要 tproxy-port > 0 就算已启用。
+
+// 用户在「配置中心」手填 tproxy-port 不构成"面板已接管"。
+//
+// 手填端口 + 自己写防火墙规则是本项目明确支持的用法（见前端 redir-port /
+// tproxy-port 的帮助文案）。把它误判成已启用会让界面谎报"流量已接管"，
+// 而实际上没有任何流量被引到那个端口。
+func TestHandWrittenTProxyPortIsNotEnabled(t *testing.T) {
+	// 只有端口，没有托管标记——即用户自己在配置中心填的
+	s, _, _, _ := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy),
+		"tproxy-port: 7893\n")
+
+	st, _ := s.Status()
+	if st.Enabled {
+		t.Error("仅配置了端口、规则不是面板下发的，不该报告为已启用")
+	}
+	// 但这个事实要如实带给界面，否则用户无从判断自己是不是漏了一步
+	if !st.PortConfiguredOnly {
+		t.Error("应报告『端口已配置但未托管』，供界面提示用户")
+	}
+	// 端口本身仍要读出来展示，否则界面上是个空值
+	if st.TProxyPort != 7893 {
+		t.Errorf("应读出配置里的端口，实际 %d", st.TProxyPort)
+	}
+}
+
+// 面板经开关启用后，同一份配置必须报告为已启用。
+// 与上一个用例的唯一差别就是托管标记，用来钉住判据确实是它。
+func TestPanelManagedTProxyIsEnabled(t *testing.T) {
+	s, _, _, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+
+	st, _ := s.Status()
+	if !st.Enabled || st.Mode != string(netcheck.ModeTProxy) {
+		t.Errorf("经开关启用后应报告已启用，实际 enabled=%v mode=%q", st.Enabled, st.Mode)
+	}
+	if st.PortConfiguredOnly {
+		t.Error("已托管时不该再报告『仅配置了端口』")
+	}
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("端口应写入 base.yaml，实际 %d", base.tproxyPort(t))
+	}
+}
+
+// 关闭"面板的透明代理"不得删掉用户手填的 tproxy-port。
+//
+// 这是旧判据最有破坏性的后果：面板会把一份自己从未接管过的配置当作残留状态
+// 抹掉，而用户可能正靠它和自己写的规则工作。
+func TestDisableKeepsHandWrittenTProxyPort(t *testing.T) {
+	s, _, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy),
+		"tproxy-port: 7893\n")
+
+	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("未托管的端口是用户自己填的，关闭时不该删，实际 %d", base.tproxyPort(t))
+	}
+	// 也不该去拆用户自己管的规则
+	if _, down, _ := app.counts(); down != 0 {
+		t.Errorf("未托管时不该拆除规则，实际拆除 %d 次", down)
+	}
+}
+
+// 面板自己写进去的端口，关闭时必须删掉：规则刚拆，留着端口只会让内核继续
+// 监听一个没有任何流量被引过来的端口。
+func TestDisableRemovesManagedTProxyPort(t *testing.T) {
+	s, _, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+
+	if base.tproxyPort(t) != 0 {
+		t.Errorf("面板托管的端口关闭时应删掉，实际 %d", base.tproxyPort(t))
+	}
+	if _, down, _ := app.counts(); down == 0 {
+		t.Error("已托管时关闭应拆除规则")
+	}
+}
+
+// ReconcileState 不得碰用户手填的端口。
+//
+// 旧代码在这里最危险：它探到"规则不存在"就认为是宿主重启后的残留状态，
+// 把端口删掉。而对手填端口的用户来说，规则本来就不该由面板管，
+// 每次重启面板都会吃掉他的配置。
+func TestReconcileStateKeepsHandWrittenTProxyPort(t *testing.T) {
+	s, _, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy),
+		"tproxy-port: 7893\n")
+	app.rulesActive = false // 宿主上没有本面板的 nft 表
+
+	s.ReconcileState(context.Background())
+
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("未托管的端口不该被 ReconcileState 删掉，实际 %d", base.tproxyPort(t))
+	}
+	if _, down, _ := app.counts(); down != 0 {
+		t.Errorf("未托管时不该拆除规则，实际拆除 %d 次", down)
+	}
+}
+
+// 从引入托管标记之前的版本升级上来时，要能认领宿主上残留的规则。
+//
+// nft 表名 aurora_tproxy 为本项目独有，它存在就只能是面板下发的。
+// 不认领的话，用户点关闭会因为标记为空而跳过 Teardown，规则永久留在宿主上。
+func TestReconcileStateClaimsOrphanRulesOnUpgrade(t *testing.T) {
+	// 老版本的状态：base.yaml 里有端口，规则还在宿主上跑着，但没有托管标记
+	s, store, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy),
+		"tproxy-port: 7893\n")
+	app.rulesActive = true
+
+	s.ReconcileState(context.Background())
+
+	if v, _ := store.GetSetting(settingTProxyManaged); v != "1" {
+		t.Errorf("应认领宿主上残留的本面板规则，实际标记 %q", v)
+	}
+	// 认领后规则与配置一致，不该被拆，端口也不该动
+	if _, down, _ := app.counts(); down != 0 {
+		t.Errorf("规则与配置一致时不该拆除，实际拆除 %d 次", down)
+	}
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("认领后端口不该改动，实际 %d", base.tproxyPort(t))
+	}
+	// 认领之后状态才该显示为已启用
+	if st, _ := s.Status(); !st.Enabled {
+		t.Error("认领后应报告已启用")
+	}
+}
+
+// 认领的前提是表确实存在：宿主上没有本面板的规则时，不能把用户手填的端口
+// 算到面板头上（否则又回到"面板删用户配置"那条老路）。
+func TestReconcileStateDoesNotClaimWhenNoRules(t *testing.T) {
+	s, store, app, _ := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy),
+		"tproxy-port: 7893\n")
+	// fakeApplier 默认 rulesActive=true，这里要的正是相反的前提
+	app.rulesActive = false
+
+	s.ReconcileState(context.Background())
+
+	if v, _ := store.GetSetting(settingTProxyManaged); v == "1" {
+		t.Error("宿主上没有本面板的规则时不该认领")
+	}
+}
+
+// 用户在「配置中心」把 tproxy-port 删掉（或改开 TUN）时，那条路径不经过本服务，
+// 面板下发的规则不会被拆。留下的规则把流量引向已无人监听的端口 = 彻底断网，
+// 而界面显示的是另一回事，完全指不到原因。
+func TestReconcileStateTearsDownOrphanRulesAfterExternalEdit(t *testing.T) {
+	s, store, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	// 确认掉，否则会走 RecoverPending 那条路径
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	// 模拟用户在配置中心直接删掉端口
+	if err := base.set("mode: rule\n"); err != nil {
+		t.Fatalf("改写 base 失败: %v", err)
+	}
+	app.rulesActive = true // 规则还在宿主上
+
+	s.ReconcileState(context.Background())
+
+	if _, down, _ := app.counts(); down == 0 {
+		t.Error("配置里已无 tproxy-port 时应拆除孤儿规则")
+	}
+	if v, _ := store.GetSetting(settingTProxyManaged); v == "1" {
+		t.Error("拆除成功后应清掉托管标记")
+	}
+}
+
+// 从 TProxy 切到 TUN 必须先拆掉 TProxy 的规则。
+//
+// 切换时 tproxy-port 会被从配置里删掉，内核随之停止监听；但 nftables 规则与
+// 策略路由不在配置里，不会跟着消失。两者不同步的后果是所有流量被引向一个
+// 已无人监听的端口——比没开透明代理更糟，那是彻底断网，且界面显示"TUN 已启用"。
+func TestSwitchingFromTProxyToTUNTearsDownRules(t *testing.T) {
+	s, store, app, _ := newSvcWithBase(t,
+		reportWith("linux", netcheck.ModeTUN, netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用 TProxy 失败: %v", err)
+	}
+
+	if err := s.Update(context.Background(), true, "tun", 0, ""); err != nil {
+		t.Fatalf("切到 TUN 失败: %v", err)
+	}
+
+	if _, down, _ := app.counts(); down == 0 {
+		t.Error("切到 TUN 时应拆除 TProxy 规则，否则流量会被引向已无人监听的端口")
+	}
+	if v, _ := store.GetSetting(settingTProxyManaged); v == "1" {
+		t.Error("拆除后应清掉托管标记")
+	}
+}
+
+// 下发规则失败时不能留下托管标记：Apply 内部失败时自己已经 Teardown 过，
+// 宿主上不该有本面板的规则，标记留着会让后续逻辑误以为还托管着。
+func TestFailedApplyLeavesNoManagedMark(t *testing.T) {
+	s, store, app, _ := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy), "")
+	app.applyErr = errors.New("nft: 语法错误")
+
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err == nil {
+		t.Fatal("下发失败时应报错")
+	}
+
+	if v, _ := store.GetSetting(settingTProxyManaged); v == "1" {
+		t.Error("下发失败后不该留下托管标记")
+	}
+	if st, _ := s.Status(); st.Enabled {
+		t.Error("下发失败后不该报告为已启用")
+	}
+}
+
+// 非 Linux 平台启动时不得 panic。
+//
+// 复现的是一个真实崩溃：servicecontext 里曾用 `var tpApplier *netcheck.Applier`
+// 声明变量，非 Linux 上不赋值就直接传进构造函数。值为 nil 的具体类型指针一旦
+// 装进接口，接口本身就不等于 nil（它带着类型信息），于是所有
+// `s.applier == nil` 守卫全部失效，方法照常被调用并在解引用字段时崩掉——
+// Windows 上启动即 panic 在 ReconcileState。
+//
+// 构造方那侧已改成声明为接口类型（真 nil），这里再从服务侧钉一遍：
+// 即便将来又有调用方传进 typed nil，也不该把整个进程带崩。
+func TestReconcileStateSurvivesTypedNilApplier(t *testing.T) {
+	// 关键：具体类型的 nil 指针，而不是 nil 字面量
+	var typedNil *fakeApplier
+	store := newFakeStore()
+	base := newFakeBase("tproxy-port: 7893\n")
+	s := NewTransparentService(store, typedNil, logx.WithContext(context.Background()),
+		nil, base.get, base.set)
+	s.detect = func() *netcheck.Report { return reportWith("windows") }
+
+	// 不 panic 即为通过；顺带确认它没去动用户的配置
+	s.ReconcileState(context.Background())
+	s.RecoverPending(context.Background())
+
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("不该改动配置，实际 tproxy-port=%d", base.tproxyPort(t))
+	}
+}
+
+// 关闭路径同样不能被 typed nil 带崩：用户在任何平台都必须能关掉开关。
+func TestDisableSurvivesTypedNilApplier(t *testing.T) {
+	var typedNil *fakeApplier
+	store := newFakeStore()
+	base := newFakeBase("tproxy-port: 7893\n")
+	_ = store.SetSetting(settingTProxyManaged, "1") // 托管标记在，会走到拆规则那步
+	s := NewTransparentService(store, typedNil, logx.WithContext(context.Background()),
+		nil, base.get, base.set)
+	s.detect = func() *netcheck.Report { return reportWith("windows") }
+
+	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
+		t.Fatalf("关闭应始终可用: %v", err)
 	}
 }

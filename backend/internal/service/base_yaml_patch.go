@@ -232,10 +232,52 @@ func marshalDoc(doc *yaml.Node) (string, error) {
 	return sb.String(), nil
 }
 
+// decodeNodeBool 按 YAML 规范把标量节点解成布尔值。
+//
+// 不能直接比 node.Value == "true"：YAML 1.1 里 True / TRUE / yes / on 同样是
+// 真值，mihomo 与本项目合并流程用的都是 yaml.Unmarshal（认这些写法）。
+// 两边判据不一致时，用户写 `enable: yes` 会让面板显示"已关闭"而内核实际跑着
+// TUN——面板据此生成的配置与它自己的状态显示互相矛盾。
+// 用 node.Decode 而不是自己列举字符串，才能始终跟随 yaml 库的解析规则。
+//
+// ok 为 false 表示该节点不是合法布尔（例如用户写了字符串），
+// 由调用方决定如何处理，不在这里替他假定真假。
+func decodeNodeBool(n *yaml.Node) (val bool, ok bool) {
+	if n == nil {
+		return false, false
+	}
+	if err := n.Decode(&val); err != nil {
+		return false, false
+	}
+	return val, true
+}
+
+// decodeNodeInt 按 YAML 规范把标量节点解成整数。
+//
+// 同样不能用 fmt.Sscanf："7893abc" 会被它解成 7893（Sscanf 只要前缀匹配就
+// 算成功），而 yaml.Unmarshal 会直接报错。合并流程认为这份配置是坏的、
+// 拒绝加载，面板却以为端口是 7893 并据此下发防火墙规则——规则指向一个
+// 内核根本没在监听的端口，流量全部黑洞。
+// 十六进制/八进制（0x1ed9、0o17105）也只有走 Decode 才能与合并流程一致。
+func decodeNodeInt(n *yaml.Node) (val int, ok bool) {
+	if n == nil {
+		return 0, false
+	}
+	if err := n.Decode(&val); err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
 // readBaseSwitchState 从 base.yaml 文本里读出透明代理相关的开关状态。
 //
 // 用 yaml.Node 只读取需要的两个键，不做整份结构体解码：base.yaml 里可能有
 // 本程序未建模的字段，整份解码在这里既无必要，也会因严格性差异带来解析失败。
+//
+// 值的解析一律走 yaml 库自身的 Decode（见 decodeNodeBool / decodeNodeInt）：
+// 这里的结论必须与合并流程对同一份文本的理解完全一致，否则面板的状态显示
+// 会与它生成的配置背离。解析不出合法值时按"未设置"处理并如实回报错误，
+// 不猜测用户意图。
 func readBaseSwitchState(src string) (tunEnabled bool, tunStack string, tproxyPort int, err error) {
 	if strings.TrimSpace(src) == "" {
 		return false, "", 0, nil
@@ -251,15 +293,26 @@ func readBaseSwitchState(src string) (tunEnabled bool, tunStack string, tproxyPo
 
 	if _, tunNode := findMapEntry(root, "tun"); tunNode != nil && tunNode.Kind == yaml.MappingNode {
 		if _, en := findMapEntry(tunNode, "enable"); en != nil {
-			tunEnabled = en.Value == "true"
+			if v, ok := decodeNodeBool(en); ok {
+				tunEnabled = v
+			} else {
+				// 值存在但不是合法布尔。按未启用处理并报错：合并流程也会因此
+				// 拒绝这份配置，两边一致地认为"这份配置有问题"，比面板自作
+				// 主张猜一个真假更可诊断。
+				return false, "", 0, fmt.Errorf("tun.enable 不是合法布尔值: %q", en.Value)
+			}
 		}
 		if _, st := findMapEntry(tunNode, "stack"); st != nil {
 			tunStack = st.Value
 		}
 	}
 	if _, p := findMapEntry(root, "tproxy-port"); p != nil {
-		if _, ferr := fmt.Sscanf(p.Value, "%d", &tproxyPort); ferr != nil {
-			tproxyPort = 0
+		if v, ok := decodeNodeInt(p); ok {
+			tproxyPort = v
+		} else {
+			// 同上：端口值不合法时不能"尽力取个数字"，那会让防火墙规则指向
+			// 一个内核并未监听的端口
+			return tunEnabled, tunStack, 0, fmt.Errorf("tproxy-port 不是合法整数: %q", p.Value)
 		}
 	}
 	return tunEnabled, tunStack, tproxyPort, nil

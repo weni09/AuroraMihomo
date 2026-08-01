@@ -233,3 +233,62 @@ describe('provision 动作', () => {
     })
   })
 })
+
+/**
+ * 「配置了端口但未接管」这个中间状态必须原样透传到界面。
+ *
+ * 它是后端唯一能表达"基础配置里有 tproxy-port，但防火墙规则不是面板下发的"
+ * 的渠道。前端把它丢掉，用户就会面对一个关着的开关和一份写着 tproxy-port 的
+ * 配置，无从判断是自己漏了一步还是面板出了错。
+ */
+describe('端口已配置但未接管的状态', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('透传 portConfiguredOnly 与端口号，且不误报为已启用', async () => {
+    const s = useTransparentStore()
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        enabled: false,
+        mode: 'off',
+        pendingConfirm: false,
+        secondsLeft: 0,
+        tproxyPort: 7894,
+        tunStack: 'mixed',
+        portConfiguredOnly: true,
+        env: env(),
+      },
+    })
+
+    await s.fetch()
+
+    expect(s.status.portConfiguredOnly).toBe(true)
+    // 提示文案里要显示具体端口，用户才能对上自己填的那个值
+    expect(s.status.tproxyPort).toBe(7894)
+    // 关键：这不是"已启用"。流量并没有被接管。
+    expect(s.status.enabled).toBe(false)
+  })
+
+  it('面板确实接管后不再提示', async () => {
+    const s = useTransparentStore()
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        mode: 'tproxy',
+        pendingConfirm: false,
+        secondsLeft: 0,
+        tproxyPort: 7893,
+        tunStack: 'mixed',
+        portConfiguredOnly: false,
+        env: env(),
+      },
+    })
+
+    await s.fetch()
+
+    expect(s.status.portConfiguredOnly).toBe(false)
+    expect(s.status.enabled).toBe(true)
+  })
+})

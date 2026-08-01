@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -18,7 +19,7 @@ import (
 //
 // 开关状态（是否启用、TProxy 端口、TUN 协议栈）已迁移到 base.yaml，
 // 由 readBaseSwitchState 读取——「配置中心」编辑的就是同一份文件，
-// 两处状态才不会各说各话。这里只剩两个纯运行时记录：
+// 两处状态才不会各说各话。这里只剩三个纯运行时记录：
 const (
 	// settingTransparentMode 记住用户上次选择的模式。
 	// base.yaml 里两种模式都没开时，界面需要它来决定下拉框默认停在哪一项。
@@ -28,6 +29,25 @@ const (
 	// 有一次未确认的启用并把它回滚掉——只靠进程内定时器，进程一死
 	// 规则就会永久留在宿主上，而此时网络可能已经不通。
 	settingTransparentPendingUntil = "transparent.pending_until"
+	// settingTProxyManaged 记录"宿主上的 TProxy 防火墙规则与策略路由由本面板
+	// 下发"。值为 "1" 表示已托管，其余（含空/键不存在）表示未托管。
+	//
+	// 这不是与 base.yaml 并列的第二个开关状态，而是 base.yaml 根本表达不了的
+	// 另一个事实。TProxy 生效需要两半：
+	//   - tproxy-port 让内核监听某个端口 —— 配置能表达；
+	//   - nftables 规则与策略路由把流量引到该端口 —— 只有面板能放上去，
+	//     在配置文件里没有任何痕迹。
+	// 所以"配置里有端口"并不等于"流量已被接管"。
+	//
+	// TUN 不需要这个标记：它的两半都由 mihomo 按 tun.enable 自己完成
+	// （建网卡、改路由、写并清理规则），配置就是机制，配置中心改它即真的开关。
+	//
+	// 缺了这个标记，tproxy-port > 0 会被直接当成"已启用"，后果有两层：
+	// 界面对用户手填的端口谎报"已接管"，而流量并未被引走；更糟的是
+	// ReconcileState 会探到"规则不存在"，进而把用户手填的端口当成宿主重启后的
+	// 残留状态删掉——而"自己填端口、自己写防火墙规则"是本项目明确支持的用法
+	// （见前端 redir-port / tproxy-port 的帮助文案）。
+	settingTProxyManaged = "transparent.tproxy_managed"
 )
 
 // ConfirmWindow 启用后必须确认的时限。
@@ -51,6 +71,14 @@ type TransparentState struct {
 	SecondsLeft int    `json:"secondsLeft"`
 	TProxyPort  int    `json:"tproxyPort"`
 	TUNStack    string `json:"tunStack"`
+	// PortConfiguredOnly 为 true 表示 base.yaml 里配了 tproxy-port，但接管流量
+	// 所需的防火墙规则与策略路由不是本面板下发的（Enabled 因此为 false）。
+	//
+	// 单独报出来而不是并进 Enabled：这是一个用户需要知道、且只有他能判断对错的
+	// 中间状态。可能是他自己在管规则（本项目支持的用法，此时一切正常），也可能
+	// 是他以为填了端口就等于开启（此时内核在监听但没有任何流量被引过去）。
+	// 面板无从区分这两者，只能如实呈现"端口配了、规则不是我下的"，把判断交给用户。
+	PortConfiguredOnly bool `json:"portConfiguredOnly"`
 }
 
 // transparentStore 抽象设置读写，便于测试。
@@ -59,8 +87,14 @@ type transparentStore interface {
 	SetSetting(key, value string) error
 }
 
-// transparentApplier 抽象规则下发，TProxy 模式用。
-type transparentApplier interface {
+// TransparentApplier 抽象规则下发，TProxy 模式用。
+//
+// 导出是为了让调用方能把变量声明成这个接口类型。构造方必须区分 Linux 与
+// 其它平台（非 Linux 不构造 Applier），若用 `var a *netcheck.Applier` 再传进来，
+// 得到的是一个"带类型但值为 nil"的接口——它不等于 nil，本文件里所有
+// `s.applier == nil` 的守卫会全部失效，方法照常被调用并在解引用字段时 panic。
+// 声明为接口类型，未赋值时才是真正的 nil 接口。
+type TransparentApplier interface {
 	Apply(ctx context.Context, p netcheck.TProxyParams) error
 	Teardown(ctx context.Context) error
 	Snapshot(ctx context.Context) (string, error)
@@ -71,7 +105,7 @@ type transparentApplier interface {
 
 // transparentProvisioner 补齐系统条件（装包、写 sysctl）。
 //
-// 与 transparentApplier 分开而非塞进同一个接口：前者动的是"系统层"
+// 与 TransparentApplier 分开而非塞进同一个接口：前者动的是"系统层"
 // （软件包、内核参数），后者动的是防火墙规则，生命周期与风险都不同——
 // 防火墙改动要 90 秒确认窗口兜着，装包不需要也不适用。
 // 合成一个接口会让两边的假实现都被迫实现对方的方法。
@@ -92,7 +126,7 @@ type transparentProvisioner interface {
 // 而不是 settings 表。settings 表只保留 transparent.mode 用于记录用户上次选择。
 type TransparentService struct {
 	store   transparentStore
-	applier transparentApplier
+	applier TransparentApplier
 	// provisioner 补齐系统依赖；非 Linux 或未注入时为 nil，Provision 据此拒绝
 	provisioner transparentProvisioner
 	logger      logx.Logger
@@ -126,7 +160,7 @@ type TransparentService struct {
 // getBaseFn 和 updateBaseFn 用于读写 base.yaml，不可为 nil。
 func NewTransparentService(
 	store transparentStore,
-	applier transparentApplier,
+	applier TransparentApplier,
 	logger logx.Logger,
 	reloadFn func(ctx context.Context) error,
 	getBaseFn func() (string, error),
@@ -152,6 +186,31 @@ func (s *TransparentService) SetProvisioner(p transparentProvisioner) {
 	s.provisioner = p
 }
 
+// hasApplier 判断规则下发能力是否真的可用。
+//
+// 不能直接写 `s.applier == nil`：调用方若把一个值为 nil 的具体类型指针
+// （如 `var a *netcheck.Applier` 未赋值）传进来，装进接口后接口不等于 nil，
+// 那个比较会通过，紧接着调用方法就在解引用字段时 panic。这不是假设——
+// 非 Linux 平台启动时曾因此崩在 ReconcileState。
+//
+// 构造方那侧已改为声明接口类型（见 TransparentApplier 的注释），
+// 这里再用反射兜一层：本服务的每个使用点都靠这个判断决定"能不能碰防火墙"，
+// 判错的代价是进程崩溃或规则残留，值得多这一次检查。
+func (s *TransparentService) hasApplier() bool {
+	if s.applier == nil {
+		return false
+	}
+	// 只有指针/接口等可为 nil 的种类需要看值；其它种类（如结构体值实现接口）
+	// 一律视为可用
+	v := reflect.ValueOf(s.applier)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return !v.IsNil()
+	default:
+		return true
+	}
+}
+
 // SetManagementPorts 注入必须在防火墙规则里放行的管理端口。
 //
 // panelPort 取自 aurora-api.yaml，固定值即可；controllerPortFn 是函数，
@@ -169,11 +228,28 @@ func (s *TransparentService) Status() (*TransparentState, *netcheck.Report) {
 	return s.state(), s.detect()
 }
 
+// state 汇总当前开关状态。
+//
+// 两种模式的判据不同，因为两者的"启用"由不同的东西构成：
+//
+//   - TUN：base.yaml 里 tun.enable 为真即已启用。mihomo 按这个字段自己建网卡、
+//     改路由、写并清理防火墙规则，配置就是机制。
+//   - TProxy：必须 tproxy-port > 0 **且** 规则由本面板下发（见
+//     settingTProxyManaged）。配置只表达"内核监听哪个端口"，不表达"流量是否
+//     被引到这个端口"，后者只有面板知道。
+//
+// 早先两者共用"配置里有值就算开"的判据，于是用户在「配置中心」手填 tproxy-port
+// 会被误判成"面板已接管"——界面谎报状态，且 ReconcileState 会把那个端口当成
+// 残留状态删掉。
+//
+// 两种模式在 base.yaml 里同时出现时以 TUN 为先，与 netcheck.Inject 的注入顺序
+// 一致：判定与生成必须用同一套优先级，否则界面说的模式和内核跑的模式会不一样。
 func (s *TransparentService) state() *TransparentState {
 	// 开关的真实状态以 base.yaml 为准：它同时是「配置中心」的编辑对象，
 	// 两个界面读同一份数据才不会各说各话。settings 表里的 mode 只作为
 	// base.yaml 未表达意图时的兜底（例如两者都没开，用于记住用户上次选了哪个模式）。
 	enabled := false
+	portConfiguredOnly := false
 	mode := s.getString(settingTransparentMode, string(netcheck.ModeOff))
 	tproxyPort := netcheck.DefaultTProxyPort
 	tunStack := defaultTUNStackName
@@ -195,18 +271,25 @@ func (s *TransparentService) state() *TransparentState {
 					tunStack = stack
 				}
 			} else if port > 0 {
-				enabled = true
-				mode = string(netcheck.ModeTProxy)
 				tproxyPort = port
+				if s.tproxyManaged() {
+					enabled = true
+					mode = string(netcheck.ModeTProxy)
+				} else {
+					// 端口配了但规则不是面板下的。不报"已启用"，也不去改用户的
+					// 配置，只把这个事实带给界面由用户判断（见字段注释）。
+					portConfiguredOnly = true
+				}
 			}
 		}
 	}
 
 	st := &TransparentState{
-		Mode:       mode,
-		Enabled:    enabled,
-		TProxyPort: tproxyPort,
-		TUNStack:   tunStack,
+		Mode:               mode,
+		Enabled:            enabled,
+		TProxyPort:         tproxyPort,
+		TUNStack:           tunStack,
+		PortConfiguredOnly: portConfiguredOnly,
 	}
 	if until := s.pendingUntil(); !until.IsZero() {
 		left := int(until.Sub(s.now()).Seconds())
@@ -294,7 +377,7 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	// TProxy 需要我们自己动宿主的防火墙与路由，先快照再下发。
 	// TUN 由 mihomo 自己管规则，面板不碰防火墙。
 	if mode == string(netcheck.ModeTProxy) {
-		if s.applier == nil {
+		if !s.hasApplier() {
 			return errors.New("当前平台不支持 TProxy 模式")
 		}
 		if _, err := s.applier.Snapshot(ctx); err != nil {
@@ -372,9 +455,25 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 			return fmt.Errorf("记录确认截止时间失败（未启用）: %w", err)
 		}
 
-		if err := s.applyMode(ctx, mode, tproxyPort); err != nil {
-			// 下发失败立即回滚，不留待确认状态
+		// 托管标记必须在 Apply 之前落库，与上面记确认截止时间同理：
+		// Apply 成功后进程若立刻崩溃，规则已经在宿主上，而数据库里没有标记，
+		// 重启后就没人认领这套规则——既不会被 ReconcileState 校准，
+		// 用户点关闭时也会因为标记为空而跳过 Teardown，规则永久留在宿主上。
+		// 反过来标记先落、Apply 失败，下面会把标记清掉，只是多写一次库。
+		if err := s.setTProxyManaged(true); err != nil {
 			_ = s.clearPending()
+			restoreBase()
+			return fmt.Errorf("记录规则托管状态失败（未启用）: %w", err)
+		}
+
+		if err := s.applyMode(ctx, mode, tproxyPort); err != nil {
+			// 下发失败立即回滚，不留待确认状态，也不留托管标记：
+			// Apply 内部失败时自己已经 Teardown 过（见 netcheck.Applier.Apply），
+			// 宿主上不该有本面板的规则，标记必须跟着清掉
+			_ = s.clearPending()
+			if merr := s.setTProxyManaged(false); merr != nil {
+				s.logger.Errorf("清理规则托管标记失败: %v", merr)
+			}
 			restoreBase()
 			return err
 		}
@@ -383,6 +482,24 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 		s.logger.Infof("透明代理已启用（%s），需在 %.0f 秒内确认网络正常，否则自动回滚",
 			mode, ConfirmWindow.Seconds())
 		return nil
+	}
+
+	// 切到 TUN 时必须先把 TProxy 的规则拆掉。
+	//
+	// 上面的 patches 已经把 tproxy-port 从配置里删了，内核随之停止监听该端口；
+	// 但 nftables 规则与策略路由不在配置里，不会因此消失。两者不同步的后果是
+	// 所有流量被规则引向一个已经没人监听的端口——比单纯没开透明代理更糟，
+	// 那是彻底断网，且用户看到的界面显示"TUN 已启用"，完全指不到原因。
+	//
+	// 只在确实托管过时拆：没托管说明规则（如果有）是用户自己管的，不该替他动。
+	if s.hasApplier() && s.tproxyManaged() {
+		if err := s.applier.Teardown(ctx); err != nil {
+			// 拆除失败不阻断切换：TUN 那边的配置已经写好，继续下发让它先生效。
+			// 但标记要留着，这样用户下次关闭时还会再拆一次。
+			s.logger.Errorf("切换到 TUN 前拆除 TProxy 规则失败，宿主上可能残留规则: %v", err)
+		} else if merr := s.setTProxyManaged(false); merr != nil {
+			s.logger.Errorf("清理规则托管标记失败: %v", merr)
+		}
 	}
 
 	if err := s.applyMode(ctx, mode, tproxyPort); err != nil {
@@ -479,12 +596,21 @@ func (s *TransparentService) disable(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
-	mode := s.getString(settingTransparentMode, string(netcheck.ModeOff))
-	// 无论此前是什么模式都尝试拆一次规则：模式记录可能与实际状态不一致
-	// （例如上次关闭时拆除失败），拆除本身是幂等的。
-	if s.applier != nil && mode == string(netcheck.ModeTProxy) {
+	// 拆规则的门禁是托管标记，而不是 settings 表里的 mode。
+	//
+	// mode 只在用户经「透明代理」页操作时才写，它回答的是"用户上次选了什么"，
+	// 不是"宿主上现在有没有本面板的规则"。用它做门禁会漏拆：任何让 mode 与
+	// 实际托管状态不一致的路径（关闭时拆除失败、mode 落库失败、旧版本升级）
+	// 都会让规则永久留在宿主上，而用户已经点过关闭、界面也显示已关闭。
+	// 托管标记是专门记录这件事的，且 Teardown 本身幂等，多拆一次无害。
+	tproxyManaged := s.tproxyManaged()
+	if s.hasApplier() && tproxyManaged {
 		if err := s.applier.Teardown(ctx); err != nil {
+			// 拆除失败时刻意不清标记：规则可能还在宿主上，标记留着才能让
+			// 下一次关闭（或启动时的 ReconcileState）再尝试拆一次
 			s.logger.Errorf("拆除透明代理规则失败: %v", err)
+		} else if merr := s.setTProxyManaged(false); merr != nil {
+			s.logger.Errorf("清理规则托管标记失败: %v", merr)
 		}
 	}
 
@@ -502,10 +628,20 @@ func (s *TransparentService) disable(ctx context.Context) error {
 			s.logger.Errorf("读取 base 配置失败，未能写入关闭状态: %v", err)
 			return fmt.Errorf("读取基础配置失败: %w", err)
 		}
-		patched, perr := patchBaseYAMLMulti(baseYAML, map[string]interface{}{
-			"tun.enable":  false,
-			"tproxy-port": nil,
-		})
+		patches := map[string]interface{}{
+			"tun.enable": false,
+		}
+		// 只删本面板托管过的 tproxy-port。
+		//
+		// 未托管说明这个端口是用户自己填的（配置中心手填 + 自己写防火墙规则是
+		// 本项目支持的用法），关闭"面板的透明代理"不该顺手删掉一份面板从未
+		// 接管过的配置——那是在用户没要求的情况下改他的文件。
+		// 已托管则必须删：端口是本面板写进去的，规则也刚拆掉，留着端口只会让
+		// 内核继续监听一个没有任何流量被引过来的端口。
+		if tproxyManaged {
+			patches["tproxy-port"] = nil
+		}
+		patched, perr := patchBaseYAMLMulti(baseYAML, patches)
 		if perr != nil {
 			s.logger.Errorf("改写 base 配置失败，未能写入关闭状态: %v", perr)
 			return fmt.Errorf("改写基础配置失败: %w", perr)
@@ -553,28 +689,32 @@ func (s *TransparentService) RecoverPending(ctx context.Context) {
 	}
 }
 
-// ReconcileState 核实"已确认启用"的 TProxy 记录是否仍与宿主上的真实
-// 规则一致。
+// ReconcileState 核实"面板认为自己托管着 TProxy"与宿主上的真实规则是否一致。
 //
-// 真机测试发现的问题（见 AuroraMihomo-Transparent-Proxy-Test-Report.md
-// 第 6.3 节）：TProxy 的 nftables 规则与策略路由不会持久化到宿主重启，
-// 但数据库里"已确认启用"的记录会。RecoverPending 只处理"启用后还没
-// 确认"的场景，对这种"已经确认过，规则却已经因为宿主重启而消失"的
-// 情况完全没有覆盖——面板会一直显示"已开启"，用户没有任何信号能察觉
-// 网络实际上根本没被接管，直到自己手动碰一下开关。
+// 两种方向的不一致都要处理，它们的成因不同：
 //
-// 只在 TProxy 模式下需要这一步：TUN 模式的路由与防火墙完全由 mihomo
-// 自己在每次启动时按 config.yaml 里的 tun.enable 重建，不存在"面板记录
-// 说开着、内核那边却没跟上"的缺口。
+//  1. 标记说托管、宿主上规则却没了。真机测试发现的问题（见
+//     AuroraMihomo-Transparent-Proxy-Test-Report.md 第 6.3 节）：TProxy 的
+//     nftables 规则与策略路由不持久化到宿主重启，但数据库记录会。
+//     RecoverPending 只覆盖"启用后还没确认"，对"已经确认过、规则却随宿主重启
+//     消失"完全没有覆盖——面板会一直显示"已开启"，用户没有任何信号能察觉
+//     网络实际根本没被接管，直到自己手动碰一下开关。
+//  2. 标记说托管、但配置里已经不是"面板托管的 TProxy"了。用户可以在
+//     「配置中心」直接删掉 tproxy-port 或改开 tun.enable，那条路径不经过本
+//     服务，规则不会被拆。留下的是一套把流量引向已无人监听端口的规则，
+//     即彻底断网，而界面显示的是 TUN 已启用，完全指不到原因。
 //
-// 修正方式是回落到关闭，而不是尝试静默重新下发规则：重新下发等于绕过了
-// 启用时本该有的 90 秒确认窗口，与"规则变更必须经用户确认"这条设计原则
-// 相悖。用户如果仍然需要 TProxy，重新走一次正常的启用流程即可。
+// 只有 TProxy 需要这一步：TUN 的路由与防火墙由 mihomo 每次启动时按
+// config.yaml 里的 tun.enable 自己重建，不存在"面板记录说开着、内核没跟上"。
+//
+// 情况 1 的修正是回落到关闭，而不是静默重新下发规则：重新下发等于绕过了启用时
+// 本该有的 90 秒确认窗口，与"规则变更必须经用户确认"相悖。用户仍需要 TProxy 时
+// 重新走一次正常启用流程即可。
 //
 // 只能在启动流程里调用：它省掉了 disable() 末尾的配置重新下发，
 // 依赖调用方紧随其后会做一次合并。
 func (s *TransparentService) ReconcileState(ctx context.Context) {
-	if s.applier == nil {
+	if !s.hasApplier() {
 		return
 	}
 	// 待确认状态由 RecoverPending 处理，这里只关心"已确认"的情况——
@@ -582,12 +722,66 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 	if !s.pendingUntil().IsZero() {
 		return
 	}
-	// 启用状态必须走 state()：它以 base.yaml 为准。
+
+	// 标记缺失时先尝试认领宿主上已有的规则。
+	//
+	// 这一步靠的是 nft 表名 aurora_tproxy 为本项目独有（见 netcheck.NFTTableName）：
+	// 那张表存在，就只能是本面板下发的，不必猜。因此托管标记在启动时是可推导的，
+	// 不是一份只能相信的记录。
+	//
+	// 覆盖两种标记缺失的情形：
+	//   - 从引入该标记之前的版本升级上来，规则还在宿主上跑着（宿主未重启）。
+	//     不认领的话，用户点关闭会因为标记为空而跳过 Teardown，规则永久残留。
+	//   - enable() 里标记落库成功但随后进程崩溃之类的窗口。
+	//
+	// 认领只发生在"表确实存在"时，所以不会把用户自己写的规则算到面板头上——
+	// 用户手写规则不会用这个表名。
+	if !s.tproxyManaged() {
+		active, err := s.applier.RulesActive(ctx)
+		if err != nil {
+			// 探测失败无法判断，保持未托管：这一侧是安全的，面板不会去动
+			// 用户的配置，代价只是残留规则要等下次启动再认领
+			s.logger.Errorf("核实宿主上是否存在本面板的透明代理规则失败，暂不处理: %v", err)
+			return
+		}
+		if !active {
+			// 宿主上没有本面板的规则，也没有托管记录，两边一致。
+			// 用户自己填 tproxy-port、自己写规则的情形正落在这里：
+			// 面板从未接管过，不该去改一份不属于它的配置。
+			return
+		}
+		s.logger.Info("发现宿主上残留本面板下发的 TProxy 规则但无托管记录" +
+			"（通常是升级或异常退出导致），已认领，后续按正常流程核实")
+		if err := s.setTProxyManaged(true); err != nil {
+			// 认领失败就没法安全地继续：后面的回落路径会删 base.yaml 里的
+			// tproxy-port，而那个删除的前提正是"这个端口是面板写的"，
+			// 该前提由标记承载。宁可留着规则等下次启动，也不要在依据不牢时
+			// 改用户的配置。
+			s.logger.Errorf("认领残留 TProxy 规则失败，本次不处理: %v", err)
+			return
+		}
+	}
+
+	// 启用状态必须走 state()：它以 base.yaml 为准（TProxy 还要求托管标记）。
 	// 早先这里读的是 settings 表的 transparent.enabled，而开关状态迁移到
 	// base.yaml 之后那个键已经没人写 "true" 了，判断会永远为假，
 	// 使这整段宿主重启后的规则失效检测变成死代码。
 	st := s.state()
 	if !st.Enabled || st.Mode != string(netcheck.ModeTProxy) {
+		// 上面那条情况 2：标记说托管，但配置已经不再是面板托管的 TProxy
+		// （用户在配置中心删了端口，或改开了 TUN）。规则成了孤儿，拆掉。
+		// 不需要改 base.yaml——用户的意图已经写在里面了，这里只是让宿主状态
+		// 跟上它。
+		s.logger.Error("检测到本面板下发的 TProxy 规则已与基础配置不符" +
+			"（配置里已无 tproxy-port 或已切到 TUN），拆除残留规则")
+		if err := s.applier.Teardown(ctx); err != nil {
+			// 拆除失败时保留标记，下次启动或用户点关闭时还会再试一次
+			s.logger.Errorf("拆除残留 TProxy 规则失败: %v", err)
+			return
+		}
+		if err := s.setTProxyManaged(false); err != nil {
+			s.logger.Errorf("清理规则托管标记失败: %v", err)
+		}
 		return
 	}
 
@@ -615,8 +809,16 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		// 否则状态会卡在"记录说开着、规则确实没有"的原样
 		s.logger.Errorf("拆除透明代理规则失败（继续回落状态）: %v", err)
 	}
+	// 托管关系到此结束：下面会把 base.yaml 里的 tproxy-port 一并清掉，
+	// 标记留着会让后续的 disable() 再徒劳地拆一次已经不存在的规则
+	if err := s.setTProxyManaged(false); err != nil {
+		s.logger.Errorf("清理规则托管标记失败: %v", err)
+	}
 	// 状态落在 base.yaml 上：随后那次合并读的是它，只改 settings 表
 	// 不会让最终 config.yaml 里的 tproxy-port 消失。
+	//
+	// 这里删 tproxy-port 是安全的：能走到这一步说明标记为已托管，
+	// 也就是这个端口本来就是面板自己写进去的，不是用户手填的。
 	if s.getBaseFn != nil && s.updateBaseFn != nil {
 		baseYAML, err := s.getBaseFn()
 		if err != nil {
@@ -680,6 +882,33 @@ func (s *TransparentService) reload(ctx context.Context) error {
 
 func (s *TransparentService) clearPending() error {
 	return s.store.SetSetting(settingTransparentPendingUntil, "")
+}
+
+// TProxyManaged 报告宿主上的 TProxy 防火墙规则与策略路由是否由本面板下发。
+//
+// 导出给合并流程用：它据此决定是否注入 TProxy 的技术参数（routing-mark）。
+// 这个事实只有本服务知道——配置文件里没有任何痕迹。
+func (s *TransparentService) TProxyManaged() bool {
+	return s.tproxyManaged()
+}
+
+// tproxyManaged 报告宿主上的 TProxy 规则是否由本面板下发。
+//
+// 读不到（键不存在、或本次是从旧版本升级上来）一律按 false：把"不确定"
+// 当作"未托管"是安全的一侧——面板因此不会去动用户的 tproxy-port，
+// 也不会谎报已接管；代价只是用户需要重新点一次开关。反过来把不确定当已托管，
+// 就会让 ReconcileState 删掉用户手写的配置。
+func (s *TransparentService) tproxyManaged() bool {
+	return s.getString(settingTProxyManaged, "") == "1"
+}
+
+// setTProxyManaged 落库托管标记。
+func (s *TransparentService) setTProxyManaged(managed bool) error {
+	v := ""
+	if managed {
+		v = "1"
+	}
+	return s.store.SetSetting(settingTProxyManaged, v)
 }
 
 func (s *TransparentService) pendingUntil() time.Time {

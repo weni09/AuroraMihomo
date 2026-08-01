@@ -78,6 +78,15 @@ export interface TransparentStatus {
   secondsLeft: number
   tproxyPort: number
   tunStack: string
+  /**
+   * 基础配置里有 tproxy-port，但接管流量所需的防火墙规则与策略路由不是本面板
+   * 下发的（enabled 因此为 false）。
+   *
+   * TProxy 生效需要两半：端口让内核监听，防火墙规则把流量引过去。后者只有面板
+   * 能放上去，且在配置文件里没有任何痕迹——所以"填了端口"不等于"已接管"。
+   * 用来提示用户确认自己是不是漏了一步（也可能他本就自己在管规则）。
+   */
+  portConfiguredOnly: boolean
   env: TransparentEnvReport
 }
 
@@ -118,6 +127,7 @@ export const useTransparentStore = defineStore('transparent', {
       secondsLeft: 0,
       tproxyPort: 7893,
       tunStack: 'mixed',
+      portConfiguredOnly: false,
       env: emptyEnv(),
     } as TransparentStatus,
     loading: false,

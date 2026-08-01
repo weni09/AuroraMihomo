@@ -250,12 +250,13 @@ func encodeOperators(ops []types.PipelineOperator) string {
 // 开销可以忽略。
 func toTransparentStatus(st *service.TransparentState, env *netcheck.Report) *types.TransparentStatusResp {
 	resp := &types.TransparentStatusResp{
-		Enabled:        st.Enabled,
-		Mode:           st.Mode,
-		PendingConfirm: st.PendingConfirm,
-		SecondsLeft:    st.SecondsLeft,
-		TProxyPort:     st.TProxyPort,
-		TUNStack:       st.TUNStack,
+		Enabled:            st.Enabled,
+		Mode:               st.Mode,
+		PendingConfirm:     st.PendingConfirm,
+		SecondsLeft:        st.SecondsLeft,
+		TProxyPort:         st.TProxyPort,
+		TUNStack:           st.TUNStack,
+		PortConfiguredOnly: st.PortConfiguredOnly,
 		Env: types.TransparentEnvReport{
 			OS:                  env.OS,
 			Arch:                env.Arch,

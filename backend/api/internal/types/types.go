@@ -390,13 +390,14 @@ type TransparentProvisionStep struct {
 }
 
 type TransparentStatusResp struct {
-	Enabled        bool                 `json:"enabled"`
-	Mode           string               `json:"mode"`
-	PendingConfirm bool                 `json:"pendingConfirm"`
-	SecondsLeft    int                  `json:"secondsLeft"`
-	TProxyPort     int                  `json:"tproxyPort"`
-	TUNStack       string               `json:"tunStack"`
-	Env            TransparentEnvReport `json:"env"`
+	Enabled            bool                 `json:"enabled"`
+	Mode               string               `json:"mode"`
+	PendingConfirm     bool                 `json:"pendingConfirm"`
+	SecondsLeft        int                  `json:"secondsLeft"`
+	TProxyPort         int                  `json:"tproxyPort"`
+	TUNStack           string               `json:"tunStack"`
+	PortConfiguredOnly bool                 `json:"portConfiguredOnly"`
+	Env                TransparentEnvReport `json:"env"`
 }
 
 type TransparentUpdateReq struct {

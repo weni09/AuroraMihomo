@@ -231,10 +231,21 @@ type TransparentStatusResp {
 	// PendingConfirm 刚启用、等待确认网络正常；超时未确认会自动回滚
 	PendingConfirm bool `json:"pendingConfirm"`
 	// SecondsLeft 距自动回滚的剩余秒数
-	SecondsLeft int                  `json:"secondsLeft"`
-	TProxyPort  int                  `json:"tproxyPort"`
-	TUNStack    string               `json:"tunStack"`
-	Env         TransparentEnvReport `json:"env"`
+	SecondsLeft int    `json:"secondsLeft"`
+	TProxyPort  int    `json:"tproxyPort"`
+	TUNStack    string `json:"tunStack"`
+	// PortConfiguredOnly 基础配置里有 tproxy-port，但接管流量所需的防火墙规则
+	// 与策略路由不是本面板下发的（Enabled 因此为 false）。
+	//
+	// TProxy 生效需要两半：tproxy-port 让内核监听（配置能表达），以及防火墙规则
+	// 与策略路由把流量引过去（只有面板能放上去，配置里没有任何痕迹）。
+	// 所以"配置里有端口"并不等于"流量已被接管"。
+	//
+	// 单独报出来供界面提示用户：可能是他自己在管规则（本项目支持的用法，此时
+	// 一切正常），也可能是他以为填了端口就等于开启（内核在监听，但没有任何流量
+	// 被引过去）。面板无从区分这两者，只能如实呈现并把判断交给用户。
+	PortConfiguredOnly bool                 `json:"portConfiguredOnly"`
+	Env                TransparentEnvReport `json:"env"`
 }
 
 type TransparentUpdateReq {

@@ -536,6 +536,24 @@ const navOpen = ref(false)
             </div>
           </div>
 
+          <!-- 「配置了端口但未接管」的提示。
+               放在开关上方而不是折叠进下面的说明里：用户此刻看到的是一个关着的
+               开关，而基础配置里明明写着 tproxy-port，不解释清楚就会以为面板出错。
+               措辞刻意不判定对错——他可能本就自己在管规则（本项目支持的用法），
+               也可能以为填了端口就等于开启。面板无从区分，只陈述事实。 -->
+          <div
+            v-if="tp.status.portConfiguredOnly"
+            class="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-500/40 dark:bg-amber-500/10"
+          >
+            <div class="font-medium text-amber-800 dark:text-amber-300">
+              基础配置里有 tproxy-port（{{ tp.status.tproxyPort }}），但流量未被本面板接管
+            </div>
+            <p class="mt-1 text-xs text-amber-700 dark:text-amber-400">
+              TProxy 需要两部分才生效：端口让内核监听（已配置），以及防火墙规则与策略路由把流量引到该端口（当前不是本面板下发的）。
+              如果你在自行维护这些规则，忽略此提示即可；否则请在下方选择 TProxy 模式并打开开关，由面板下发规则。
+            </p>
+          </div>
+
           <label class="mb-1 flex items-center gap-3">
             <Switch
               :model-value="tp.status.enabled"

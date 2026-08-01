@@ -187,7 +187,13 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	//
 	// Applier 只在 Linux 上构造：TProxy 依赖 nftables 与策略路由，其它平台
 	// 给 nil，service 层据此拒绝启用该模式而不是运行到一半才失败。
-	var tpApplier *netcheck.Applier
+	//
+	// 关键：变量类型必须是接口而不是 *netcheck.Applier。
+	// 把一个值为 nil 的 *Applier 赋给接口参数，得到的接口不等于 nil
+	//（它带着类型信息），service 层的 `applier == nil` 守卫会失效，
+	// 方法照常被调用并在解引用字段时崩掉——非 Linux 上启动即 panic。
+	// 声明为接口类型，未赋值时它就是真正的 nil 接口。
+	var tpApplier service.TransparentApplier
 	if runtime.GOOS == "linux" {
 		tpApplier = &netcheck.Applier{
 			// 快照与配置备份分开存：前者是宿主的网络状态，
@@ -214,6 +220,14 @@ func NewServiceContext(c config.Config) *ServiceContext {
 			return cfgSvc.UpdateBaseConfig(content)
 		},
 	)
+	// 合并流程要知道"TProxy 规则是不是面板下发的"才能决定是否注入 routing-mark：
+	// 只配了 tproxy-port 不构成启用 TProxy（把流量引过去的规则不在配置里）。
+	//
+	// 两个服务因此互相需要，用注入打破：TransparentService 借 cfgSvc 读写
+	// base.yaml，cfgSvc 借这个方法值读托管标记。传方法值而非取一次布尔——
+	// 标记会随用户开关变化，取值一次会让此后所有合并都用启动时的旧状态。
+	cfgSvc.SetTProxyManagedProvider(transparentSvc.TProxyManaged)
+
 	// 环境准备（装依赖、写 sysctl）同样只在 Linux 上构造，理由同 Applier。
 	// Root 用默认的 "/"：写的是真实的 /etc/sysctl.d/，测试才会指向临时目录。
 	if runtime.GOOS == "linux" {
