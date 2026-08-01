@@ -3,5 +3,3 @@
 # 只减不增：修好存量后请同步下调数字，新代码不得写进这里。
 FE1 frontend/src/App.vue 1
 FE1 frontend/src/assets/main.css 4
-FE1 frontend/src/views/DashboardView.vue 4
-FE1 frontend/src/views/MihomoView.vue 4
