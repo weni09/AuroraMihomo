@@ -208,8 +208,13 @@ fail2ban、k8s 的规则，整体清空会一并抹掉。
    不放行 `0xff` 则 mihomo 发出的包被自己的 TPROXY 规则再次捕获，形成自环，
    对应一个已知的高 CPU 故障；该值必须与配置里的 `routing-mark` 一致。
    `0xfe` 是面板自身的标记，理由见第 4.7 节。
-3. **劫持 DNS**（`prerouting` 是 UDP/53；`output` 链上 TCP 与 UDP 都劫持）
-   必须在局域网放行之前，否则同网段的 DNS 查询直接放行，域名类分流规则失效。
+3. **劫持 DNS**（两条链都是 `th dport 53`，TCP 与 UDP 一并覆盖）
+   必须在局域网放行之前，否则同网段的 DNS 查询直接放行，域名类分流规则失效；
+   也必须在 `socket transparent` 匹配之前——否则已建立的 DNS "连接"被 socket
+   规则截走，只有第一次查询被接管。
+   **重定向目标是 mihomo 的 DNS 端口（`dns.listen`），不是 tproxy-port**：
+   TPROXY 保留原始目的端口，送到 tproxy-port 时 mihomo 看到的是"目的端口 53
+   的普通流量"，不会按 DNS 协议应答——劫持发生了但送错了门（真机实测的根因）。
 4. **放行局域网网段**
 5. **其余 TCP/UDP 交给 TPROXY**
 
@@ -224,7 +229,17 @@ fail2ban、k8s 的规则，整体清空会一并抹掉。
 | | `prerouting`（外来流量） | `output`（本机流量） |
 | --- | --- | --- |
 | 管理端口 | 按 `dport` 放行（入站到我们的服务） | 按 `sport` **与** `dport` 放行 |
-| DNS | 直接 `tproxy`（该动作只在 prerouting 可用） | 打标后由策略路由发夹回 prerouting |
+| DNS | 直接 `tproxy` 到 DNS 端口 | mangle 链**放行**，由 `nat_output` 链 `redirect` |
+
+本机自身的 DNS 不能靠打标：`output` 链上没有 tproxy 动作可用（只在 prerouting
+有），而"送到另一个端口"只能靠 nat 改写。打标会把包经 `local` 路由投递给本机
+原目的端口——本机没有进程监听 53（mihomo 的 DNS 在 `dns.listen` 端口），查询
+原地超时（实测 `communications error`）。因此 mangle output 链对 DNS 包
+`return` 放行，交给独立的 `nat_output` 链（`type nat hook output priority
+dstnat`）用 `redirect to :<DNS 端口>` 改写。mangle(-150) 先于 nat dstnat(-100)
+执行，顺序上成立。`nat_output` 链内必须重复放行 `KernelMark`/`PanelMark`：
+nat 是独立钩子，mangle 链的放行对它没有约束力，漏掉会让 mihomo 自己的上游
+查询被改回本机形成 DNS 自环。
 
 `output` 链按 `sport` 放行是必须的：我们自己服务的**回包**里管理端口是源端口
 （sshd 的回包是 `sport=22`、`dport=` 客户端随机端口）。只按 `dport` 放行匹配不到
@@ -452,6 +467,100 @@ sysctl -w net.ipv6.conf.all.forwarding=1
    `net.ipv4.conf.all.send_redirects=0`。
 3. **DHCP 冲突**：不要在旁路由上再开一个 DHCP 服务。
 
+### 6.5 DNS：开启 TProxy 后最容易踩的坑（真机实测）
+
+TProxy 只接管**经过面板主机转发**的流量。DNS 查询要走这条路，
+必须满足一个前提：**终端发出的 DNS 查询要经过面板主机**。
+不满足时域名分流静默失效——网页能开（按 IP 分流 + 代理兜底），
+但基于域名的规则（分流、广告拦截）全部不生效，且没有任何报错，
+排障时极难察觉。
+
+#### 坑 1：DNS 服务器与终端同网段 → 查询绕开面板主机
+
+终端到主路由 DNS（如 `192.168.1.251`）是**同网段直连**（路由表里
+`scope link`），不经过网关。TProxy 规则对这类查询完全不可见——
+抓包实测：`forward` 计数器恒为 0，污染答案直通。
+
+**解法**：DHCP 的 DNS（option 6）直接下发面板主机地址，
+让查询落在"经过面板主机"的路径上。
+
+#### 坑 2：systemd-resolved 并行查询 → 污染答案被选中
+
+Ubuntu 终端默认用 systemd-resolved。它拿到多个 DNS 上游时
+**并行查询、取最快响应**。面板主机应答很快，但 `223.6.6.6` 这类
+污染源也快——谁先回用谁。实测 `resolvectl status` 显示
+`Current DNS Server: 223.6.6.6`，污染直通。
+
+**解法**：DHCP 只下发**一个** DNS（面板主机），不给次选。
+"加个次选兜底"看似贴心，实际会把污染答案重新带回来。
+这个问题的代价是：面板主机挂了，终端 DNS 全断——透明代理本就
+以面板主机为单点，DNS 断只是它的一部分。
+
+#### 坑 3：mihomo 的 dns.listen 没配 → 接管无从谈起
+
+DNS 接管机制是把 53 端口的查询重定向到 mihomo 的 `dns.listen`
+端口。不配 `dns.listen`（或配了但 mihomo 没绑上），查询被重定向
+到一个无人监听的端口，直接 `connection refused`——实测整机 DNS
+不可用（`no servers could be reached`），比不接管更糟。
+配置中心「DNS 设置 → DNS 监听地址」务必填写；面板在开启 TProxy
+时会探测该端口是否有监听，没有则拒绝下发并说明原因。
+
+#### 坑 4：dns.listen 用高位端口时，终端不能把面板主机当 DNS
+
+终端把面板主机当 DNS（查询直达面板主机:53）时，查询被 tproxy
+到 `dns.listen` 端口，mihomo 的应答**源端口是 dns.listen 端口**，
+而终端期望 53——不匹配，查询超时（实测 `communications error`）。
+这也是早期"把 128 的 DNS 指到 129 却不通"的根因。
+
+**解法**：要让「面板主机即 DNS」可用，`dns.listen` 直接设 **53**
+（需要 root，53 是特权端口，且不能与宿主上其它 DNS 服务冲突）。
+这是最干净的零配置形态：爱快 DHCP 只下发面板主机一个 DNS，
+终端拿到即生效，无需任何终端配置。
+
+#### 污染兜底：fallback-filter + fallback DoH
+
+即便 DNS 被接管，mihomo 的上游（`nameserver`）本身也可能返回污染
+（`223.5.5.5` 对 google 曾返回 Facebook/Twitter 的 IP 段）。
+靠 `fallback-filter` 兜底：
+
+```yaml
+dns:
+  nameserver:
+    - 223.5.5.5
+  fallback:
+    - https://1.1.1.1/dns-query   # 必须用 DoH
+    - https://8.8.8.8/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
+      - 127.0.0.0/8
+      - ::1/128            # IPv6 同样支持（回环、文档段等）
+      - 2001:db8::/32
+```
+
+- `nameserver` 返回境外 IP（对国内查询反常）→ 判定污染 →
+  用 `fallback` 重查。实测 google 从污染的 `104.244.42.197`
+  恢复到真实 `142.251.x.x`
+- **`fallback` 必须用 DoH**：裸 `IP:53` 的 UDP 直连在 TProxy
+  环境下不可靠（实测重查失败、污染透传），DoH 走 443 经代理可达
+- 不需要逐个域名配 `nameserver-policy`（DoH）——`fallback-filter`
+  已能兜住。policy 只在需要强制某域名走特定 DNS 时才用（如内网
+  域名走内网 DNS），日常不需要
+
+#### 验证方法
+
+```bash
+# 从终端测：fake-ip 模式下应返回 198.18.x.x 段
+nslookup www.google.com
+
+# 在面板主机上测真实解析（绕过 fake-ip，看上游是否干净）
+curl 'http://127.0.0.1:9090/dns/query?name=www.google.com'
+# 返回 142.251.x.x（Google 真实段）说明没被污染；
+# 返回 Facebook/Twitter 的 IP 段说明 nameserver 污染未被兜住
+```
+
 ### 验证方法
 
 不要只看浏览器能否上网（可能命中缓存或直连规则）。
@@ -628,6 +737,14 @@ TProxy 生效需要两半，缺一半都不通：
   回环 stub 时，本机 DNS 不经 mihomo，本机流量只按 IP 分流。检测会告警，
   但不会替用户改 `resolv.conf`（那是系统级配置，且 systemd-resolved
   会覆写它）。局域网设备不受影响。
+- **终端的 DNS 不被接管，取决于查询是否经过面板主机**。与主路由 DNS
+  同网段直连的查询（`scope link`）绕过网关，TProxy 规则不可见。
+  必须由 DHCP 把 DNS 下发为面板主机，且只下发这一个（多上游时
+  systemd-resolved 并行查询会选中污染源）。完整分析与解法见 §6.5。
+- **「面板主机即 DNS」要求 dns.listen 为 53**。用高位端口时终端把面板
+  主机当 DNS 会因应答源端口不匹配而超时（见 §6.5 坑 4）。
+- **fallback 上游用裸 IP:53 不可靠**。TProxy 环境下直连 UDP 上游
+  可能重查失败导致污染透传，应改用 DoH（`https://1.1.1.1/dns-query`）。
 - **IPv6 仅在宿主确实能走 v6 时才接管**。缺全局 v6 地址或 v6 默认路由时
   只接管 IPv4 并告警。这是刻意的：下发 v6 规则却没有 v6 策略路由会让
   v6 流量被打标后无路可走，比不接管更糟。

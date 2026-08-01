@@ -3,9 +3,11 @@ package netcheck
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,6 +31,15 @@ type Applier struct {
 	Runner CommandRunner
 	// Logf 记录执行过程，可为 nil
 	Logf func(format string, args ...interface{})
+	// UDPPortInUse 探测本机某 UDP 端口是否已有监听者，nil 时用默认实现。
+	//
+	// 存在的意义：DNS 规则会把 53 端口的查询重定向到 mihomo 的 DNS 端口，
+	// 而那个端口是否真的有人监听，只有探测才知道。没人监听时下发规则
+	// 等于把所有 DNS 查询导进黑洞（实测为 connection refused、
+	// 整机域名解析不可用），比不劫持糟得多。
+	//
+	// 抽成字段是为了可测：真实实现要绑端口，测试里不能真去占用端口。
+	UDPPortInUse func(port int) bool
 }
 
 // CommandRunner 抽象命令执行，便于测试与审计。
@@ -75,6 +86,33 @@ func (a *Applier) logf(format string, args ...interface{}) {
 	if a.Logf != nil {
 		a.Logf(format, args...)
 	}
+}
+
+// udpPortInUse 报告本机是否已有进程在监听该 UDP 端口。
+//
+// 用"尝试绑定"而不是解析 ss/netstat 的输出：不依赖外部命令是否存在、
+// 不受输出格式差异影响。绑得上说明没人监听，随即释放。
+//
+// 同时探 0.0.0.0 与 127.0.0.1：mihomo 通常绑在 0.0.0.0（通配），
+// 只探回环在某些内核/参数组合下可能绑得上通配端口而误判为空闲。
+// 任一处绑不上就认为端口已被占用——宁可保守，误判为"有监听"只会放过一次
+// 下发，而误判为"无监听"会拒绝一次合法的启用。
+func defaultUDPPortInUse(port int) bool {
+	for _, host := range []string{"0.0.0.0", "127.0.0.1"} {
+		pc, err := net.ListenPacket("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return true
+		}
+		_ = pc.Close()
+	}
+	return false
+}
+
+func (a *Applier) udpPortInUse(port int) bool {
+	if a.UDPPortInUse != nil {
+		return a.UDPPortInUse(port)
+	}
+	return defaultUDPPortInUse(port)
 }
 
 // Snapshot 保存当前防火墙与路由状态。
@@ -130,6 +168,27 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 	rules, err := BuildNFTRules(p)
 	if err != nil {
 		return err
+	}
+
+	// 0. DNS 端口必须真的有人监听，否则规则会把所有 DNS 查询导进黑洞。
+	//
+	// 放在最前面（连快照都还没做）：这是纯只读检查，失败时宿主一点没被碰过。
+	//
+	// 这道校验主要防的是"把 dns.listen 设成 53"：nft 语法上 `redirect to :53`
+	// 完全合法，`nft --check` 也过得去，但 redirect 是把包**重定向到本机**，
+	// 53 上无人监听就直接 connection refused——真机实测整机域名解析不可用，
+	// 而清掉规则立刻恢复。mihomo 绑不上 53 的原因很常见：dns.enable 为 false、
+	// 非 root 且缺 CAP_NET_BIND_SERVICE、或宿主已有 systemd-resolved/dnsmasq
+	// 占着 53。这些情况 mihomo 只在自己日志里报一行，面板无从得知。
+	//
+	// 用 UDP 探测：DNS 以 UDP 为主，mihomo 的 dns.listen 同时监听 TCP 与 UDP，
+	// 探一个即可。
+	if p.DNSPort > 0 && !a.udpPortInUse(p.DNSPort) {
+		return fmt.Errorf("未检测到有程序在 UDP 端口 %d 上监听，"+
+			"下发规则会把所有 DNS 查询重定向到该端口而导致域名解析全部失败（未做任何改动）。"+
+			"请检查 mihomo 的 dns.enable 是否开启、dns.listen 是否为该端口；"+
+			"若填的是 53，注意它是特权端口且常被 systemd-resolved / dnsmasq 占用，"+
+			"建议改用 1053 等高位端口", p.DNSPort)
 	}
 
 	// 1. 干跑校验。nft --check 只解析不应用，能挡住语法错误与

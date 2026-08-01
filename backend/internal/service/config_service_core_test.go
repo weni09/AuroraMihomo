@@ -547,3 +547,51 @@ func TestMergeAndApplyHotReloadsWhenControllerUnchanged(t *testing.T) {
 		t.Errorf("两次合并都应走热重载，实际 ReloadConfig %d 次", reloadCalls)
 	}
 }
+
+// KernelDNSPort 要能从最终配置里读出 mihomo 的 DNS 监听端口。
+//
+// 透明代理的防火墙规则靠它决定把 53 的查询重定向到哪儿。取错端口的后果是
+// DNS 全部失效（重定向到无人监听的端口），所以各种合法写法都要覆盖，
+// 而非法写法必须报错而不是猜一个值。
+func TestKernelDNSPortParsesListenForms(t *testing.T) {
+	cases := []struct {
+		name     string
+		dnsYAML  string
+		wantPort int
+		wantErr  bool
+	}{
+		{"完整地址", "dns:\n  enable: true\n  listen: 0.0.0.0:1053\n", 1053, false},
+		{"仅端口", "dns:\n  enable: true\n  listen: \":5353\"\n", 5353, false},
+		{"IPv6 形态", "dns:\n  enable: true\n  listen: \"[::]:1053\"\n", 1053, false},
+		// 未配置返回 0 且不报错：调用方据此回落到默认端口
+		{"未配置 listen", "dns:\n  enable: true\n", 0, false},
+		// 非法值必须报错，不能猜——猜错会让 DNS 规则指向没人监听的端口
+		{"非法值", "dns:\n  enable: true\n  listen: abc\n", 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc, _, _ := newTestConfigService(t)
+			if err := svc.UpdateBaseConfig("mode: rule\n" + c.dnsYAML); err != nil {
+				t.Fatalf("写入基础配置失败: %v", err)
+			}
+			if _, err := svc.MergeAndApplyDetailed(context.Background(),
+				MergeWithRefresh(0)); err != nil {
+				t.Fatalf("合并失败: %v", err)
+			}
+
+			port, err := svc.KernelDNSPort()
+			if c.wantErr {
+				if err == nil {
+					t.Errorf("非法 listen 应报错，实际返回 %d", port)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("读取失败: %v", err)
+			}
+			if port != c.wantPort {
+				t.Errorf("端口 = %d, want %d", port, c.wantPort)
+			}
+		})
+	}
+}

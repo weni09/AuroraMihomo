@@ -1,6 +1,7 @@
 package netcheck
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -84,13 +85,134 @@ func TestNFTRulesHijackDNSBeforeLANReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("生成规则失败: %v", err)
 	}
-	dns := strings.Index(out, "udp dport 53")
-	lan := strings.Index(out, "ip daddr 192.168.0.0/16 return")
-	if dns < 0 || lan < 0 {
-		t.Fatalf("缺少 DNS 劫持或局域网放行规则:\n%s", out)
+	// 按链分别断言，不能在整份文本里找第一处 53。
+	//
+	// 早先这里搜全文的 "udp dport 53"，而两条链都有 DNS 规则：prerouting 那条
+	// 一旦被改动，Index 会静默匹配到 output 链的规则、断言照样通过，于是
+	// "prerouting 的 DNS 劫持排在局域网放行之后"这个真实缺陷被完全掩盖。
+	// 客户端的 DNS 大多指向局域网内的服务器（如 192.168.1.1），顺序反了的话
+	// 最常见的那种配置下 DNS 劫持根本不生效。
+	for _, c := range []string{"prerouting", "output"} {
+		chain := chainBody(t, out, c)
+		dns := strings.Index(chain, "th dport 53")
+		lan := strings.Index(chain, "ip daddr 192.168.0.0/16 return")
+		if dns < 0 || lan < 0 {
+			t.Fatalf("%s 链缺少 DNS 劫持或局域网放行规则:\n%s", c, chain)
+		}
+		if dns > lan {
+			t.Errorf("%s 链的 DNS 劫持(%d)出现在局域网放行(%d)之后，域名分流会失效",
+				c, dns, lan)
+		}
 	}
-	if dns > lan {
-		t.Errorf("DNS 劫持(%d)出现在局域网放行(%d)之后，域名分流会失效", dns, lan)
+}
+
+// chainBody 截出指定链的规则文本，供"顺序"类断言按链隔离验证。
+//
+// 必需的辅助：两条链有多条形近的规则，在整份输出里用 strings.Index 找特征串
+// 极易匹配到另一条链上，让断言看起来通过而实际什么也没验证。
+func chainBody(t *testing.T, rules, chain string) string {
+	t.Helper()
+	start := strings.Index(rules, "chain "+chain+" {")
+	if start < 0 {
+		t.Fatalf("找不到 %s 链:\n%s", chain, rules)
+	}
+	rest := rules[start:]
+	// 链体以行首缩进两格的 } 结束（表的收尾 } 不缩进）
+	end := strings.Index(rest, "\n  }")
+	if end < 0 {
+		t.Fatalf("%s 链没有正常结束:\n%s", chain, rest)
+	}
+	return rest[:end]
+}
+
+// prerouting 的 DNS 劫持必须同时覆盖 TCP 与 UDP。
+//
+// 真机现象：TProxy 模式下"没有接管域名解析"。原因是这条规则早先只写了
+// `udp dport 53`，走 TCP 的查询（UDP 响应被截断后客户端重试 TCP、
+// 以及部分固定用 TCP 的客户端）原样漏到上游，域名类分流对它们完全失效。
+// output 链那侧一直是 { tcp, udp }，两条链的口径本就该一致。
+func TestPreroutingHijacksBothTCPAndUDPDNS(t *testing.T) {
+	out, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	chain := chainBody(t, out, "prerouting")
+
+	if !strings.Contains(chain, "meta l4proto { tcp, udp } th dport 53") {
+		t.Errorf("prerouting 的 DNS 劫持应同时覆盖 TCP 与 UDP，实际:\n%s", chain)
+	}
+	// 必须真的投给 mihomo，而不只是打个标就放行。
+	// 目标端口是 DNS 端口（默认 1053），不是 tproxy-port，理由见下一个用例。
+	if !strings.Contains(chain, "th dport 53 meta mark set 0x1 tproxy to :1053") {
+		t.Errorf("prerouting 的 DNS 应 tproxy 给 mihomo 的 DNS 端口，实际:\n%s", chain)
+	}
+}
+
+// DNS 必须重定向到 mihomo 的 DNS 端口，而不是 tproxy-port。
+//
+// 真机现象（Alpine，dns.listen: 0.0.0.0:1053）：TProxy 开着、规则也在，
+// 但 nslookup 仍从上游 DNS 拿到被污染的结果。原因是 TPROXY 保留原始目的端口——
+// 把 53 的查询投到 tproxy-port，mihomo 看到的是"目的端口 53 的普通 TCP/UDP
+// 流量"，不会按 DNS 协议应答。劫持发生了，只是送错了门。
+//
+// 这个用例同时钉住两个端口不能混用：DNS 走 DNSPort，其余流量走 TProxyPort。
+func TestDNSHijackTargetsDNSPortNotTProxyPort(t *testing.T) {
+	p := sampleParams()
+	p.TProxyPort = 7893
+	p.DNSPort = 1053
+	out, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	chain := chainBody(t, out, "prerouting")
+
+	if !strings.Contains(chain, "th dport 53 meta mark set 0x1 tproxy to :1053") {
+		t.Errorf("DNS 应重定向到 mihomo 的 DNS 端口 1053，实际:\n%s", chain)
+	}
+	if strings.Contains(chain, "th dport 53 meta mark set 0x1 tproxy to :7893") {
+		t.Errorf("DNS 不能投给 tproxy-port：mihomo 不会按 DNS 应答，实际:\n%s", chain)
+	}
+	// 非 DNS 流量仍走 tproxy-port，两者不能被一起改错
+	if !strings.Contains(chain, "tproxy ip to :7893") {
+		t.Errorf("非 DNS 流量应仍投给 tproxy-port，实际:\n%s", chain)
+	}
+}
+
+// DNSPort 缺省时回落到 DefaultDNSPort，而不是写出一个 0 端口。
+//
+// 写 0 会让 nft 拒绝整份规则，连带整个 TProxy 一条都不生效——
+// 那比"用默认端口可能不对"糟糕得多。
+func TestNormalizeFallsBackToDefaultDNSPort(t *testing.T) {
+	p := sampleParams()
+	p.DNSPort = 0
+	if err := p.Normalize(); err != nil {
+		t.Fatalf("Normalize 失败: %v", err)
+	}
+	if p.DNSPort != DefaultDNSPort {
+		t.Errorf("DNSPort 缺省应回落到 %d，实际 %d", DefaultDNSPort, p.DNSPort)
+	}
+}
+
+// DNS 劫持必须排在 socket 匹配之前。
+//
+// socket 匹配会认出已建立的连接并直接 accept。客户端反复向同一台 DNS 服务器
+// 查询时，第二次之后的包会被 socket 规则截走，再也到不了 DNS 规则——
+// 表现是"只有第一次查询被接管，之后全部漏出去"，比完全不生效更难排查。
+func TestPreroutingHijacksDNSBeforeSocketMatch(t *testing.T) {
+	out, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	chain := chainBody(t, out, "prerouting")
+
+	dns := strings.Index(chain, "th dport 53")
+	sock := strings.Index(chain, "socket transparent 1")
+	if dns < 0 || sock < 0 {
+		t.Fatalf("缺少 DNS 劫持或 socket 匹配规则:\n%s", chain)
+	}
+	if dns > sock {
+		t.Errorf("DNS 劫持(%d)出现在 socket 匹配(%d)之后，"+
+			"已建立的 DNS 连接会绕过劫持", dns, sock)
 	}
 }
 
@@ -438,4 +560,128 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+// nfproto 限定与 tproxy 动作的家族必须成对出现。
+//
+// 真机实测（Alpine 3.24 / nftables 1.1.6）：`meta nfproto ipv4` 搭配不带家族的
+// `tproxy to :port` 会被 nft 判为协议冲突：
+//
+//	Error: conflicting protocols specified: ip vs. unknown.
+//	You must specify ip or ip6 family in tproxy statement
+//
+// 而 Apply 是先 `nft --check` 再下发，校验失败则**整表**都不会生效——
+// 用户看到的是"TProxy 已开启但流量完全没被接管"，包括域名解析。
+// 这是本次"没有接管域名解析"的主因，比 DNS 规则本身的缺陷更靠前。
+func TestCatchAllTProxySpecifiesFamilyWhenNFProtoRestricted(t *testing.T) {
+	out, err := BuildNFTRules(sampleParams()) // 默认 v4-only，会限定 nfproto
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	for _, chain := range []string{"prerouting", "output"} {
+		body := chainBody(t, out, chain)
+		for _, line := range strings.Split(body, "\n") {
+			if !strings.Contains(line, "nfproto ipv4") || !strings.Contains(line, "tproxy ") {
+				continue
+			}
+			// 限定了 nfproto 的 tproxy 必须写成 `tproxy ip to`
+			if !strings.Contains(line, "tproxy ip to") {
+				t.Errorf("%s 链限定了 nfproto 却未指定 tproxy 家族，nft 会拒绝整份规则:\n%s",
+					chain, line)
+			}
+		}
+	}
+}
+
+// 启用 v6 时不限定 nfproto，此时 tproxy 不带家族才是合法写法。
+// 反向钉住：别为了修上面那条而无条件加上 `ip`，那会在 v6 场景下又坏掉。
+func TestCatchAllTProxyOmitsFamilyWhenIPv6Enabled(t *testing.T) {
+	p := sampleParams()
+	p.EnableIPv6 = true
+	out, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	if strings.Contains(out, "nfproto ipv4") {
+		t.Errorf("启用 v6 时不该限定 nfproto ipv4:\n%s", out)
+	}
+	if strings.Contains(out, "tproxy ip to") {
+		t.Errorf("未限定 nfproto 时 tproxy 不应指定家族（会与双栈规则冲突）:\n%s", out)
+	}
+}
+
+// 本机自身的 DNS 必须靠 nat 链改写目的端口，不能靠打标。
+//
+// 真机现象（Alpine，mihomo dns.listen 在 1053）：mangle output 链给 DNS 包打标后，
+// 包经 `ip rule fwmark` 命中 table 100 的 local 路由被本机投递，但目的端口仍是 53，
+// 而本机没有进程监听 53，查询原地超时：
+//
+//	communications error to 192.168.1.251#53: timed out
+//
+// output 链上没有 tproxy 动作可用（那只在 prerouting 有），把包送到另一个端口
+// 只能靠 nat 改写。修好后本机 nslookup 返回 mihomo 的 fake-ip（198.18.x.x）。
+func TestLocalDNSRedirectedByNATChain(t *testing.T) {
+	p := sampleParams()
+	p.DNSPort = 1053
+	out, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+
+	nat := chainBody(t, out, "nat_output")
+	if !strings.Contains(nat, "type nat hook output priority dstnat") {
+		t.Errorf("需要一条 nat output 链来改写 DNS 目的端口，实际:\n%s", nat)
+	}
+	if !strings.Contains(nat, "th dport 53 ip daddr != 127.0.0.0/8 redirect to :1053") {
+		t.Errorf("nat 链应把本机 DNS 改写到 mihomo 的 DNS 端口，实际:\n%s", nat)
+	}
+
+	// mangle output 链上必须是 return，把包留给 nat 链。
+	// 打标会让包被本机投递到无人监听的 53 端口。
+	mangle := chainBody(t, out, "output")
+	if !strings.Contains(mangle, "th dport 53 ip daddr != 127.0.0.0/8 return") {
+		t.Errorf("mangle output 链应放行 DNS 交给 nat 链，实际:\n%s", mangle)
+	}
+	if strings.Contains(mangle, "th dport 53 ip daddr != 127.0.0.0/8 meta mark set") {
+		t.Errorf("mangle output 链不能给 DNS 打标（会被投递到无人监听的 53），实际:\n%s", mangle)
+	}
+}
+
+// nat 链必须放行 mihomo 与面板自身的流量，否则形成 DNS 自环。
+//
+// nat 是独立的钩子，mangle 链里的 mark return 对它没有任何约束力。漏掉的话
+// mihomo 查上游 DNS 会被改写回它自己，再查上游、再被改写——DNS 彻底不可用。
+func TestNATChainExemptsOwnTrafficToAvoidDNSLoop(t *testing.T) {
+	out, err := BuildNFTRules(sampleParams())
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	nat := chainBody(t, out, "nat_output")
+
+	kernel := strings.Index(nat, fmt.Sprintf("meta mark 0x%x return", KernelMark))
+	panel := strings.Index(nat, fmt.Sprintf("meta mark 0x%x return", PanelMark))
+	redirect := strings.Index(nat, "redirect to :")
+	if kernel < 0 || panel < 0 {
+		t.Fatalf("nat 链缺少 KernelMark/PanelMark 放行，mihomo 的上游查询会自环:\n%s", nat)
+	}
+	if redirect < 0 {
+		t.Fatalf("nat 链缺少 redirect 规则:\n%s", nat)
+	}
+	if kernel > redirect || panel > redirect {
+		t.Errorf("自身流量的放行必须排在 redirect 之前，否则 DNS 自环:\n%s", nat)
+	}
+}
+
+// nat 链的 redirect 目标端口要跟随 DNSPort，不能写死。
+func TestNATChainUsesConfiguredDNSPort(t *testing.T) {
+	p := sampleParams()
+	p.DNSPort = 5353
+	out, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	nat := chainBody(t, out, "nat_output")
+	if !strings.Contains(nat, "redirect to :5353") {
+		t.Errorf("redirect 应指向配置的 DNS 端口 5353，实际:\n%s", nat)
+	}
 }

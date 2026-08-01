@@ -54,6 +54,18 @@ export const useConfigStore = defineStore('config', {
     remoteSourceOptions: [] as RemoteSourceOption[],
     /** 手动拉取的进行状态；结果以 toast 呈现，不再存于 state */
     pulling: false,
+    /**
+     * 本地基础配置已保存到数据库，但尚未与远程层合并并下发给内核。
+     *
+     * 当用户只点「保存基础配置」而未点「保存并应用」或「立即拉取并合并」时为 true。
+     * 界面据此弹出黄条提示，避免用户以为「保存了就等于配置生效了」。
+     *
+     * 结论来自后端（/config/unmerged，按合并指纹推导）而非本地推断：
+     * 刷新页面、换浏览器、清缓存、换机器都得到同一结论；
+     * 后端定时拉取或透明代理开关触发的合并也会自动让提示消失。
+     * 保存/合并成功后本地即时置位只是让界面不等待下一次请求。
+     */
+    unmergedChanges: false,
   }),
   actions: {
     async fetchRemoteSource() {
@@ -79,8 +91,12 @@ export const useConfigStore = defineStore('config', {
       try {
         const res = await api.post('/config/pull-merge')
         const text = res.data?.message || '已拉取并合并'
-        if (res.data?.success === false) useNotifyStore().error(text)
-        else useNotifyStore().success(text)
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+          this.unmergedChanges = false
+        }
         // 合并可能产生冲突或改动，刷新差异视图的数据源
         return res.data?.success !== false
       } catch (e: any) {
@@ -139,6 +155,10 @@ export const useConfigStore = defineStore('config', {
         this.model = (loadYaml(this.raw) as any) || {}
         // 只有真正读到内容才放开写回，见 baseLoaded 的说明
         this.baseLoaded = true
+        // 未合并状态以服务端推导为准（合并指纹比较，见后端 BaseUnmerged），
+        // 刷新页面/换浏览器都一致。不阻塞主流程：提示只是辅助信息，
+        // 接口失败时保持原值。
+        void this.fetchUnmerged()
       } catch (e: any) {
         this.baseLoaded = false
         // baseLoadError 保留为持久错误态：页面据此显示「配置未加载、
@@ -164,6 +184,9 @@ export const useConfigStore = defineStore('config', {
         const content = dumpYaml(this.model)
         const res = await api.put('/config/base', { content })
         this.raw = content
+        // 保存后必然未合并（后端指纹失配）；本地即时置位，
+        // 无需等下一次 fetchUnmerged 往返
+        this.unmergedChanges = true
         useNotifyStore().success(res.data?.message || '保存成功')
         return true
       } catch (e: any) {
@@ -188,6 +211,7 @@ export const useConfigStore = defineStore('config', {
       let merged = false
       try {
         const res = await api.post('/config/merge')
+        this.unmergedChanges = false
         useNotifyStore().success(res.data?.message || '已应用并生效')
         merged = true
       } catch (e: any) {
@@ -205,6 +229,20 @@ export const useConfigStore = defineStore('config', {
       // fetch 自身已有错误处理，这里不再重复兜。
       if (merged) {
         await useTransparentStore().fetch()
+      }
+    },
+    /**
+     * 从服务端读取「base 已保存但未合并」状态。
+     *
+     * 由后端按合并指纹推导（每次合并成功记录 base 内容哈希并比较当前值），
+     * 前端不在本地做任何推断——换浏览器、清缓存、换机器结论一致。
+     */
+    async fetchUnmerged() {
+      try {
+        const res = await api.get<{ unmerged: boolean }>('/config/unmerged')
+        this.unmergedChanges = res.data?.unmerged === true
+      } catch {
+        // 失败不打扰用户：提示是辅助状态，保持原值即可
       }
     },
   },

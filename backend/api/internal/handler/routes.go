@@ -83,6 +83,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodGet,
+				Path:    "/api/v1/config/unmerged",
+				Handler: protected.GetConfigUnmergedHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
 				Path:    "/api/v1/config/versions",
 				Handler: protected.ListConfigVersionsHandler(serverCtx),
 			},

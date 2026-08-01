@@ -36,6 +36,10 @@ type ConfigContent struct {
 	Content string `json:"content"`
 }
 
+type ConfigUnmergedStatus struct {
+	Unmerged bool `json:"unmerged"`
+}
+
 type ConfigVersionItem struct {
 	Id        int64  `json:"id"`
 	Hash      string `json:"hash"`

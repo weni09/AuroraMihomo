@@ -48,6 +48,17 @@ const (
 	// 残留状态删掉——而"自己填端口、自己写防火墙规则"是本项目明确支持的用法
 	// （见前端 redir-port / tproxy-port 的帮助文案）。
 	settingTProxyManaged = "transparent.tproxy_managed"
+	// settingTProxyAppliedSig 记录上次下发规则时用的参数指纹。
+	//
+	// 规则里烧进了若干运行时值（tproxy-port、DNS 端口、内核 API 端口、是否下发
+	// v6 规则），而这些值用户随时能在「配置中心」改。改完只会重新生成 config.yaml
+	// 并让内核热重载，防火墙规则不会跟着变——两者从此不一致，且没有任何信号。
+	// 后果按严重度：改 external-controller 端口会失去面板对内核的访问（规则仍放行
+	// 旧端口）；改 tproxy-port 或 DNS 端口会让对应流量投向无人监听的端口。
+	//
+	// 存指纹而不是每次合并都无条件重下发：重下发有瞬时丢包，定时拉取也会走合并
+	// 流程，无条件重写等于每次拉订阅都抖一次网络。只有指纹变了才动。
+	settingTProxyAppliedSig = "transparent.tproxy_applied_sig"
 )
 
 // ConfirmWindow 启用后必须确认的时限。
@@ -79,6 +90,14 @@ type TransparentState struct {
 	// 是他以为填了端口就等于开启（此时内核在监听但没有任何流量被引过去）。
 	// 面板无从区分这两者，只能如实呈现"端口配了、规则不是我下的"，把判断交给用户。
 	PortConfiguredOnly bool `json:"portConfiguredOnly"`
+	// RulesOutOfSync 为 true 表示宿主上的防火墙规则与当前配置不一致
+	// （规则里烧进的端口已经不是配置里的值）。
+	//
+	// 正常情况下合并流程末尾的 Resync 会自动消除这种不一致，所以这个字段为 true
+	// 只发生在重下发失败时（如 nft 报错）。必须报出来：此时内核听在新端口、
+	// 规则还往旧端口投，流量会进黑洞，而用户刚看到的是"配置已生效"。
+	// 静默不同步比报错糟得多——用户完全没有线索。
+	RulesOutOfSync bool `json:"rulesOutOfSync"`
 }
 
 // transparentStore 抽象设置读写，便于测试。
@@ -145,6 +164,15 @@ type TransparentService struct {
 	// 能在界面上改。启动时取一次会让"改完端口再启用 TProxy"放行到旧端口上，
 	// 而那正是会锁死面板与内核 API 的情形。为 nil 时不放行该项。
 	controllerPortFn func() int
+
+	// dnsPortFn 取 mihomo 实际的 DNS 监听端口（config.yaml 的 dns.listen）。
+	//
+	// 防火墙规则要把 53 端口的查询重定向到这个端口，而不是 tproxy-port——
+	// TPROXY 保留原始目的端口，送错门时 mihomo 不会按 DNS 应答，
+	// 表现就是"域名解析没被接管"。
+	// 同样用函数：dns.listen 用户随时能在配置中心改，取值一次会让规则
+	// 指向旧端口。为 nil 或返回 0 时回落到 netcheck 的默认端口。
+	dnsPortFn func() int
 
 	// 新增：用于读写 base.yaml
 	getBaseFn    func() (string, error)
@@ -223,6 +251,29 @@ func (s *TransparentService) SetManagementPorts(panelPort int, controllerPortFn 
 	s.controllerPortFn = controllerPortFn
 }
 
+// SetDNSPortFn 注入 mihomo DNS 监听端口的来源。
+//
+// 单独一个 setter 而不塞进 SetManagementPorts：那个方法的语义是"必须放行的
+// 管理端口"，而 DNS 端口是重定向目标，性质完全不同，混在一起会让调用方
+// 误以为 DNS 端口也会被放行直连（那恰好是我们不想要的）。
+func (s *TransparentService) SetDNSPortFn(fn func() int) {
+	s.dnsPortFn = fn
+}
+
+// dnsPort 返回下发规则时使用的 DNS 重定向目标端口。
+//
+// 取不到时回落到 netcheck 的默认值：规则里必须有一个确定的端口，
+// 写 0 会让整份规则被 nft 拒绝、一条都不生效（连带整个 TProxy 失效），
+// 那比"重定向到默认端口可能不对"糟得多。
+func (s *TransparentService) dnsPort() int {
+	if s.dnsPortFn != nil {
+		if p := s.dnsPortFn(); p > 0 {
+			return p
+		}
+	}
+	return netcheck.DefaultDNSPort
+}
+
 // Status 返回当前状态与环境检测结论。
 func (s *TransparentService) Status() (*TransparentState, *netcheck.Report) {
 	return s.state(), s.detect()
@@ -284,12 +335,27 @@ func (s *TransparentService) state() *TransparentState {
 		}
 	}
 
+	// 规则是否已与配置脱节：拿"按当前配置该下发什么"与"上次实际下发了什么"
+	// 比对得出，而不是另存一个布尔。派生值不会与事实漂移——
+	// 独立的标志位一旦漏更新就会长期骗人。
+	outOfSync := false
+	if enabled && mode == string(netcheck.ModeTProxy) {
+		applied := s.getString(settingTProxyAppliedSig, "")
+		// 没有记录时不报不一致：老版本升级上来、或 ReconcileState 刚认领了
+		// 残留规则，都属于"不知道"而非"已知不一致"。谎报会让用户去查一个
+		// 不存在的问题。
+		if applied != "" && applied != paramsSignature(s.tproxyParams(tproxyPort)) {
+			outOfSync = true
+		}
+	}
+
 	st := &TransparentState{
 		Mode:               mode,
 		Enabled:            enabled,
 		TProxyPort:         tproxyPort,
 		TUNStack:           tunStack,
 		PortConfiguredOnly: portConfiguredOnly,
+		RulesOutOfSync:     outOfSync,
 	}
 	if until := s.pendingUntil(); !until.IsZero() {
 		left := int(until.Sub(s.now()).Seconds())
@@ -399,8 +465,17 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 		return fmt.Errorf("读取基础配置失败: %w", err)
 	}
 
-	// 两种模式互斥，所以每次都把另一种显式清掉（传 nil 即删除该键）。
+	// 两种模式互斥，所以每次都把另一种关掉。
 	// 定点改写而非整份结构体往返，理由见 base_yaml_patch.go 顶部注释。
+	//
+	// 两个字段的"关掉"写法不同，且必须不同（与 disable() 保持一致）：
+	//   - tun.enable 写显式 false，不能删键。「配置中心」的 TUN 开关读的就是
+	//     这个键，删键后它靠"读不到"显示为关，那只是碰巧正确；而删键等于
+	//     "本地未声明"，一旦订阅里带着 tun: {enable: true}，合并时它就会被
+	//     补回来，最终配置里两种模式同时开着。显式 false 才是一个能参与合并、
+	//     意图明确的本地声明。
+	//   - tproxy-port 删键（传 nil）。它是端口值，0 不是合法端口，
+	//     "不监听"的唯一表达就是这个键不存在。
 	var patches map[string]interface{}
 	switch mode {
 	case string(netcheck.ModeTUN):
@@ -411,7 +486,7 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 		}
 	case string(netcheck.ModeTProxy):
 		patches = map[string]interface{}{
-			"tun.enable":  nil,
+			"tun.enable":  false,
 			"tproxy-port": tproxyPort,
 		}
 	default:
@@ -510,18 +585,47 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	return nil
 }
 
+// tproxyParams 组装下发规则所需的运行时参数。
+//
+// 抽成一处是必需的：enable() 与 Resync() 必须用同一套取值逻辑，
+// 否则"启用时算出的规则"与"重同步时算出的规则"会有分歧，
+// 而那种分歧表现为规则莫名其妙地变来变去，极难排查。
+//
+// 每个值都现取而不是缓存：它们全都来自用户随时可改的配置。
+func (s *TransparentService) tproxyParams(tproxyPort int) netcheck.TProxyParams {
+	return netcheck.TProxyParams{
+		TProxyPort: tproxyPort,
+		// DNS 必须重定向到 mihomo 的 DNS 端口，不是 tproxy-port，
+		// 理由见 TProxyParams.DNSPort 的注释
+		DNSPort:   s.dnsPort(),
+		KeepPorts: s.keepPorts(),
+		// 只在宿主确实有 IPv6 出网能力时下发 v6 规则。没有能力却下发
+		// 等于建了一条通往空路由的路；有能力却不下发则会让 v6 包被打标
+		// 后无处可去（兜底规则的家族限定处理了这一侧，见 BuildNFTRules）。
+		EnableIPv6: s.detect().HasIPv6Egress,
+	}
+}
+
+// paramsSignature 把影响规则内容的运行时值压成一个可比较的指纹。
+//
+// 只包含真正会改变规则文本的字段。LAN 网段不在其中：它由 Normalize 补默认值，
+// 目前没有用户可改的入口，纳入只会让指纹无谓地变长。
+func paramsSignature(p netcheck.TProxyParams) string {
+	return fmt.Sprintf("tp=%d;dns=%d;keep=%v;v6=%t",
+		p.TProxyPort, p.DNSPort, p.KeepPorts, p.EnableIPv6)
+}
+
 func (s *TransparentService) applyMode(ctx context.Context, mode string, tproxyPort int) error {
 	if mode == string(netcheck.ModeTProxy) {
-		p := netcheck.TProxyParams{
-			TProxyPort: tproxyPort,
-			KeepPorts:  s.keepPorts(),
-			// 只在宿主确实有 IPv6 出网能力时下发 v6 规则。没有能力却下发
-			// 等于建了一条通往空路由的路；有能力却不下发则会让 v6 包被打标
-			// 后无处可去（兜底规则的家族限定处理了这一侧，见 BuildNFTRules）。
-			EnableIPv6: s.detect().HasIPv6Egress,
-		}
+		p := s.tproxyParams(tproxyPort)
 		if err := s.applier.Apply(ctx, p); err != nil {
 			return err
+		}
+		// 记下这次用的参数，供 Resync 判断配置是否已经漂移。
+		// 失败只记录不阻断：规则已经生效了，指纹只是用于后续比对，
+		// 缺了它最坏的结果是下次合并多做一次幂等的重下发。
+		if err := s.store.SetSetting(settingTProxyAppliedSig, paramsSignature(p)); err != nil {
+			s.logger.Errorf("记录规则参数指纹失败（不影响本次生效）: %v", err)
 		}
 	}
 	// 配置注入在合并流程里完成，这里触发一次重新下发使其生效
@@ -843,6 +947,66 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		return
 	}
 	s.logger.Info("透明代理已回落为关闭，配置将由随后的合并按新状态重新生成")
+}
+
+// Resync 在配置变更后让防火墙规则跟上新配置。
+//
+// 为什么需要它：规则里烧进了 tproxy-port、DNS 端口、内核 API 端口、是否下发 v6
+// 规则这几个运行时值，而它们全都来自用户随时能在「配置中心」改的配置。改完点
+// 「保存并应用」只会重新生成 config.yaml 并让内核热重载——防火墙规则不会变。
+// 于是内核听在新端口、规则还往旧端口投，界面却提示"已生效"。
+// 具体后果：改 external-controller 端口会失去面板对内核的访问；改 tproxy-port
+// 或 dns.listen 会让对应流量投向无人监听的端口。
+//
+// 刻意不走 90 秒确认窗口（与 enable() 不同）。三个理由：
+//   - 这是用户主动保存配置的直接结果，不是一次独立的"启用"操作；
+//   - 定时拉取也会走合并流程，那时没人在界面前，开窗口只会等来一次误回滚；
+//   - 新规则是按新配置算出来的，理应比旧规则更正确。
+//
+// 确认窗口真正要保护的是"别把自己锁在外面"，这一点由 keepPorts() 现取实时值来
+// 保证：即便用户把配置写错，SSH 与面板两条通道仍然放行，他还能改回来。
+//
+// 只在已托管 TProxy 时动作。未托管（用户手填 tproxy-port、自己维护规则）时
+// 什么都不做——那些规则不属于面板。
+func (s *TransparentService) Resync(ctx context.Context) {
+	if !s.hasApplier() || !s.tproxyManaged() {
+		return
+	}
+	st := s.state()
+	if !st.Enabled || st.Mode != string(netcheck.ModeTProxy) {
+		// 配置已经不是"面板托管的 TProxy"了。这属于状态不一致，由
+		// ReconcileState 在启动时处理（它会拆掉孤儿规则）；
+		// 这里不越权拆规则——合并流程每次都跑，误判的代价太大。
+		return
+	}
+	// 待确认状态下不介入：此时用户正在验证网络，重下发会打断他的验证，
+	// 且回滚逻辑依赖当前那套规则。
+	if !s.pendingUntil().IsZero() {
+		return
+	}
+
+	want := s.tproxyParams(st.TProxyPort)
+	sig := paramsSignature(want)
+	if sig == s.getString(settingTProxyAppliedSig, "") {
+		// 配置没漂移。这是绝大多数合并的情形（改节点、换订阅都不影响规则），
+		// 直接返回避免无谓的重下发——Apply 会先删表再建，期间有瞬时丢包。
+		return
+	}
+
+	s.logger.Infof("检测到透明代理相关配置已变更，重新下发防火墙规则（%s -> %s）",
+		s.getString(settingTProxyAppliedSig, "(无记录)"), sig)
+	if err := s.applier.Apply(ctx, want); err != nil {
+		// 下发失败时保留旧指纹：下次合并还会再试一次。
+		// 不拆旧规则——旧规则至少还能工作（只是端口对不上新配置），
+		// 拆了就是彻底断网。Apply 内部失败时已自行清理到一致状态。
+		s.logger.Errorf("重新下发防火墙规则失败，规则仍是变更前的状态，"+
+			"透明代理可能与当前配置不一致: %v", err)
+		return
+	}
+	if err := s.store.SetSetting(settingTProxyAppliedSig, sig); err != nil {
+		s.logger.Errorf("记录规则参数指纹失败: %v", err)
+	}
+	s.logger.Info("防火墙规则已与当前配置同步")
 }
 
 // startRollbackTimer 启动内存中的回滚定时器。

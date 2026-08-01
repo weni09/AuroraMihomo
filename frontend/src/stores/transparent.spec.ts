@@ -292,3 +292,220 @@ describe('端口已配置但未接管的状态', () => {
     expect(s.status.enabled).toBe(true)
   })
 })
+
+/**
+ * 已启用状态下切换模式必须真的提交给后端。
+ *
+ * 回归的是一个前端 bug：模式下拉框只改本地 ref，没有任何提交路径（唯一的提交点
+ * 在开关的 toggle 上）；同时有个 watch 监听整个 status 且 deep，会把本地 ref
+ * 拉回 status.mode。于是用户在 TUN 已启用时选 TProxy，选项立刻弹回 TUN——
+ * 表现为"切不了、还会变回去"，而开关已经开着也没法靠关掉再开来切（会断网）。
+ *
+ * 这里从 store 侧钉住协议：切换是一次 enabled: true + 新模式的提交。
+ */
+describe('已启用状态下切换模式', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('切到 TProxy 会带着新模式提交，且状态随响应更新', async () => {
+    const s = useTransparentStore()
+    // 当前是 TUN 已启用
+    s.status = {
+      enabled: true,
+      mode: 'tun',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env(),
+    }
+    mockedApi.put.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        mode: 'tproxy',
+        pendingConfirm: true,
+        secondsLeft: 90,
+        tproxyPort: 7893,
+        tunStack: 'mixed',
+        portConfiguredOnly: false,
+        env: env(),
+      },
+    })
+
+    const ok = await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
+
+    expect(ok).toBe(true)
+    // 关键：请求确实发出去了，且带的是新模式而不是旧模式
+    expect(mockedApi.put).toHaveBeenCalledWith('/transparent', {
+      enabled: true,
+      mode: 'tproxy',
+      tunStack: 'mixed',
+    })
+    expect(s.status.mode).toBe('tproxy')
+    // TProxy 会进入确认窗口，倒计时要起来
+    expect(s.status.pendingConfirm).toBe(true)
+    s.stopCountdown()
+  })
+
+  it('切换失败时状态保持在原模式，供界面回退选项', async () => {
+    const s = useTransparentStore()
+    s.status = {
+      enabled: true,
+      mode: 'tun',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env(),
+    }
+    mockedApi.put.mockRejectedValueOnce(new Error('无法启用 tproxy 模式: 缺少 nft'))
+
+    const ok = await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
+
+    expect(ok).toBe(false)
+    // 后端拒绝了，实际仍是 TUN——界面据此把下拉框拨回去
+    expect(s.status.mode).toBe('tun')
+    expect(s.status.enabled).toBe(true)
+  })
+})
+
+/**
+ * 开关改完必须让「配置中心」重读 base.yaml。
+ *
+ * 两处编辑的是同一份文件（tun.enable / tproxy-port），而配置中心把它缓存在
+ * 自己的 model 里、保存时整份写回。缓存不刷新的话，用户切到 TProxy 后去配置
+ * 中心会看到 TUN 开关仍开着，在那页点保存就会把过期配置写回去、覆盖掉切换。
+ */
+describe('切换模式后同步配置中心的缓存', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  const okStatus = (mode: 'tun' | 'tproxy') => ({
+    data: {
+      enabled: true,
+      mode,
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      env: env(),
+    },
+  })
+
+  it('配置中心已加载过时，切换后会重新拉取 base 配置', async () => {
+    const { useConfigStore } = await import('./config')
+    const cfg = useConfigStore()
+    // 模拟用户去过配置中心：缓存里是 TUN 开着的旧状态
+    cfg.baseLoaded = true
+    cfg.model = { tun: { enable: true } }
+
+    mockedApi.put.mockResolvedValueOnce(okStatus('tproxy'))
+    // fetchBase 读到的新内容：TUN 已被显式关掉
+    mockedApi.get.mockResolvedValueOnce({
+      data: { content: 'tun:\n  enable: false\ntproxy-port: 7893\n' },
+    })
+
+    const s = useTransparentStore()
+    await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
+
+    expect(mockedApi.get).toHaveBeenCalledWith('/config/base')
+    // 配置中心的缓存已跟上，TUN 开关不会再显示为开着
+    expect(cfg.model.tun?.enable).toBe(false)
+  })
+
+  it('配置中心没加载过时不额外请求（那一页 onMounted 自会拉取）', async () => {
+    const { useConfigStore } = await import('./config')
+    const cfg = useConfigStore()
+    cfg.baseLoaded = false
+
+    mockedApi.put.mockResolvedValueOnce(okStatus('tproxy'))
+
+    const s = useTransparentStore()
+    await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
+
+    expect(mockedApi.get).not.toHaveBeenCalledWith('/config/base')
+  })
+
+  it('刷新配置中心失败不影响本次切换的结果', async () => {
+    const { useConfigStore } = await import('./config')
+    const cfg = useConfigStore()
+    cfg.baseLoaded = true
+
+    mockedApi.put.mockResolvedValueOnce(okStatus('tproxy'))
+    mockedApi.get.mockRejectedValueOnce(new Error('500'))
+
+    const s = useTransparentStore()
+    const ok = await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
+
+    // 切换本身成功了，不能因为"另一个页面的缓存没刷上"就报失败
+    expect(ok).toBe(true)
+    expect(s.status.mode).toBe('tproxy')
+  })
+})
+
+/**
+ * 规则与配置脱节的状态必须透传，界面据此显示红色告警。
+ *
+ * 规则里烧进了 tproxy-port / DNS 端口 / 内核 API 端口，用户在配置中心改完这些，
+ * 合并末尾会自动重新下发规则。重下发失败时内核听在新端口、规则还往旧端口投，
+ * 流量进黑洞，而用户刚看到的是「配置已生效」——不提示等于让他毫无线索。
+ */
+describe('规则与配置不一致的提示', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('透传 rulesOutOfSync', async () => {
+    const s = useTransparentStore()
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        mode: 'tproxy',
+        pendingConfirm: false,
+        secondsLeft: 0,
+        tproxyPort: 7893,
+        tunStack: 'mixed',
+        portConfiguredOnly: false,
+        rulesOutOfSync: true,
+        env: env(),
+      },
+    })
+
+    await s.fetch()
+
+    expect(s.status.rulesOutOfSync).toBe(true)
+    // 仍然是"已启用"：规则在跑，只是与配置对不上，不能报成未启用
+    expect(s.status.enabled).toBe(true)
+  })
+
+  it('规则同步正常时不提示', async () => {
+    const s = useTransparentStore()
+    mockedApi.get.mockResolvedValueOnce({
+      data: {
+        enabled: true,
+        mode: 'tproxy',
+        pendingConfirm: false,
+        secondsLeft: 0,
+        tproxyPort: 7893,
+        tunStack: 'mixed',
+        portConfiguredOnly: false,
+        rulesOutOfSync: false,
+        env: env(),
+      },
+    })
+
+    await s.fetch()
+
+    expect(s.status.rulesOutOfSync).toBe(false)
+  })
+})

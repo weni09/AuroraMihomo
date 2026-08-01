@@ -47,6 +47,15 @@ const (
 type TProxyParams struct {
 	// TProxyPort mihomo 的 tproxy-port
 	TProxyPort int
+	// DNSPort mihomo 的 DNS 监听端口（config.yaml 里的 dns.listen）。
+	//
+	// 必须与 TProxyPort 分开：TPROXY 会保留原始目的端口，把 53 的查询投到
+	// tproxy-port 上，mihomo 收到的是"目的端口 53 的普通流量"，不会按 DNS 应答，
+	// 于是域名解析看起来被劫持了、其实从未被接管（真机实测的现象）。
+	// DNS 必须重定向到 mihomo 真正的 DNS 监听端口。
+	//
+	// 为 0 时回落到 DefaultDNSPort，理由见 Normalize。
+	DNSPort int
 	// LANCIDRs 局域网网段，这些地址之间的互访不该被代理
 	LANCIDRs []string
 	// LANCIDRs6 IPv6 侧的免代理网段，仅 EnableIPv6 时使用
@@ -91,6 +100,15 @@ var defaultLANCIDRs6 = []string{
 func (p *TProxyParams) Normalize() error {
 	if p.TProxyPort <= 0 || p.TProxyPort > 65535 {
 		return fmt.Errorf("tproxy 端口非法: %d", p.TProxyPort)
+	}
+	// DNS 端口缺省回落而不是报错：调用方未显式给出时，用本包的默认值
+	// （与 Inject 注入 dns.listen 时用的是同一个常量）比拒绝下发更有用。
+	// 校验上界仍要做，非法值会让整份规则被 nft 拒绝、一条都不生效。
+	if p.DNSPort == 0 {
+		p.DNSPort = DefaultDNSPort
+	}
+	if p.DNSPort < 0 || p.DNSPort > 65535 {
+		return fmt.Errorf("dns 端口非法: %d", p.DNSPort)
 	}
 	if len(p.LANCIDRs) == 0 {
 		p.LANCIDRs = append([]string(nil), defaultLANCIDRs...)
@@ -147,9 +165,18 @@ func BuildNFTRules(p TProxyParams) (string, error) {
 	}
 	w("    meta mark 0x%x return", KernelMark)
 	w("    meta mark 0x%x return", PanelMark)
+	// DNS 劫持必须排在 socket 匹配与局域网放行之前。
+	//
+	// 排在 socket 之前：客户端反复向同一台 DNS 服务器查询时，socket 匹配会
+	// 认出那条已有的 UDP "连接"并直接 accept，后面的 DNS 规则就再也见不到
+	// 这些包——表现正是"只有第一次查询被接管，之后全部漏出去"。
+	//
+	// 排在局域网放行之前：客户端的 DNS 通常指向路由器/局域网内的服务器
+	// （如 192.168.1.1），而 writeLANReturns 会把去往私有网段的包直接 return。
+	// 顺序反了的话，最常见的那种配置下 DNS 劫持完全不生效。
+	p.writeDNSHijackPrerouting(w)
 	// 已建立的连接由 socket 匹配直接接管，避免重复进入 TPROXY
 	w("    socket transparent 1 meta mark set 0x%x accept", FirewallMark)
-	w("    udp dport 53 meta mark set 0x%x tproxy to :%d accept", FirewallMark, p.TProxyPort)
 	p.writeLANReturns(w)
 	p.writeCatchAll(w, true)
 	w("  }")
@@ -175,17 +202,47 @@ func BuildNFTRules(p TProxyParams) (string, error) {
 	}
 	w("    meta mark 0x%x return", KernelMark)
 	w("    meta mark 0x%x return", PanelMark)
-	// 本机 DNS 也要劫持，否则本机流量只能按 IP 分流、域名类规则全部失效。
-	// 必须在局域网放行之前（下一步就会 return 掉指向局域网 DNS 的查询），
-	// 也必须在上面两条 mark return 之后（否则 mihomo 与面板自己的查询自环）。
+	// 本机自身的 DNS 查询在这条链上必须**放行**，交给下面的 nat 链改写目的端口。
 	//
-	// 排除回环目标：mihomo 自己的 DNS 就监听在回环上，劫持它等于自环。
+	// 这里曾经是"打标"，那是错的：打标后包经 `ip rule fwmark` 命中 table 100 的
+	// local 路由被本机投递，而目的端口仍是 53，本机没有任何进程监听 53
+	// （mihomo 的 DNS 在 dns.listen 指定的高位端口上），于是查询原地超时。
+	// 真机现象就是 `communications error to <上游DNS>#53: timed out`。
+	//
+	// output 链上不能用 tproxy 动作（仅 prerouting 可用），要把包送到另一个端口
+	// 只能靠 nat 改写目的地址端口。mangle(-150) 先于 nat dstnat(-100) 执行，
+	// 所以这里 return 之后，nat 链才有机会看到这些包。
+	p.writeDNSPassthroughForNAT(w)
+	p.writeLANReturns(w)
+	p.writeCatchAll(w, false)
+	w("  }")
+
+	// nat output：把本机自身的 DNS 查询改写到 mihomo 的 DNS 端口。
+	//
+	// 为什么必须单独一条 nat 链：output 链上没有 tproxy 动作可用，而"送到另一个
+	// 端口"只有改写目的地址端口一条路，那是 nat 的能力。mangle 那条链只负责
+	// 把 DNS 包放过来（见 writeDNSPassthroughForNAT）。
+	//
+	// 用 redirect 而不是 dnat：redirect 等价于"改写到本机"，无需写出具体地址，
+	// 也就不会因为宿主主 IP 变化而失效。
+	w("  chain nat_output {")
+	w("    type nat hook output priority dstnat; policy accept;")
+	// 管理端口与自身流量的放行必须重复一遍：nat 链是独立的钩子，
+	// mangle 链里的 return 对它没有任何约束力。漏掉这些会把 mihomo 自己的
+	// 上游 DNS 查询也改写回本机，形成自环——mihomo 查上游、被改写回自己、
+	// 再查上游，DNS 彻底不可用。
+	w("    meta mark 0x%x return", KernelMark)
+	w("    meta mark 0x%x return", PanelMark)
+	// 排除回环目标：mihomo 的 DNS 本身就监听在回环上，改写它等于自环。
 	// 代价是 systemd-resolved 那种把 nameserver 指向 127.0.0.53 的机器上
 	// 本机域名分流仍不生效——这一点由 Detect() 单独探测并告警，
 	// 而不是在这里悄悄地"看着劫持了其实没有"。
-	p.writeDNSHijack(w)
-	p.writeLANReturns(w)
-	p.writeCatchAll(w, false)
+	w("    meta l4proto { tcp, udp } th dport 53 ip daddr != 127.0.0.0/8 "+
+		"redirect to :%d", p.DNSPort)
+	if p.EnableIPv6 {
+		w("    meta l4proto { tcp, udp } th dport 53 ip6 daddr != ::1/128 "+
+			"redirect to :%d", p.DNSPort)
+	}
 	w("  }")
 	w("}")
 
@@ -213,17 +270,44 @@ func (p TProxyParams) writeLANReturns(w func(string, ...interface{})) {
 	}
 }
 
-// writeDNSHijack 打标本机发出的 DNS 查询，交给下游的策略路由送进 mihomo。
+// writeDNSHijackPrerouting 把局域网设备发来的 DNS 查询直接投给 mihomo。
 //
-// 只在 output 链用：prerouting 那边已经有一条直接 tproxy 的 DNS 规则，
-// 而 output 链上不能用 tproxy 动作（它只在 prerouting 可用），
-// 靠打标 + `ip rule fwmark` 发夹回 prerouting 才能到达 mihomo。
-func (p TProxyParams) writeDNSHijack(w func(string, ...interface{})) {
-	w("    meta l4proto { tcp, udp } th dport 53 ip daddr != 127.0.0.0/8 "+
-		"meta mark set 0x%x accept", FirewallMark)
+// TCP 与 UDP 都要覆盖。早先这里只有 `udp dport 53`，于是走 TCP 的 DNS 查询
+// （响应超过 512 字节被截断后客户端会重试 TCP、DoT 之外的 zone transfer、
+// 以及部分把 DNS 固定走 TCP 的客户端）原样漏到上游，域名类分流对它们失效。
+// output 链那侧一直是 `{ tcp, udp }`，两条链的口径本就该一致。
+//
+// 用 th dport 而不是 udp dport：th（transport header）对 TCP/UDP 通用，
+// 与 output 链的写法保持一致。
+//
+// 与 output 链的区别在动作：这里能直接用 tproxy（该动作仅在 prerouting 可用），
+// 而 output 链只能打标，再靠 `ip rule fwmark` 发夹回 prerouting。
+// 目的端口必须是 mihomo 的 DNS 端口，不是 tproxy-port。
+//
+// TPROXY 保留原始目的端口：投到 tproxy-port 时 mihomo 看到的是"目的端口 53 的
+// 普通 TCP/UDP 流量"，它不会按 DNS 协议应答，于是查询既没被代理也没被解析。
+// 真机现象是 nslookup 仍从上游 DNS 拿到被污染的结果——看着像"劫持没生效"，
+// 实际是劫持了但送错了门。
+func (p TProxyParams) writeDNSHijackPrerouting(w func(string, ...interface{})) {
+	w("    meta l4proto { tcp, udp } th dport 53 meta mark set 0x%x tproxy to :%d accept",
+		FirewallMark, p.DNSPort)
+}
+
+// writeDNSPassthroughForNAT 在 mangle output 链上放行本机的 DNS 查询，
+// 把它们留给 nat_output 链改写目的端口。
+//
+// 这里必须是 return 而不是打标。打标的话包会经 `ip rule fwmark` 命中 table 100
+// 的 local 路由被本机投递，但目的端口仍是 53，而本机没有进程监听 53
+// （mihomo 的 DNS 在 dns.listen 指定的高位端口上），查询原地超时——
+// 真机实测报 `communications error to <上游DNS>#53: timed out`。
+//
+// 位置同样关键：必须在局域网放行之前（否则指向局域网 DNS 的查询会先被
+// return 掉、连 nat 链都到不了），也必须在 KernelMark/PanelMark 之后
+// （否则 mihomo 与面板自己的查询会被卷进来）。
+func (p TProxyParams) writeDNSPassthroughForNAT(w func(string, ...interface{})) {
+	w("    meta l4proto { tcp, udp } th dport 53 ip daddr != 127.0.0.0/8 return")
 	if p.EnableIPv6 {
-		w("    meta l4proto { tcp, udp } th dport 53 ip6 daddr != ::1/128 "+
-			"meta mark set 0x%x accept", FirewallMark)
+		w("    meta l4proto { tcp, udp } th dport 53 ip6 daddr != ::1/128 return")
 	}
 }
 
@@ -233,14 +317,27 @@ func (p TProxyParams) writeDNSHijack(w func(string, ...interface{})) {
 // v6 包也会被打上 FirewallMark，而此时并没有下发 v6 的 ip rule 与
 // local ::/0 路由——包被标记后无路可走，直接变成静默丢包的黑洞。
 // 这比"v6 不走代理"糟糕得多：后者只是不分流，前者是网络不通。
+//
+// 一旦限定了 nfproto，tproxy 动作也必须显式写出家族（`tproxy ip to`）。
+// nft 会把 "nfproto ipv4 + 不带家族的 tproxy" 判为协议冲突并拒绝**整份**规则：
+//
+//	Error: conflicting protocols specified: ip vs. unknown.
+//	You must specify ip or ip6 family in tproxy statement
+//
+// 而 Apply 是先 `nft --check` 再下发，校验失败就一条规则都不会生效——
+// 表现为"TProxy 开着但完全没接管流量"（真机实测于 Alpine 3.24 / nftables 1.1.6）。
+// 启用 v6 时不限定 nfproto，此时 `tproxy to` 不带家族才是合法的。
 func (p TProxyParams) writeCatchAll(w func(string, ...interface{}), tproxy bool) {
 	family := ""
+	// tproxyFamily 与 family 必须同时给或同时不给，理由见上面的注释
+	tproxyFamily := ""
 	if !p.EnableIPv6 {
 		family = "meta nfproto ipv4 "
+		tproxyFamily = "ip "
 	}
 	if tproxy {
-		w("    %smeta l4proto { tcp, udp } meta mark set 0x%x tproxy to :%d accept",
-			family, FirewallMark, p.TProxyPort)
+		w("    %smeta l4proto { tcp, udp } meta mark set 0x%x tproxy %sto :%d accept",
+			family, FirewallMark, tproxyFamily, p.TProxyPort)
 		return
 	}
 	w("    %smeta l4proto { tcp, udp } meta mark set 0x%x accept", family, FirewallMark)

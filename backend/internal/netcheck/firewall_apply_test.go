@@ -3,6 +3,7 @@ package netcheck
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -58,8 +59,17 @@ func (f *fakeRunner) indexOf(prefix string) int {
 	return -1
 }
 
+// newApplier 造一个用假 Runner 的 Applier。
+//
+// UDPPortInUse 固定返回 true（"DNS 端口有人监听"）：这些用例关心的是下发顺序与
+// 回滚，不该被端口探测左右。真实实现要去绑端口，在测试里既不可控也会互相干扰。
+// 探测本身的行为由 TestApplyRejectsWhenDNSPortHasNoListener 等用例专门覆盖。
 func newApplier(r CommandRunner, dir string) *Applier {
-	return &Applier{SnapshotDir: dir, Runner: r}
+	return &Applier{
+		SnapshotDir:  dir,
+		Runner:       r,
+		UDPPortInUse: func(int) bool { return true },
+	}
 }
 
 // 干跑校验必须发生在任何实际改动之前，否则语法错误会留下半应用状态。
@@ -275,5 +285,113 @@ func TestRulesActiveReturnsErrorOnUnexpectedFailure(t *testing.T) {
 	_, err := newApplier(r, t.TempDir()).RulesActive(context.Background())
 	if err == nil {
 		t.Error("非'表不存在'的失败应报错，交由调用方判断，不能默认为规则已失效")
+	}
+}
+
+// DNS 端口没人监听时必须拒绝下发，且一点不碰宿主。
+//
+// 这道校验主要防"把 dns.listen 设成 53"：nft 语法上 `redirect to :53` 完全合法，
+// nft --check 也过得去，但 redirect 是把包重定向到**本机**，53 上无人监听就直接
+// connection refused。真机实测（Alpine）下发后整机域名解析不可用
+// （`no servers could be reached`），清掉规则立刻恢复。
+//
+// mihomo 绑不上 53 的原因很常见：dns.enable 为 false、非 root 且缺
+// CAP_NET_BIND_SERVICE、宿主已有 systemd-resolved/dnsmasq 占着 53。
+// 这些情况 mihomo 只在自己日志里报一行，面板无从得知，所以必须主动探测。
+func TestApplyRejectsWhenDNSPortHasNoListener(t *testing.T) {
+	r := newFakeRunner()
+	a := &Applier{
+		SnapshotDir:  t.TempDir(),
+		Runner:       r,
+		UDPPortInUse: func(int) bool { return false }, // 没人监听
+	}
+	p := sampleParams()
+	p.DNSPort = 53
+
+	err := a.Apply(context.Background(), p)
+	if err == nil {
+		t.Fatal("DNS 端口无监听时应拒绝下发")
+	}
+	// 报错要能直接指导用户，而不是只说"失败"
+	for _, kw := range []string{"53", "未做任何改动", "dns.listen", "1053"} {
+		if !strings.Contains(err.Error(), kw) {
+			t.Errorf("报错应包含 %q，实际: %v", kw, err)
+		}
+	}
+	// 关键：拒绝时宿主一点没被碰过，连干跑校验都不必执行
+	if len(r.calls) != 0 {
+		t.Errorf("拒绝时不该执行任何命令，实际执行了 %v", r.calls)
+	}
+}
+
+// 端口确实有监听时正常下发。与上一个用例配对，确认拒绝不是无条件的。
+func TestApplyProceedsWhenDNSPortHasListener(t *testing.T) {
+	r := newFakeRunner()
+	a := &Applier{
+		SnapshotDir:  t.TempDir(),
+		Runner:       r,
+		UDPPortInUse: func(port int) bool { return port == 1053 },
+	}
+	p := sampleParams()
+	p.DNSPort = 1053
+
+	if err := a.Apply(context.Background(), p); err != nil {
+		t.Fatalf("端口有监听时应正常下发: %v", err)
+	}
+	if len(r.calls) == 0 {
+		t.Error("应实际执行下发命令")
+	}
+}
+
+// 探测只针对 DNS 端口，不该顺带要求 tproxy-port 也有监听。
+//
+// 两者时序不同：mihomo 的 tproxy 端口在配置下发后才开始监听，而规则下发
+// 可能发生在它之前。对 tproxy-port 也做同样的强校验会让正常启用失败。
+func TestApplyOnlyProbesDNSPort(t *testing.T) {
+	r := newFakeRunner()
+	var probed []int
+	a := &Applier{
+		SnapshotDir: t.TempDir(),
+		Runner:      r,
+		UDPPortInUse: func(port int) bool {
+			probed = append(probed, port)
+			return true
+		},
+	}
+	p := sampleParams()
+	p.TProxyPort = 7893
+	p.DNSPort = 1053
+
+	if err := a.Apply(context.Background(), p); err != nil {
+		t.Fatalf("下发失败: %v", err)
+	}
+	if len(probed) != 1 || probed[0] != 1053 {
+		t.Errorf("应只探测 DNS 端口 1053，实际探测了 %v", probed)
+	}
+}
+
+// defaultUDPPortInUse 的真实行为：占用中的端口报 true，空闲端口报 false。
+// 不写死具体端口号——用系统分配的临时端口，避免与真机上跑着的服务冲突。
+func TestDefaultUDPPortInUseDetectsListener(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("无法绑定测试端口: %v", err)
+	}
+	defer pc.Close()
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+
+	if !defaultUDPPortInUse(port) {
+		t.Errorf("端口 %d 正被占用，应报告 true", port)
+	}
+
+	// 找一个确定空闲的端口：绑了立刻放掉
+	pc2, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("无法绑定测试端口: %v", err)
+	}
+	freePort := pc2.LocalAddr().(*net.UDPAddr).Port
+	pc2.Close()
+	if defaultUDPPortInUse(freePort) {
+		t.Errorf("端口 %d 已释放，应报告 false", freePort)
 	}
 }

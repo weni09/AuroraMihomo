@@ -207,6 +207,15 @@ nft add chain inet mytest testchain
 nft add rule inet mytest testchain counter comment 'unrelated-test-rule'
 ```
 
+> **规则快照已过时**：本节记录的是当时版本的规则。后续修复
+> （见 `AuroraMihomo-Transparent-Proxy.md` §3 与 §6.5）：
+> - DNS 劫持从 `udp dport 53` 改为 `th dport 53`（TCP+UDP），且移到
+>   `socket transparent` 之前
+> - 重定向目标从 tproxy-port 改为 mihomo 的 DNS 端口（`dns.listen`）
+> - 本机 DNS 不再靠打标，新增 `nat_output` 链 `redirect` 到 DNS 端口
+>
+> 下表快照保留作历史对照，不代表当前规则。
+
 启用 TProxy 后立即检查规则实际内容：
 
 ```

@@ -82,6 +82,13 @@ type ConfigContent {
 	Content string `json:"content"`
 }
 
+// unmerged 表示本地基础配置已保存到数据库、但尚未合并进最终配置并下发给内核。
+// 由后端按「合并指纹」推导（合并时记录 base 内容哈希，比较当前值），
+// 前端不自行判断——换浏览器、清缓存、换机器都得到同一结论。
+type ConfigUnmergedStatus {
+	Unmerged bool `json:"unmerged"`
+}
+
 type UpdateBaseConfigReq {
 	Content string `json:"content"`
 }
@@ -676,6 +683,9 @@ service aurora-api {
 
 	@handler getBaseConfig
 	get /api/v1/config/base returns (ConfigContent)
+
+	@handler getConfigUnmerged
+	get /api/v1/config/unmerged returns (ConfigUnmergedStatus)
 
 	@handler updateBaseConfig
 	put /api/v1/config/base (UpdateBaseConfigReq) returns (Result)

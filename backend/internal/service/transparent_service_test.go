@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"auroramihomo/backend/internal/engine"
 	"auroramihomo/backend/internal/netcheck"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -1266,5 +1267,292 @@ func TestDisableSurvivesTypedNilApplier(t *testing.T) {
 
 	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
 		t.Fatalf("关闭应始终可用: %v", err)
+	}
+}
+
+// 切到 TProxy 必须把 TUN 显式写成 false，不能只删键。
+//
+// 「配置中心」的「开启虚拟网卡」开关读的就是 tun.enable。删键后它靠"读不到"
+// 显示为关，那只是碰巧正确：删键等于"本地未声明"，订阅里带着
+// tun: {enable: true} 时合并会把它补回来，最终配置里两种模式同时开着。
+// 与 disable() 的做法保持一致（见 TestDisableWritesExplicitFalseForTUN）。
+func TestSwitchingToTProxyWritesExplicitFalseForTUN(t *testing.T) {
+	s, _, _, base := newSvcWithBase(t,
+		reportWith("linux", netcheck.ModeTUN, netcheck.ModeTProxy),
+		"tun:\n  enable: true\n  stack: gvisor\n")
+
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("切到 TProxy 失败: %v", err)
+	}
+
+	text := base.text()
+	// 必须是显式 false，而不是键消失
+	if !strings.Contains(text, "enable: false") {
+		t.Errorf("切到 TProxy 后应显式写 tun.enable: false，实际:\n%s", text)
+	}
+	// 用户其余的 tun 配置不该被牵连
+	if !strings.Contains(text, "stack: gvisor") {
+		t.Errorf("不该动用户的 tun.stack，实际:\n%s", text)
+	}
+	if base.tproxyPort(t) != 7893 {
+		t.Errorf("tproxy-port 应写入，实际 %d", base.tproxyPort(t))
+	}
+}
+
+// 订阅里带着 tun.enable: true 时，切到 TProxy 后的本地声明要能压住它。
+//
+// 这是上一个用例真正要防的后果：两种模式同时出现在最终配置里。
+func TestSwitchingToTProxySurvivesSubscriptionCarryingTUN(t *testing.T) {
+	s, _, _, base := newSvcWithBase(t,
+		reportWith("linux", netcheck.ModeTUN, netcheck.ModeTProxy),
+		"tun:\n  enable: true\n")
+
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("切到 TProxy 失败: %v", err)
+	}
+
+	// 用合并引擎复现"订阅带 TUN"的场景（默认 Local First）
+	eng := engine.NewMergeEngine()
+	local, err := eng.LoadAndParse([]byte(base.text()))
+	if err != nil {
+		t.Fatalf("解析本地配置失败: %v", err)
+	}
+	remote, err := eng.LoadAndParse([]byte("tun:\n  enable: true\n"))
+	if err != nil {
+		t.Fatalf("解析远程配置失败: %v", err)
+	}
+	res := eng.MergeDetailed(local, remote, nil, nil)
+
+	if res.Config.TUN.Enable {
+		t.Error("订阅带着 tun.enable: true 时，本地的显式 false 应压住它，" +
+			"否则最终配置里 TUN 与 TProxy 同时开着")
+	}
+	if res.Config.TProxyPort != 7893 {
+		t.Errorf("合并后应保留 tproxy-port，实际 %d", res.Config.TProxyPort)
+	}
+}
+
+// ---- 配置变更后规则要跟上（Resync） ----
+//
+// 规则里烧进了 tproxy-port / DNS 端口 / 内核 API 端口，而这些值用户随时能在
+// 「配置中心」改。改完点「保存并应用」只会重新生成 config.yaml 并让内核热重载，
+// 防火墙规则不会跟着变——内核听在新端口、规则还往旧端口投，界面却提示"已生效"。
+
+// newResyncSvc 造一个"合并流程会回调 Resync"的服务，贴近真实链路。
+func newResyncSvc(t *testing.T) (*TransparentService, *fakeStore, *fakeApplier, *fakeBase) {
+	t.Helper()
+	store := newFakeStore()
+	app := newFakeApplier()
+	base := newFakeBase("")
+	var svc *TransparentService
+	svc = NewTransparentService(store, app, logx.WithContext(context.Background()),
+		func(ctx context.Context) error { svc.Resync(ctx); return nil },
+		base.get, base.set)
+	svc.detect = func() *netcheck.Report {
+		return reportWith("linux", netcheck.ModeTUN, netcheck.ModeTProxy)
+	}
+	return svc, store, app, base
+}
+
+// 启用时 reload 会触发合并、合并末尾又会调 Resync。
+// 指纹在 Apply 之后立刻落库，所以 Resync 应命中比对、不重复下发。
+// 重复下发不只是浪费：Apply 先删表再建，每次都有瞬时丢包。
+func TestResyncDoesNotReapplyRightAfterEnable(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+
+	if applied, _, _ := app.counts(); applied != 1 {
+		t.Errorf("启用时应只下发一次规则，实际 %d 次", applied)
+	}
+}
+
+// 配置没漂移时 Resync 是空操作。
+// 绝大多数合并（改节点、换订阅、定时拉取）都不影响规则，
+// 无条件重下发等于每次拉订阅都抖一次网络。
+func TestResyncSkipsWhenConfigUnchanged(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	s.Resync(context.Background())
+	s.Resync(context.Background())
+
+	if applied, _, _ := app.counts(); applied != 1 {
+		t.Errorf("配置未变时不该重下发，实际 %d 次", applied)
+	}
+}
+
+// 改 DNS 端口后规则必须跟上，且用的是新端口。
+// 不跟上的话 53 的查询会被重定向到一个没人监听的端口，DNS 全部失效。
+func TestResyncReappliesWhenDNSPortChanges(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	// 用户在配置中心把 dns.listen 改成 5353
+	s.SetDNSPortFn(func() int { return 5353 })
+	s.Resync(context.Background())
+
+	applied, _, _ := app.counts()
+	if applied != 2 {
+		t.Fatalf("DNS 端口变更后应重下发，实际下发 %d 次", applied)
+	}
+	if app.lastParams.DNSPort != 5353 {
+		t.Errorf("重下发应使用新的 DNS 端口 5353，实际 %d", app.lastParams.DNSPort)
+	}
+}
+
+// 改内核 API 端口后规则必须跟上。
+//
+// 这条最危险：规则若仍只放行旧端口，新端口的流量会被 TPROXY 捕获，
+// 面板从此无法访问内核 API——正是"锁死自己"那类问题。
+func TestResyncReappliesWhenControllerPortChanges(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	s.SetManagementPorts(8899, func() int { return 9090 })
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	// 用户把 external-controller 端口改成 19090
+	s.SetManagementPorts(8899, func() int { return 19090 })
+	s.Resync(context.Background())
+
+	if applied, _, _ := app.counts(); applied != 2 {
+		t.Fatalf("内核 API 端口变更后应重下发，实际 %d 次", applied)
+	}
+	var found bool
+	for _, p := range app.lastParams.KeepPorts {
+		if p == 19090 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("重下发应放行新的内核 API 端口 19090，实际放行 %v", app.lastParams.KeepPorts)
+	}
+}
+
+// Resync 不走 90 秒确认窗口。
+//
+// 它是用户保存配置的直接结果，而非独立的"启用"操作；定时拉取也会走合并流程，
+// 那时没人在界面前，开窗口只会等来一次误回滚。
+func TestResyncDoesNotOpenConfirmWindow(t *testing.T) {
+	s, _, _, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+
+	s.SetDNSPortFn(func() int { return 5353 })
+	s.Resync(context.Background())
+
+	if st, _ := s.Status(); st.PendingConfirm {
+		t.Error("Resync 不该进入待确认状态，否则定时拉取会触发误回滚")
+	}
+}
+
+// 待确认期间不重下发：用户正在验证网络，重下发会打断验证，
+// 且回滚逻辑依赖当前那套规则。
+func TestResyncSkipsWhilePendingConfirm(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	// 刻意不 Confirm，保持待确认
+
+	s.SetDNSPortFn(func() int { return 5353 })
+	s.Resync(context.Background())
+
+	if applied, _, _ := app.counts(); applied != 1 {
+		t.Errorf("待确认期间不该重下发，实际 %d 次", applied)
+	}
+}
+
+// 未托管时 Resync 什么都不做：用户手填 tproxy-port、自己维护规则的情形，
+// 那些规则不属于面板。
+func TestResyncIgnoresUnmanagedTProxy(t *testing.T) {
+	s, _, app, _ := newSvcWithBase(t,
+		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")
+
+	s.Resync(context.Background())
+
+	if applied, _, _ := app.counts(); applied != 0 {
+		t.Errorf("未托管时不该下发规则，实际 %d 次", applied)
+	}
+}
+
+// 重下发失败时保留旧指纹，让下次合并还能再试。
+// 也不拆旧规则——旧规则至少还能工作（只是端口对不上），拆了就是彻底断网。
+func TestResyncKeepsOldSignatureOnFailure(t *testing.T) {
+	s, store, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	sigBefore, _ := store.GetSetting(settingTProxyAppliedSig)
+
+	app.applyErr = errors.New("nft: 下发失败")
+	s.SetDNSPortFn(func() int { return 5353 })
+	s.Resync(context.Background())
+
+	sigAfter, _ := store.GetSetting(settingTProxyAppliedSig)
+	if sigAfter != sigBefore {
+		t.Errorf("下发失败时不该更新指纹（否则下次合并不会再试），before=%q after=%q",
+			sigBefore, sigAfter)
+	}
+	if _, down, _ := app.counts(); down != 0 {
+		t.Errorf("下发失败不该拆旧规则（那会彻底断网），实际拆除 %d 次", down)
+	}
+}
+
+// 把 dns.listen 改成一个没人监听的端口（典型是 53）后，Resync 的重下发会被
+// Applier 的端口探测拒绝。此时必须让界面看到"规则与配置不一致"。
+//
+// 这是这条链的最后一环：拒绝下发保住了 DNS（旧规则仍然有效），但配置与规则
+// 从此不一致，用户需要知道自己刚保存的改动没有生效。
+func TestResyncFailureSurfacesAsOutOfSync(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	if st, _ := s.Status(); st.RulesOutOfSync {
+		t.Fatal("前置条件：刚启用时规则应与配置一致")
+	}
+
+	// 用户把 dns.listen 改成 53，而 53 上没有监听者 —— Applier 拒绝下发
+	app.applyErr = errors.New("未检测到有程序在 UDP 端口 53 上监听")
+	s.SetDNSPortFn(func() int { return 53 })
+	s.Resync(context.Background())
+
+	st, _ := s.Status()
+	if !st.RulesOutOfSync {
+		t.Error("重下发被拒绝后应报告规则与配置不一致，否则用户不知道改动没生效")
+	}
+	// 旧规则仍在，透明代理还是启用状态——不能因为一次重下发失败就报未启用
+	if !st.Enabled {
+		t.Error("重下发失败不该让状态变成未启用（旧规则仍在生效）")
+	}
+	if _, down, _ := app.counts(); down != 0 {
+		t.Errorf("不该拆旧规则（那会让 DNS 彻底不可用），实际拆除 %d 次", down)
 	}
 }

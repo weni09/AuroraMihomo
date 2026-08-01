@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,12 @@ import (
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )
+
+// mergedBaseFingerprintKey 记录「最近一次成功合并时 base 内容的哈希」。
+// 界面据此推导本地配置是否未合并（见 BaseUnmerged）：base 一旦保存而未被
+// 合并，哈希必然与记录不符，无需在每条写 base 路径上单独置位；该键
+// 持久化在 settings 表，服务重启、换浏览器都不丢。
+const mergedBaseFingerprintKey = "merged_base_fingerprint"
 
 type ConfigService struct {
 	// applyMu 串行化配置合并与恢复。定时任务与手动触发可能并发，
@@ -71,6 +79,33 @@ type ConfigService struct {
 	// 键名散落到两个包里会让将来改动漏掉一处。未注入时回落为 false，
 	// 即"未托管"——那是不会擅自改用户配置的安全一侧。
 	tproxyManagedProvider func() bool
+
+	// transparentResyncFn 在配置生效后让透明代理的防火墙规则跟上新配置。
+	//
+	// 规则里烧进了 tproxy-port / DNS 端口 / 内核 API 端口，而这些值用户随时能在
+	// 配置中心改。少了这个回调，改完端口只有 config.yaml 变了、防火墙还是旧的。
+	// 同样用注入打破循环依赖（理由见 tproxyManagedProvider）。
+	transparentResyncFn func(ctx context.Context)
+}
+
+// SetTransparentResyncFn 注入"让防火墙规则跟上当前配置"的回调。
+//
+// 用注入而不是直接持有 TransparentService：那个服务在本服务之后构造且依赖本服务
+// （读写 base.yaml、读端口），直接互持会形成循环依赖。
+func (s *ConfigService) SetTransparentResyncFn(fn func(ctx context.Context)) {
+	s.transparentResyncFn = fn
+}
+
+// resyncTransparent 在配置生效后让防火墙规则跟上。
+//
+// 未注入时是空操作：非 Linux 平台、或透明代理未启用的部署里没有规则要同步。
+// 刻意吞掉一切失败（回调内部自己记日志）：配置合并本身已经成功了，
+// 规则同步失败不该让"保存配置"这个操作报错——那会让用户以为配置没保存。
+func (s *ConfigService) resyncTransparent(ctx context.Context) {
+	if s.transparentResyncFn == nil {
+		return
+	}
+	s.transparentResyncFn(ctx)
 }
 
 // SetTProxyManagedProvider 注入"TProxy 规则是否由本面板下发"的判据来源。
@@ -813,6 +848,10 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 		}); err != nil {
 			logx.Errorf("保存 merged 配置记录失败（磁盘已是新配置，界面会显示旧内容）: %v", err)
 		}
+		// 合并已完整成功，更新「已合并 base 指纹」。
+		// 放在 merged 保存之后：若上面的写库失败，宁可不更新指纹，
+		// 让界面继续提示未应用，也不要在配置实际未生效时误报已对齐。
+		s.persistMergedBaseFingerprint()
 	}
 
 	// 优先走 external-controller 的 PUT /configs 热重载，不重启进程、不断开现有连接；
@@ -844,6 +883,15 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 			}, nil
 		}
 	}
+
+	// 让透明代理的防火墙规则跟上新配置。
+	//
+	// 位置是刻意的——必须在 config.yaml 落盘且内核重载之后：Resync 要从最终配置
+	// 里读 dns.listen 与 external-controller 端口，早于落盘读到的是旧值。
+	//
+	// 规则里烧进了这些端口，而合并流程本身只生成配置、不碰防火墙。少了这一步，
+	// 用户在配置中心改完端口会看到"已生效"，但内核听在新端口、规则还往旧端口投。
+	s.resyncTransparent(ctx)
 
 	return &MergeApplyResult{
 		Message:       "配置已合并、校验并生效",
@@ -950,6 +998,59 @@ func (s *ConfigService) ApplyLocalOnly(ctx context.Context) (*MergeApplyResult, 
 
 func (s *ConfigService) GetBaseConfig() (string, error) {
 	return s.loadBaseYAML()
+}
+
+// BaseUnmerged 报告本地基础配置是否已保存但尚未合并进最终配置。
+//
+// 判定靠「合并指纹」而非显式标记：每次合并成功时把当时 base 内容的哈希
+// 写入 settings 表（persistMergedBaseFingerprint），查询时比较当前 base
+// 的哈希。任何修改 base 的路径（配置中心保存、透明代理开关改写
+// tun.enable 等）都会让哈希失配，无需逐路径置位；服务重启后记录仍在
+// 数据库里，不会像内存标记那样丢失。
+//
+// 边界：
+//   - 从未合并过（无 merged 记录）：不存在「未生效」概念，返回 false；
+//   - merged 已存在但指纹缺失（旧版本升级而来）：无法证明已对齐，
+//     保守返回 true，用户应用一次合并后即补齐指纹。
+func (s *ConfigService) BaseUnmerged() (bool, error) {
+	if _, err := s.db.GetConfigByType("merged"); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	fp, err := s.db.GetSetting(mergedBaseFingerprintKey)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+
+	baseYAML, err := s.loadBaseYAML()
+	if err != nil {
+		return false, err
+	}
+	sum := sha256.Sum256([]byte(baseYAML))
+	return hex.EncodeToString(sum[:]) != fp, nil
+}
+
+// persistMergedBaseFingerprint 记录本次合并所用 base 内容的哈希。
+//
+// 必须在 merged 记录保存成功之后调用（与 merged 同一条「落盘后跑完」的
+// 分界线）：只有整次合并真正成功，指纹才代表「已对齐」。写失败只记日志
+// ——最坏结果是界面多提示一次「未应用」，方向无害。
+func (s *ConfigService) persistMergedBaseFingerprint() {
+	baseYAML, err := s.loadBaseYAML()
+	if err != nil {
+		s.logger.Errorf("记录合并指纹失败（读 base 失败）: %v", err)
+		return
+	}
+	sum := sha256.Sum256([]byte(baseYAML))
+	if err := s.db.SetSetting(mergedBaseFingerprintKey, hex.EncodeToString(sum[:])); err != nil {
+		s.logger.Errorf("记录合并指纹失败: %v", err)
+	}
 }
 
 // GetFinalConfig 返回最近一次合并生成的最终配置（mihomo 内核实际加载的内容）。
@@ -1327,6 +1428,47 @@ type DashboardTarget struct {
 //
 // controller 常见写法是 ":9090" 或 "0.0.0.0:9090" —— 这类监听地址不能直接
 // 交给浏览器，需要回落到用户访问管理端时使用的主机名，由调用方补齐。
+// KernelDNSPort 取 mihomo 实际的 DNS 监听端口（config.yaml 的 dns.listen）。
+//
+// 透明代理的防火墙规则必须把 53 端口的查询重定向到这个端口，而不是 tproxy-port：
+// TPROXY 保留原始目的端口，送到 tproxy-port 的话 mihomo 只会看到"目的端口 53 的
+// 普通流量"，不会按 DNS 协议应答，域名解析就始终没被接管。
+//
+// 读磁盘上的最终配置而不是 base.yaml：dns.listen 可能来自 base、也可能来自订阅
+// 合并进来，只有最终配置才是内核真正加载的那份。
+//
+// 返回 0 表示未配置 dns.listen（此时调用方回落到默认端口）。解析失败一律返回 0
+// 并附带错误，由调用方决定是回落还是拒绝——这里不猜。
+func (s *ConfigService) KernelDNSPort() (int, error) {
+	raw, err := os.ReadFile(s.configPath())
+	if err != nil {
+		return 0, fmt.Errorf("读取配置失败: %w", err)
+	}
+	cfg, err := s.engine.LoadAndParse(raw)
+	if err != nil || cfg == nil {
+		return 0, fmt.Errorf("解析配置失败: %w", err)
+	}
+	// listen 未建模，走 DNS 段的 inline Extra
+	v, ok := cfg.DNS.Extra["listen"]
+	if !ok {
+		return 0, nil
+	}
+	addr := strings.TrimSpace(fmt.Sprintf("%v", v))
+	if addr == "" {
+		return 0, nil
+	}
+	// 形如 0.0.0.0:1053 / :1053 / [::]:1053，取最后一段
+	portStr := addr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		portStr = strings.TrimSpace(addr[i+1:])
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("dns.listen 端口无法解析: %q", addr)
+	}
+	return port, nil
+}
+
 func (s *ConfigService) KernelAPITarget() (DashboardTarget, error) {
 	raw, err := os.ReadFile(s.configPath())
 	if err != nil {

@@ -42,8 +42,18 @@ const stubs = {
   },
 }
 
+/** 按 URL 分流 get mock：/config/unmerged 返回推导结果，其余返回 base 内容 */
+function mockConfigGet(unmerged: boolean) {
+  mockedApi.get.mockImplementation((url: string) => {
+    if (String(url).includes('/config/unmerged')) {
+      return Promise.resolve({ data: { unmerged } })
+    }
+    return Promise.resolve({ data: { content: BASE_YAML } })
+  })
+}
+
 async function mountLoaded() {
-  mockedApi.get.mockResolvedValue({ data: { content: BASE_YAML } })
+  mockConfigGet(false)
   const wrapper = mount(ConfigView, { global: { stubs } })
   const store = useConfigStore()
   await store.fetchBase()
@@ -282,6 +292,118 @@ describe('ConfigView 编辑器输入的防抖与落盘', () => {
 
     // 应是服务端返回的原值，而不是被放弃的那次编辑
     expect(store.model.experimental).toEqual({ 'sniff-tls-sni': true })
+  })
+})
+
+describe('ConfigView 未应用提示', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  /**
+   * 仅点击「保存基础配置」后，界面应显示「未应用生效」的黄色提示条，
+   * 点击提示条上的「应用并生效」后触发 saveAndMerge 并消除提示。
+   */
+  it('仅保存基础配置时出现未应用提示，应用并生效后提示消失', async () => {
+    const { wrapper, store } = await mountLoaded()
+    mockedApi.put.mockResolvedValue({ data: { message: '保存成功' } })
+    mockedApi.post.mockResolvedValue({ data: { message: '已应用并生效' } })
+
+    expect(wrapper.text()).not.toContain('本地基础配置已保存，但尚未应用生效')
+
+    // 手动调用 store.saveBase 模拟成功保存基础配置
+    await store.saveBase()
+    await wrapper.vm.$nextTick()
+
+    expect(store.unmergedChanges).toBe(true)
+    expect(wrapper.text()).toContain('本地基础配置已保存，但尚未应用生效')
+
+    // 调用 store.saveAndMerge 模拟应用合并
+    await store.saveAndMerge()
+    await wrapper.vm.$nextTick()
+
+    expect(mockedApi.post).toHaveBeenCalledWith('/config/merge')
+    expect(store.unmergedChanges).toBe(false)
+    expect(wrapper.text()).not.toContain('本地基础配置已保存，但尚未应用生效')
+  })
+
+  /**
+   * 按钮路径：提示条上的「应用并生效」必须真的把合并动作发出去。
+   * 与上一个用例的区别在于这里走模板的 @click 而不是直接调 store，
+   * 防止哪天按钮绑错 handler 而状态流转测试仍然通过。
+   * 本用例没有挂起的编辑器输入，flushCodeInputs 是同步空操作，
+   * 因此点击按钮不会踩到防抖窗口。
+   */
+  it('点击提示条上的「应用并生效」按钮会触发合并并消除提示', async () => {
+    const { wrapper, store } = await mountLoaded()
+    mockedApi.put.mockResolvedValue({ data: { message: '保存成功' } })
+    mockedApi.post.mockResolvedValue({ data: { message: '已应用并生效' } })
+
+    // 先保存基础配置，让提示条渲染出来
+    await store.saveBase()
+    await wrapper.vm.$nextTick()
+
+    const applyBtn = wrapper.findAll('button').find((b) => b.text() === '应用并生效')
+    expect(applyBtn).toBeDefined()
+    await applyBtn!.trigger('click')
+
+    // 点击后 handler 是异步链（PUT 保存 → POST 合并 → 刷新透明代理状态），
+    // 无法直接 await，轮询等待断言成立
+    await vi.waitFor(() => {
+      expect(mockedApi.post).toHaveBeenCalledWith('/config/merge')
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(store.unmergedChanges).toBe(false)
+    expect(wrapper.text()).not.toContain('本地基础配置已保存，但尚未应用生效')
+  })
+
+  /**
+   * 回归：提示必须跨刷新存活，但结论来自后端推导而不是本地存储。
+   * 刷新后 fetchBase 会重新请求 /config/unmerged，后端按合并指纹
+   * 判断 base 仍未合并 → 新页面恢复提示；应用合并之后再刷新，
+   * 后端推导已对齐 → 提示消失。换浏览器/清缓存/换机器同理。
+   */
+  it('保存后刷新页面提示仍在（后端推导），应用并生效后再刷新提示消失', async () => {
+    mockedApi.put.mockResolvedValue({ data: { message: '保存成功' } })
+    mockedApi.post.mockResolvedValue({ data: { message: '已应用并生效' } })
+
+    // 第一次加载 + 保存基础配置
+    const { store } = await mountLoaded()
+    await store.saveBase()
+    expect(store.unmergedChanges).toBe(true)
+
+    // 模拟刷新：后端按指纹推导仍为未合并 → 新页面恢复提示
+    mockConfigGet(true)
+    setActivePinia(createPinia())
+    const wrapper2 = mount(ConfigView, { global: { stubs } })
+    const store2 = useConfigStore()
+    await store2.fetchBase()
+    await vi.waitFor(() => {
+      expect(store2.unmergedChanges).toBe(true)
+    })
+    await wrapper2.vm.$nextTick()
+
+    expect(wrapper2.text()).toContain('本地基础配置已保存，但尚未应用生效')
+
+    // 应用并生效（后端指纹随之更新）
+    await store2.saveAndMerge()
+
+    // 再刷新：后端推导已对齐 → 无提示
+    mockConfigGet(false)
+    setActivePinia(createPinia())
+    const wrapper3 = mount(ConfigView, { global: { stubs } })
+    const store3 = useConfigStore()
+    await store3.fetchBase()
+    await vi.waitFor(() => {
+      expect(store3.unmergedChanges).toBe(false)
+    })
+    await wrapper3.vm.$nextTick()
+
+    expect(wrapper3.text()).not.toContain('本地基础配置已保存，但尚未应用生效')
   })
 })
 

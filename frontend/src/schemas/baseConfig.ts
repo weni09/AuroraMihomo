@@ -184,6 +184,7 @@ export const baseConfigSchema: FormSection[] = [
     title: '域名解析 (DNS)',
     fields: [
       { key: 'dns.enable', title: '开启域名解析', type: 'switch', help: '关闭后内核使用系统 DNS，下方 DNS 设置全部失效。使用 TUN 时必须开启。' },
+      { key: 'dns.listen', title: 'DNS 监听地址', type: 'text', placeholder: '0.0.0.0:1053', help: 'mihomo 自身 DNS 服务的监听地址。「透明代理」页选 TProxy 时，面板会把 53 端口的查询重定向到这里——留空则内核不监听独立 DNS 端口，TProxy 模式下域名解析无法被接管。建议 0.0.0.0:1053。不推荐填 53：它是特权端口，常被 systemd-resolved / dnsmasq 占用，mihomo 绑定失败时所有 DNS 查询都会被导向一个没人监听的端口而中断（面板会在开启透明代理时探测该端口，无监听则拒绝下发规则并说明原因）。' },
       { key: 'dns.ipv6', title: '启用 IPv6', type: 'switch', help: '关闭后 AAAA 查询返回空结果，可避免部分 IPv6 连通性问题。' },
       {
         key: 'dns.enhanced-mode',
@@ -205,7 +206,14 @@ export const baseConfigSchema: FormSection[] = [
         help: '这些域名不使用 fake-ip 而返回真实 IP，每行一条，支持 + 通配前缀。',
       },
       { key: 'dns.nameserver', title: '名称服务器 (Nameserver)', type: 'string-array', placeholder: 'https://223.5.5.5/dns-query, https://1.12.12.12/dns-query', help: '默认 DNS 服务器，多个用逗号分隔。支持 udp/tcp/tls/https/quic 等格式。' },
-      { key: 'dns.fallback', title: '备用服务器 (Fallback)', type: 'string-array', placeholder: 'https://1.1.1.1/dns-query, tls://8.8.4.4', help: '备用 DNS，用于在国内结果被判定为污染时回退查询。' },
+      { key: 'dns.fallback', title: '备用服务器 (Fallback)', type: 'string-array', placeholder: 'https://1.1.1.1/dns-query, https://8.8.8.8/dns-query', help: '备用 DNS，用于 nameserver 结果被判定为污染时回退查询。建议用 DoH（https://1.1.1.1/dns-query）：透明代理环境下，直连的 UDP 上游（裸 IP:53）可能不可达或被劫持，而 DoH 走 443 经代理可达。' },
+      {
+        key: 'dns.fallback-filter',
+        title: '污染检测过滤器 (Fallback Filter)',
+        type: 'yaml-object',
+        placeholder: 'geoip: true\ngeoip-code: CN\nipcidr:\n  - 240.0.0.0/4\n  - 127.0.0.0/8\n  - 2001:db8::/32\n  - ::1/128',
+        help: '判定 nameserver 返回的结果是否被污染，被判定为污染的结果会用 fallback 重查。geoip: true + geoip-code: CN 表示「返回 IP 属于 CN 才可信」，境外 IP（对国内域名反常）触发重查；ipcidr 列出命中即视为污染的网段，IPv4 与 IPv6 都支持（如 240.0.0.0/4 保留段、127.0.0.0/8 回环、::1 回环、2001:db8::/32 文档段）。留空使用内核默认。',
+      },
       { key: 'dns.default-nameserver', title: '默认名称服务器 (Default Nameserver)', type: 'string-array', placeholder: '223.5.5.5, 119.29.29.29', help: '用于解析 nameserver/fallback 中域名形式服务器地址的纯 IP DNS。只能填 IP。' },
       { key: 'dns.proxy-server-nameserver', title: '代理节点域名解析服务器 (Proxy Server Nameserver)', type: 'string-array', placeholder: 'https://223.5.5.5/dns-query', help: '专门用于解析代理节点域名，不受规则影响。开启 respect-rules 时必须配置。' },
       { key: 'dns.direct-nameserver', title: '直连域名解析服务器 (Direct Nameserver)', type: 'string-array', placeholder: 'system://', help: '仅用于直连出口的域名解析，多个用逗号分隔。' },

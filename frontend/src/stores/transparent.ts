@@ -87,6 +87,14 @@ export interface TransparentStatus {
    * 用来提示用户确认自己是不是漏了一步（也可能他本就自己在管规则）。
    */
   portConfiguredOnly: boolean
+  /**
+   * 宿主上的防火墙规则与当前配置不一致（规则里烧进的端口已不是配置里的值）。
+   *
+   * 正常情况下合并末尾会自动重新下发规则，所以这个字段为 true 只发生在重下发
+   * 失败时。此时内核听在新端口、规则还往旧端口投，流量会进黑洞，
+   * 而用户刚看到的是「配置已生效」——必须显式提示。
+   */
+  rulesOutOfSync: boolean
   env: TransparentEnvReport
 }
 
@@ -128,6 +136,7 @@ export const useTransparentStore = defineStore('transparent', {
       tproxyPort: 7893,
       tunStack: 'mixed',
       portConfiguredOnly: false,
+      rulesOutOfSync: false,
       env: emptyEnv(),
     } as TransparentStatus,
     loading: false,
@@ -203,6 +212,14 @@ export const useTransparentStore = defineStore('transparent', {
       try {
         const res = await api.put<TransparentStatus>('/transparent', payload)
         this.apply(res.data)
+        // 开关动的是 base.yaml 里的 tun.enable / tproxy-port，而「配置中心」
+        // 把 base.yaml 缓存在自己的 model 里。不刷新的话，用户切到 TProxy 后
+        // 去配置中心会看到 TUN 开关仍是开着的（缓存里的旧值），更糟的是他在
+        // 那页点保存就会把这份过期配置整份写回去，把刚做的切换覆盖掉。
+        //
+        // 用动态 import 而不是顶层 import：config store 已经 import 了本模块
+        // （保存后要回头刷新开关状态），顶层互引会形成循环依赖。
+        await this.refreshConfigCenter()
         if (payload.enabled) {
           // 只有进入确认窗口时才提"请确认"：TUN 不开窗口，
           // 对它说这句话会让用户去找一个不存在的确认按钮。
@@ -271,6 +288,32 @@ export const useTransparentStore = defineStore('transparent', {
         return false
       } finally {
         this.provisioning = false
+      }
+    },
+
+    /**
+     * 让「配置中心」重新读一遍 base.yaml。
+     *
+     * 透明代理开关与配置中心编辑的是同一份文件（tun.enable / tproxy-port），
+     * 这里改完必须让那边的缓存失效，否则两个页面会各说各话——而配置中心是整份
+     * 写回的，拿着旧缓存保存会直接覆盖掉本次切换。
+     *
+     * 只在它已经加载过时才刷新：没加载过说明用户还没去过那一页，
+     * 届时 onMounted 自会拉取，这里提前请求只是白费一次往返。
+     *
+     * 失败不向上传播：本次开关切换已经成功了，因为"另一个页面的缓存没刷上"
+     * 而报错会让用户以为切换失败。fetchBase 自身已有错误提示与
+     * baseLoaded=false 的保护（那个状态会禁止保存，正是我们要的兜底）。
+     */
+    async refreshConfigCenter() {
+      try {
+        const { useConfigStore } = await import('./config')
+        const cfg = useConfigStore()
+        if (cfg.baseLoaded) {
+          await cfg.fetchBase()
+        }
+      } catch {
+        // 动态 import 或刷新失败都不影响本次切换的结果，保持静默
       }
     },
 
