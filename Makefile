@@ -29,10 +29,17 @@ deps: ## 安装前后端依赖
 build: build-frontend build-backend ## 完整构建（前端产物会同步到 public/）
 
 .PHONY: build-frontend
-build-frontend: sync-docs ## 构建前端并同步到 public/
+build-frontend: sync-docs ## 构建前端并同步到 public/ 与 backend/api/public（后者是 go:embed 内嵌源）
 	cd frontend && npm run build
 	rm -rf public
 	cp -r frontend/dist public
+	# backend/api/public 是 go:embed all:public 的嵌入源：不同步的话二进制里
+	# 只有 .gitkeep，运行时删掉磁盘 public/ 就 404（getWebFS 的降级路径形同虚设）
+	rm -rf backend/api/public
+	cp -r frontend/dist backend/api/public
+	# .gitkeep 被 git 跟踪（保证 embed 目录在 CI checkout 后仍然存在），
+	# 上面的 rm -rf 把它删了，这里恢复，避免 git 状态显示删除
+	touch backend/api/public/.gitkeep
 
 .PHONY: build-backend
 build-backend: ## 构建后端二进制（注入 Tag 版本号与内嵌静态资源）

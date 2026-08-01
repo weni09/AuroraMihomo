@@ -43,9 +43,13 @@ func main() {
 
 	// 静态资源（Zashboard 内嵌面板 + 本项目前端）挂到原生 mux，
 	// go-zero 路由无法匹配任意深度路径，这里在进入路由前直接分流。
-		staticMux := http.NewServeMux()
-		mountStatic(staticMux, "/ui", http.Dir(filepath.Join(c.Mihomo.ConfigDir, "zashboard")))
-		mountStatic(staticMux, "/", getWebFS())
+	// getWebFS 作为 provider 按请求求值：磁盘 public/ 与二进制内嵌
+	// 资源随时切换，删掉磁盘目录不需要重启也能回退到内嵌。
+	staticMux := http.NewServeMux()
+	mountStatic(staticMux, "/ui", func() http.FileSystem {
+		return http.Dir(filepath.Join(c.Mihomo.ConfigDir, "zashboard"))
+	})
+	mountStatic(staticMux, "/", getWebFS)
 	// staticMux 在 server.StartWithOpts 中包装到最外层 Handler
 	registerWebSocket(server, svcCtx)
 	registerHealthz(server, svcCtx)
@@ -503,13 +507,15 @@ func setSecurityHeaders(w http.ResponseWriter, isAPI bool) {
 
 // mountStatic 把静态目录挂到 go-zero 之外的原生 mux 上，
 // 避免 go-zero 路由无法匹配任意深度路径的问题。
-func mountStatic(mux *http.ServeMux, routePrefix string, fsys http.FileSystem) {
+// fsysProvider 在每次请求时调用：管理端页面允许运行时在磁盘目录
+// 与内嵌资源之间切换（见 getWebFS），/ui 的 zashboard 固定在磁盘。
+func mountStatic(mux *http.ServeMux, routePrefix string, fsysProvider func() http.FileSystem) {
 	if routePrefix == "/" {
-		mux.Handle("/", spaFileSystemServer("", fsys))
+		mux.Handle("/", spaFileSystemServer("", fsysProvider))
 		return
 	}
 	prefix := strings.TrimSuffix(routePrefix, "/")
-	handler := spaFileSystemServer(prefix, fsys)
+	handler := spaFileSystemServer(prefix, fsysProvider)
 	mux.Handle(prefix+"/", handler)
 	mux.Handle(prefix, http.RedirectHandler(prefix+"/", http.StatusMovedPermanently))
 }

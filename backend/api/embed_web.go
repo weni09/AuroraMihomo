@@ -31,13 +31,16 @@ func getWebFS() http.FileSystem {
 	return http.FS(subFS)
 }
 
-// spaFileSystemServer 返回一个 http.Handler，用于从 fsys 提供静态文件服务。
+// spaFileSystemServer 返回一个 http.Handler，用于从 fsysProvider 提供静态文件服务。
 // 对于请求的具体静态文件存在时正常响应；若文件不存在（例如前端 SPA 的路由路径），
 // 则自动降级返回 index.html 内容，以支持前端单页应用（SPA）的客户端路由。
-func spaFileSystemServer(routePrefix string, fsys http.FileSystem) http.Handler {
-	fileServer := http.FileServer(fsys)
-
+//
+// fsysProvider 在每次请求时调用而不是启动时求值一次：getWebFS 的
+// 磁盘优先/内嵌降级判断必须反映当前磁盘状态——部署后删掉磁盘 public/
+// 目录应立即回退到内嵌资源，而不是继续指向已删除的目录（404）。
+func spaFileSystemServer(routePrefix string, fsysProvider func() http.FileSystem) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fsys := fsysProvider()
 		rel := strings.TrimPrefix(r.URL.Path, routePrefix)
 		rel = strings.TrimPrefix(rel, "/")
 		if rel == "" {
@@ -53,7 +56,7 @@ func spaFileSystemServer(routePrefix string, fsys http.FileSystem) http.Handler 
 			stat, statErr := f.Stat()
 			_ = f.Close()
 			if statErr == nil && !stat.IsDir() {
-				http.StripPrefix(routePrefix, fileServer).ServeHTTP(w, r)
+				http.StripPrefix(routePrefix, http.FileServer(fsys)).ServeHTTP(w, r)
 				return
 			}
 		}

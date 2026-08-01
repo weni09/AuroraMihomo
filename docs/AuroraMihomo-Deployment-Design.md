@@ -242,6 +242,9 @@ gunzip -c mihomo-linux-amd64-v1.19.29.gz > /opt/auroramihomo/data/bin/mihomo
 chmod +x /opt/auroramihomo/data/bin/mihomo
 ```
 
+> 前端静态资源已内嵌进二进制（go:embed）：包内的 `public/` 目录是可选
+> 的覆盖层，删除后服务仍能正常提供界面，二进制会直接使用内嵌资源。
+
 注意 Linux/macOS 的官方资产是 `.gz`（gzip 压缩的裸二进制，不是 tar 归档），
 只有 Windows 是 `.zip`。
 

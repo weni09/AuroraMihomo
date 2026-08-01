@@ -23,9 +23,15 @@ RUN go mod download
 
 ARG TARGETOS
 ARG TARGETARCH
+# 版本号由 release.yml 经 build-args 注入（与二进制产物、镜像 tag 一致）；
+# 本地 docker build 未传时回落 dev
+ARG VERSION=dev
 COPY backend ./backend
+# 把前端产物放进 backend/api/public：go:embed 嵌入的就是这个目录，
+# 不拷的话二进制里只有 .gitkeep，运行时删掉 /app/public 就 404
+COPY --from=frontend-builder /app/frontend/dist ./backend/api/public
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-w -s" -o auroramihomo ./backend/api
+    go build -trimpath -ldflags="-w -s -X 'auroramihomo/backend/internal/version.AppVersion=${VERSION}'" -o auroramihomo ./backend/api
 
 # ---------- 运行镜像 ----------
 # 不写 --platform=$TARGETPLATFORM：那本来就是默认行为，显式写反而会让

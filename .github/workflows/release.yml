@@ -87,6 +87,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # 前端产物放进 backend/api/public：go:embed 嵌入的就是这个目录，
+      # 不拷的话二进制里只有 .gitkeep（与 docker/Dockerfile 的对应步骤同理）
+      - name: 同步前端产物到内嵌源
+        run: |
+          rm -rf backend/api/public
+          cp -r public backend/api/public
+          touch backend/api/public/.gitkeep
+
       # SQLite 驱动是纯 Go 的（github.com/libtnb/sqlite → modernc.org/sqlite），
       # 因此 CGO_ENABLED=0 即可全平台交叉编译，不需要任何 C 工具链，
       # 也不需要按 libc 区分 musl / glibc —— 静态产物在 Alpine 与
@@ -96,7 +104,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -trimpath -ldflags="-w -s" -o "auroramihomo${{ matrix.ext }}" ./backend/api
+          # 按事件类型取版本号，不能写 ${GITHUB_REF_NAME:-inputs.version}：
+          # 手动触发时 GITHUB_REF_NAME 是分支名（main）而非空值，
+          # 那个默认值永远不会生效，版本会错成分支名。
+          VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+        run: go build -trimpath -ldflags="-w -s -X 'auroramihomo/backend/internal/version.AppVersion=${VERSION}'" -o "auroramihomo${{ matrix.ext }}" ./backend/api
 
       - name: 打包
         env:
@@ -161,6 +173,11 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
+      # 镜像内的 AppVersion 与二进制产物一致（Dockerfile 的 ARG VERSION）
+      - name: 计算版本号
+        id: ver
+        run: echo "version=${{ github.event_name == 'push' && github.ref_name || inputs.version }}" >> "$GITHUB_OUTPUT"
+
       - name: 构建并推送多架构镜像
         uses: docker/build-push-action@v6
         with:
@@ -170,6 +187,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

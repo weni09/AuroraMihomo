@@ -1,12 +1,37 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// 回归：go:embed 的内嵌资源必须真实包含前端产物。
+// 曾出现 backend/api/public 只留 .gitkeep、二进制内嵌为空壳的情况——
+// 磁盘 public/ 存在时被 getWebFS 的磁盘优先逻辑掩盖，删掉磁盘目录
+// 降级到内嵌资源就 404。make build-frontend 会把 frontend/dist 同步进
+// backend/api/public；CI 后端 job 不构建前端，产物缺失时跳过。
+func TestEmbeddedWebFSHasIndex(t *testing.T) {
+	f, err := embeddedWebFS.Open("public/index.html")
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Skip("未找到内嵌的前端产物：请先运行 make build-frontend 同步 frontend/dist 到 backend/api/public")
+	}
+	if err != nil {
+		t.Fatalf("打开内嵌 index.html 失败: %v", err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat 内嵌 index.html 失败: %v", err)
+	}
+	if st.Size() == 0 {
+		t.Fatal("内嵌的 index.html 是空文件，疑似 embed 源未同步")
+	}
+}
 
 func TestSpaFileSystemServer(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -20,7 +45,7 @@ func TestSpaFileSystemServer(t *testing.T) {
 		t.Fatalf("failed to write test.txt: %v", err)
 	}
 
-	handler := spaFileSystemServer("", http.Dir(tmpDir))
+	handler := spaFileSystemServer("", func() http.FileSystem { return http.Dir(tmpDir) })
 
 	// 1. Test existing file
 	req := httptest.NewRequest(http.MethodGet, "/test.txt", nil)
@@ -44,5 +69,40 @@ func TestSpaFileSystemServer(t *testing.T) {
 	}
 	if wSPA.Body.String() != "<html>head</html>" {
 		t.Errorf("expected body '<html>head</html>', got '%s'", wSPA.Body.String())
+	}
+}
+
+// 回归：fsysProvider 必须按请求求值，而不是启动时绑定一次。
+// 曾出现静态服务在启动时固定指向磁盘 public/ 目录，部署后删掉该目录
+// 请求仍然打向已删除的路径（404），内嵌降级路径永远走不到。
+// 这里模拟「目录先缺失、后补回」，同一 handler 应随 provider 切换响应。
+func TestSpaFileSystemServerSwitchesProviderPerRequest(t *testing.T) {
+	emptyDir := t.TempDir()
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "index.html"), []byte("<html>head</html>"), 0644); err != nil {
+		t.Fatalf("failed to write test index.html: %v", err)
+	}
+
+	current := emptyDir
+	handler := spaFileSystemServer("", func() http.FileSystem { return http.Dir(current) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	// 目录缺失：应 404，而不是 200（若绑定在启动时，这里会拿到旧目录的内容）
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 when dir missing, got %d", w.Code)
+	}
+
+	// 目录恢复：同一 handler 立即开始服务新目录
+	current = tmpDir
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 after dir restored, got %d", w.Code)
+	}
+	if w.Body.String() != "<html>head</html>" {
+		t.Errorf("expected body '<html>head</html>', got '%s'", w.Body.String())
 	}
 }
