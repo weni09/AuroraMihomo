@@ -401,7 +401,10 @@ func (m *ProcessManager) versionUnlocked(ctx context.Context) (string, error) {
 }
 
 func (m *ProcessManager) ValidateConfig(ctx context.Context, configPath string) error {
-	cmd := exec.CommandContext(ctx, m.config.BinaryPath, "-t", "-f", configPath)
+	// 必须带 -d：fallback-filter.geoip / geosite 策略会在配置目录加载
+	// GeoIP MMDB 与 GeoSite.dat。不传时 mihomo 在进程 cwd（容器里常是 /app）
+	// 找库文件，找不到就联网下载，内网/超时环境会卡满校验超时并误判配置非法。
+	cmd := exec.CommandContext(ctx, m.config.BinaryPath, "-t", "-f", configPath, "-d", m.config.ConfigDir)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

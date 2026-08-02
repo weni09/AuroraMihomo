@@ -103,12 +103,13 @@ tun:
     - 240.0.0.0/4
     - 255.255.255.255/32
 
-# 仅保留与具体订阅无关的兜底规则；MATCH 保证无节点时流量直连可用
+# 仅保留与具体订阅无关的兜底规则；MATCH 保证无节点时流量直连可用。
+# 不用 no-resolve 后缀：合并引擎的策略引用检查会把第四段误当成策略名并整行删掉。
 rules:
-  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
-  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
-  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
-  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
-  - IP-CIDR,1.1.1.1/32,DIRECT,no-resolve
-  - IP-CIDR,8.8.8.8/32,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+  - IP-CIDR,1.1.1.1/32,DIRECT
+  - IP-CIDR,8.8.8.8/32,DIRECT
   - MATCH,DIRECT
