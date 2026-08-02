@@ -8,14 +8,16 @@ import (
 
 // AdGuard 相关 settings 键。无新 migration：一律走 settings KV。
 const (
-	settingAdGuardBoot      = "adguard.enabled_at_boot"
-	settingAdGuardWebAddr   = "adguard.web_addr"
-	settingAdGuardDNSPort   = "adguard.dns_port"
-	settingAdGuardVersion   = "adguard.version"
-	settingAdGuardWiring    = "adguard.dns_wiring"          // "off" | "on"
-	settingAdGuardSnapshot  = "adguard.dns_wiring_snapshot" // JSON of WiringPlan
-	settingAdGuardComponent = "adguard.component_enabled"   // "true" / "false"，默认 false
-	settingAdGuardDNSMode   = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
+	settingAdGuardBoot         = "adguard.enabled_at_boot"
+	settingAdGuardWebAddr      = "adguard.web_addr"
+	settingAdGuardDNSPort      = "adguard.dns_port"
+	settingAdGuardVersion      = "adguard.version"
+	settingAdGuardWiring       = "adguard.dns_wiring"          // "off" | "on"
+	settingAdGuardSnapshot     = "adguard.dns_wiring_snapshot" // JSON of WiringPlan
+	settingAdGuardComponent    = "adguard.component_enabled"   // "true" / "false"，默认 false
+	settingAdGuardDNSMode      = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
+	settingAdGuardCDNProviders = "adguard.cdn_providers"       // JSON 字符串数组
+	settingAdGuardAutoUpdate   = "adguard.auto_update"         // "true" / "false"
 )
 
 const (

@@ -328,3 +328,36 @@ func toInt(v any) (int, bool) {
 		return 0, false
 	}
 }
+
+func TestSetWebPort(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "bind_host: 0.0.0.0\nhttp:\n  address: 0.0.0.0:3000\n")
+	if err := SetWebPort(dir, 3456); err != nil {
+		t.Fatalf("SetWebPort: %v", err)
+	}
+	m := readAGHMap(t, dir)
+	if m["bind_host"] != "127.0.0.1" {
+		t.Fatalf("bind_host=%v", m["bind_host"])
+	}
+	httpSec, ok := m["http"].(map[string]any)
+	if !ok {
+		t.Fatal("http section missing")
+	}
+	if httpSec["address"] != "127.0.0.1:3456" {
+		t.Fatalf("http.address=%v, want 127.0.0.1:3456", httpSec["address"])
+	}
+	port, err := ReadWebPort(dir)
+	if err != nil || port != 3456 {
+		t.Fatalf("ReadWebPort=%d err=%v", port, err)
+	}
+}
+
+func TestSetWebPort_Invalid(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetWebPort(dir, 0); err == nil {
+		t.Fatal("port=0 应失败")
+	}
+	if err := SetWebPort(dir, 70000); err == nil {
+		t.Fatal("port=70000 应失败")
+	}
+}

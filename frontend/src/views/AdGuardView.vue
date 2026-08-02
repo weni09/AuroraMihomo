@@ -7,7 +7,9 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import ModalDialog from '../components/ModalDialog.vue'
+import AdGuardSettingsDialog from '../components/AdGuardSettingsDialog.vue'
 import { ExternalLink, Play, Power, RefreshCw, Download, Settings2 } from 'lucide-vue-next'
+
 
 const store = useAdGuardStore()
 
@@ -33,7 +35,6 @@ function openExternally() {
 }
 
 function openSettings() {
-  // T7 将接入 AdGuardSettingsDialog；当前为占位入口
   settingsOpen.value = true
 }
 
@@ -306,16 +307,8 @@ onBeforeUnmount(clearPageChrome)
       </div>
     </template>
 
-    <!-- 设置占位（T7 接入完整弹窗） -->
-    <ModalDialog :open="settingsOpen" title="AdGuard 设置" max-width="max-w-lg" @close="settingsOpen = false">
-      <div class="space-y-3 text-sm text-fg-muted" data-testid="adguard-settings-stub">
-        <p>运行控制、Web 端口、版本更新与 DNS 模式将在此配置。</p>
-        <p class="text-xs text-fg-subtle">即将支持完整设置面板。</p>
-        <div class="flex justify-end pt-1">
-          <Button variant="ghost" @click="settingsOpen = false">关闭</Button>
-        </div>
-      </div>
-    </ModalDialog>
+    <!-- AdGuard 设置弹窗：运行 / 端口 / 版本 / DNS 模式 -->
+    <AdGuardSettingsDialog v-model:open="settingsOpen" />
 
     <!-- DNS 一键对接（次要入口；T6 后移除） -->
     <ModalDialog :open="wiringOpen" title="DNS 一键对接" max-width="max-w-lg" @close="wiringOpen = false">

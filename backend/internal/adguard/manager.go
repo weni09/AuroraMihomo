@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -51,6 +52,13 @@ type Manager struct {
 
 func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg}
+}
+
+// SetWebAddr 更新 Status/反代回显用的 Web 地址（如 127.0.0.1:3000）。
+func (m *Manager) SetWebAddr(addr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.WebAddr = strings.TrimSpace(addr)
 }
 
 func (m *Manager) isProcessAliveLocked() bool {

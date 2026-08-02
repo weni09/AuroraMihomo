@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { flushPromises, mount } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils'
 
 // api 必须在导入 store / 组件之前 mock：模块求值时就会持有 api 引用
 vi.mock('../api', () => ({
@@ -12,6 +12,7 @@ import AdGuardView from './AdGuardView.vue'
 import { clearPageChrome, usePageChrome } from '../composables/usePageChrome'
 
 const mockedApi = vi.mocked(api, true)
+const body = () => new DOMWrapper(document.body)
 
 function statusPayload(partial: Record<string, unknown> = {}) {
   return {
@@ -36,6 +37,8 @@ describe('AdGuardView', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     clearPageChrome()
+    document.body.removeAttribute('style')
+    document.body.innerHTML = ''
   })
 
   it('组件已启用且未安装时展示安装引导 CTA，含路径与 GPL，不挂 iframe', async () => {
@@ -109,7 +112,7 @@ describe('AdGuardView', () => {
       }),
     })
 
-    const wrapper = mount(AdGuardView)
+    const wrapper = mount(AdGuardView, { attachTo: document.body })
     await flushPromises()
 
     const iframe = wrapper.get('[data-testid="adguard-iframe"]')
@@ -124,6 +127,12 @@ describe('AdGuardView', () => {
     const header = wrapper.get('[data-testid="adguard-page-header"]')
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
     expect(wrapper.find('[data-testid="adguard-settings-btn"]').exists()).toBe(true)
+
+    // 点设置打开完整弹窗（Dialog teleport 到 body）
+    await wrapper.get('[data-testid="adguard-settings-btn"]').trigger('click')
+    await flushPromises()
+    expect(body().find('[data-testid="adguard-settings-dialog-body"]').exists()).toBe(true)
+    expect(body().find('[data-testid="adguard-settings-stub"]').exists()).toBe(false)
 
     wrapper.unmount()
     expect(subtitle.value).toBe('')

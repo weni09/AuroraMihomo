@@ -56,4 +56,65 @@ describe('useAdGuardStore component controls', () => {
     await store.uninstall(true)
     expect(mockedApi.post).toHaveBeenCalledWith('/adguard/uninstall', { confirm: true })
   })
+
+  it('fetchStatus 映射 dnsMode / cdnProviders', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        componentEnabled: true,
+        installed: true,
+        running: false,
+        dnsMode: 2,
+        cdnProviders: ['https://cdn.example/'],
+        entryPath: '/adguard/',
+      },
+    })
+    const store = useAdGuardStore()
+    await store.fetchStatus()
+    expect(store.status.dnsMode).toBe(2)
+    expect(store.status.cdnProviders).toEqual(['https://cdn.example/'])
+  })
+
+  it('setWebPort 调用 PUT /adguard/web-port', async () => {
+    mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: {
+        componentEnabled: true,
+        installed: true,
+        running: false,
+        webAddr: '127.0.0.1:4123',
+        entryPath: '/adguard/',
+      },
+    })
+    const store = useAdGuardStore()
+    await store.setWebPort(4123)
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/web-port', { port: 4123 })
+    expect(store.status.webAddr).toBe('127.0.0.1:4123')
+  })
+
+  it('setDnsMode 调用 PUT /adguard/dns-mode', async () => {
+    mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: { componentEnabled: true, installed: true, running: true, dnsMode: 1, entryPath: '/adguard/' },
+    })
+    const store = useAdGuardStore()
+    await store.setDnsMode(1)
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/dns-mode', { mode: 1 })
+    expect(store.status.dnsMode).toBe(1)
+  })
+
+  it('setCdnProviders 调用 PUT /adguard/cdn', async () => {
+    mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: {
+        componentEnabled: true,
+        installed: true,
+        running: false,
+        cdnProviders: ['https://a.example/'],
+        entryPath: '/adguard/',
+      },
+    })
+    const store = useAdGuardStore()
+    await store.setCdnProviders(['https://a.example/'])
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/cdn', { providers: ['https://a.example/'] })
+  })
 })

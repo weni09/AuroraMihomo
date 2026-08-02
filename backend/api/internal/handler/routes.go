@@ -18,6 +18,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 		[]rest.Route{
 			{
 				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/cdn",
+				Handler: protected.AdGuardSetCDNHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/component",
 				Handler: protected.AdGuardSetComponentHandler(serverCtx),
 			},
@@ -55,6 +60,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodPost,
 				Path:    "/api/v1/adguard/uninstall",
 				Handler: protected.AdGuardUninstallHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/web-port",
+				Handler: protected.AdGuardSetWebPortHandler(serverCtx),
 			},
 			{
 				Method:  http.MethodGet,

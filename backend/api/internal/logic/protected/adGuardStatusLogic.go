@@ -37,7 +37,7 @@ func (l *AdGuardStatusLogic) AdGuardStatus() (resp *types.AdGuardStatusResp, err
 	if entryPath == "" {
 		entryPath = "/adguard/"
 	}
-	return &types.AdGuardStatusResp{
+return &types.AdGuardStatusResp{
 		Installed:        dto.Installed,
 		Running:          dto.Running,
 		PID:              dto.PID,
@@ -51,5 +51,7 @@ func (l *AdGuardStatusLogic) AdGuardStatus() (resp *types.AdGuardStatusResp, err
 		EntryPath:        entryPath,
 		ComponentEnabled: dto.ComponentEnabled,
 		DnsMode:          dto.DnsMode,
+		CdnProviders:     dto.CdnProviders,
+		AutoUpdate:       dto.AutoUpdate,
 	}, nil
 }

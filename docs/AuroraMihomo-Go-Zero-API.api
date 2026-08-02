@@ -642,19 +642,21 @@ type DashboardEntryResp {
 // ---------- AdGuard Home（可选嵌入） ----------
 // AdGuardStatusResp 面板状态视图；EntryPath 为同源反代前缀（默认 /adguard/）。
 type AdGuardStatusResp {
-	Installed        bool   `json:"installed"`
-	Running          bool   `json:"running"`
-	PID              int    `json:"pid"`
-	Version          string `json:"version"`
-	WorkDir          string `json:"workDir"`
-	WebAddr          string `json:"webAddr"`
-	DNSPort          int    `json:"dnsPort"`
-	Wiring           string `json:"wiring"`
-	WiringLabel      string `json:"wiringLabel"`
-	LastError        string `json:"lastError,optional"`
-	EntryPath        string `json:"entryPath"`
-	ComponentEnabled bool   `json:"componentEnabled"`
-	DnsMode          int    `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
+	Installed        bool     `json:"installed"`
+	Running          bool     `json:"running"`
+	PID              int      `json:"pid"`
+	Version          string   `json:"version"`
+	WorkDir          string   `json:"workDir"`
+	WebAddr          string   `json:"webAddr"`
+	DNSPort          int      `json:"dnsPort"`
+	Wiring           string   `json:"wiring"`
+	WiringLabel      string   `json:"wiringLabel"`
+	LastError        string   `json:"lastError,optional"`
+	EntryPath        string   `json:"entryPath"`
+	ComponentEnabled bool     `json:"componentEnabled"`
+	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
+	CdnProviders     []string `json:"cdnProviders,optional"`
+	AutoUpdate       bool     `json:"autoUpdate"`
 }
 
 // AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
@@ -670,6 +672,16 @@ type AdGuardUninstallReq {
 // AdGuardDNSModeReq 切换 DNS 服务模式 0/1/2。
 type AdGuardDNSModeReq {
 	Mode int `json:"mode"`
+}
+
+// AdGuardWebPortReq 设置 Web 管理端口（强制绑定 127.0.0.1）。
+type AdGuardWebPortReq {
+	Port int `json:"port"`
+}
+
+// AdGuardCDNReq AdGuard 专用升级镜像列表（按序回落；空则用全局 CDN）。
+type AdGuardCDNReq {
+	Providers []string `json:"providers,optional"`
 }
 
 // AdGuardWiringResp 一键对接预检结果（不落库）。
@@ -770,6 +782,12 @@ service aurora-api {
 
 	@handler adGuardSetDNSMode
 	put /api/v1/adguard/dns-mode (AdGuardDNSModeReq) returns (Result)
+
+	@handler adGuardSetWebPort
+	put /api/v1/adguard/web-port (AdGuardWebPortReq) returns (Result)
+
+	@handler adGuardSetCDN
+	put /api/v1/adguard/cdn (AdGuardCDNReq) returns (Result)
 
 	@handler adGuardWiring
 	get /api/v1/adguard/wiring returns (AdGuardWiringResp)

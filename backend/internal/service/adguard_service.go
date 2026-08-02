@@ -37,6 +37,10 @@ type AdGuardStatusDTO struct {
 	EntryPath string `json:"entryPath"`
 	// Snapshot 仅 wiring=on 时附带，便于 UI 展示可回滚内容
 	Snapshot *WiringPlan `json:"snapshot,omitempty"`
+	// CdnProviders AdGuard 升级专用镜像列表（空则用全局 CDN）
+	CdnProviders []string `json:"cdnProviders,omitempty"`
+	// AutoUpdate 是否参加系统自动更新 cron
+	AutoUpdate bool `json:"autoUpdate"`
 }
 
 // AdGuardService 编排 AdGuard 安装/启停与 DNS 一键对接。
@@ -99,9 +103,16 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	if dto.WorkDir == "" {
 		dto.WorkDir = s.workDir
 	}
-	if dto.WebAddr == "" {
+	// Web 地址优先 settings / yaml 端口，保证改端口后 Status 与反代一致
+	if v := strings.TrimSpace(s.getSetting(settingAdGuardWebAddr, "")); v != "" {
+		dto.WebAddr = v
+	} else if port, err := adguard.ReadWebPort(s.workDir); err == nil && port > 0 {
+		dto.WebAddr = fmt.Sprintf("127.0.0.1:%d", port)
+	} else if dto.WebAddr == "" {
 		dto.WebAddr = s.webAddr
 	}
+	dto.CdnProviders = s.CDNProviders()
+	dto.AutoUpdate = s.AutoUpdateEnabled()
 	// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
 	if v := s.getSetting(settingAdGuardVersion, ""); v != "" && dto.Version == "" {
 		dto.Version = v
@@ -137,6 +148,8 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	if s.updater == nil {
 		return errors.New("更新器未初始化，无法安装 AdGuard Home")
 	}
+	// 安装/更新前推送 AdGuard 专用 CDN（空则回落全局）
+	s.applyAdGuardCDNToUpdater()
 	if err := s.updater.UpdateAdGuard(ctx); err != nil {
 		return err
 	}
@@ -433,11 +446,11 @@ var knownAdGuardSettingKeys = []string{
 	settingAdGuardWiring,
 	settingAdGuardSnapshot,
 	"adguard.sync_password",
-	"adguard.username",
-	settingAdGuardDNSMode,
-	"adguard.auto_update",
-	"adguard.cdn_providers",
-}
+		"adguard.username",
+		settingAdGuardDNSMode,
+		settingAdGuardAutoUpdate,
+		settingAdGuardCDNProviders,
+	}
 
 func (s *AdGuardService) clearAdGuardSettings() error {
 	if s.db == nil {

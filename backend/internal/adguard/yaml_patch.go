@@ -238,6 +238,26 @@ func EnsureBindLocalhost(workDir string) error {
 	return saveConfigMap(workDir, m)
 }
 
+// SetWebPort 将 Web 管理端口写为 127.0.0.1:<port>（强制回环）。
+// 同时设置 bind_host=127.0.0.1。port 须在 1–65535。
+func SetWebPort(workDir string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("web 端口无效: %d（须为 1-65535）", port)
+	}
+	m, _, err := loadConfigMap(workDir)
+	if err != nil {
+		return err
+	}
+	m["bind_host"] = localhostBind
+	httpSec := asMap(m["http"])
+	if httpSec == nil {
+		httpSec = map[string]any{}
+	}
+	httpSec["address"] = fmt.Sprintf("%s:%d", localhostBind, port)
+	m["http"] = httpSec
+	return saveConfigMap(workDir, m)
+}
+
 // PatchUpstreamDNS 仅改写 dns.upstream_dns，保留其它键。
 // 返回改写前的 upstream 列表（可能为 nil/empty），供回滚。
 func PatchUpstreamDNS(workDir string, upstreams []string) (previous []string, err error) {

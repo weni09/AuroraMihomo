@@ -13,12 +13,18 @@ export interface AdGuardStatus {
   workDir: string
   webAddr: string
   dnsPort: number
+  /** DNS 服务模式：0 未托管 / 1 绑定 53 / 2 重定向 */
+  dnsMode: number
   /** "off" | "on" */
   wiring: string
   wiringLabel: string
   lastError?: string
   /** 同源反代入口，iframe 用 */
   entryPath: string
+  /** AdGuard 专用升级镜像（空则用全局 CDN） */
+  cdnProviders: string[]
+  /** 是否参加系统自动更新 */
+  autoUpdate: boolean
 }
 
 /** 一键对接向导勾选项 */
@@ -51,9 +57,12 @@ const emptyStatus = (): AdGuardStatus => ({
   workDir: '',
   webAddr: '',
   dnsPort: 0,
+  dnsMode: 0,
   wiring: 'off',
   wiringLabel: '未对接',
   entryPath: '/adguard/',
+  cdnProviders: [],
+  autoUpdate: false,
 })
 
 export const useAdGuardStore = defineStore('adguard', {
@@ -76,12 +85,16 @@ export const useAdGuardStore = defineStore('adguard', {
       this.isLoading = true
       try {
         const res = await api.get<AdGuardStatus>('/adguard/status')
+        const dnsMode = Number(res.data?.dnsMode)
         this.status = {
           ...emptyStatus(),
           ...res.data,
           // 显式归一：缺省/非法值按关闭处理，避免侧栏误显示
           componentEnabled: res.data?.componentEnabled === true,
           entryPath: res.data?.entryPath || '/adguard/',
+          dnsMode: Number.isFinite(dnsMode) && dnsMode >= 0 && dnsMode <= 2 ? dnsMode : 0,
+          cdnProviders: Array.isArray(res.data?.cdnProviders) ? res.data.cdnProviders : [],
+          autoUpdate: res.data?.autoUpdate === true,
         }
       } catch (error) {
         console.error('Failed to fetch AdGuard status', error)
@@ -155,6 +168,84 @@ export const useAdGuardStore = defineStore('adguard', {
     /** 与设置页共用更新入口 */
     async update() {
       await this.runAction('/update/adguard', 'AdGuard Home 已更新')
+    },
+
+    /** 检查更新（复用全局 /update/check，含 AdGuard 版本描述） */
+    async checkUpdate() {
+      this.actionLoading = true
+      try {
+        const res = await api.get<{ message?: string; success?: boolean }>('/update/check')
+        const text = res.data?.message || '检查完成'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+      } catch (error) {
+        console.error(error)
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /** Web 管理端口：PUT /adguard/web-port；运行中后端会重启 */
+    async setWebPort(port: number) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/web-port', { port })
+        const text = res.data?.message || `Web 端口已设置为 ${port}`
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /** DNS 服务模式 0/1/2 */
+    async setDnsMode(mode: number) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/dns-mode', { mode })
+        const text = res.data?.message || 'DNS 服务模式已更新'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /** AdGuard 专用升级镜像列表 */
+    async setCdnProviders(providers: string[]) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/cdn', { providers })
+        const text = res.data?.message || '升级链接已保存'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
     },
 
     async wiringPreview() {
