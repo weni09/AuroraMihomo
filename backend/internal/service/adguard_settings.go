@@ -105,6 +105,18 @@ func (s *AdGuardService) SetWebPort(ctx context.Context, port int) error {
 	return nil
 }
 
+// SetDNSListenPort 设置 AdGuard DNS 监听高位端口（重定向模式目标）。
+// 禁止 53：绑定 53 请用 DNS 模式 1。
+func (s *AdGuardService) SetDNSListenPort(ctx context.Context, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("DNS 端口无效: %d（须为 1-65535）", port)
+	}
+	if port == 53 {
+		return fmt.Errorf("请使用「使用 53 端口」模式绑定 53；此处仅配置重定向目标的高位端口（如 1053）")
+	}
+	return s.ensureAGHListenPort(ctx, port)
+}
+
 // CDNProviders 读取 adguard.cdn_providers JSON 数组；损坏或空则返回 nil。
 func (s *AdGuardService) CDNProviders() []string {
 	raw := strings.TrimSpace(s.getSetting(settingAdGuardCDNProviders, ""))

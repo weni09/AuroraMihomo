@@ -216,6 +216,26 @@ export const useAdGuardStore = defineStore('adguard', {
       }
     },
 
+    /** DNS 高位监听端口（重定向 53 的目标）；禁止 53 */
+    async setDnsPort(port: number) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/dns-port', { port })
+        const text = res.data?.message || `DNS 端口已设置为 ${port}`
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
     /** DNS 服务模式 0/1/2 */
     async setDnsMode(mode: number) {
       this.actionLoading = true

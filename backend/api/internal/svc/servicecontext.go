@@ -204,14 +204,16 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 方法照常被调用并在解引用字段时崩掉——非 Linux 上启动即 panic。
 	// 声明为接口类型，未赋值时它就是真正的 nil 接口。
 	var tpApplier service.TransparentApplier
+	var dnsRedirApplier *netcheck.Applier
 	if runtime.GOOS == "linux" {
-		tpApplier = &netcheck.Applier{
+		dnsRedirApplier = &netcheck.Applier{
 			// 快照与配置备份分开存：前者是宿主的网络状态，
 			// 与 mihomo 配置的备份不是一类东西
 			SnapshotDir: filepath.Join(dataDir, "netbackup"),
 			Runner:      netcheck.NewExecRunner(),
 			Logf:        logx.Infof,
 		}
+		tpApplier = dnsRedirApplier
 	}
 	transparentSvc := service.NewTransparentService(
 		db,
@@ -297,10 +299,14 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		WorkDir:    aghWorkDir,
 		WebAddr:    aghWebAddr,
 	})
-	aghSvc := service.NewAdGuardService(db, upd, aghMgr, transparentSvc, cfgSvc, aghWorkDir, aghWebAddr)
-	// 若上次退出时 wiring=on，恢复 TProxy DNS 覆盖到 AGH 端口，
-	// 否则 Resync/重启后规则会悄悄指回 mihomo，对接名存实亡。
-	aghSvc.RestoreWiringOverrideOnBoot()
+		aghSvc := service.NewAdGuardService(db, upd, aghMgr, transparentSvc, cfgSvc, aghWorkDir, aghWebAddr)
+		// 无 TProxy 时模式 2 使用独立 DNS 重定向表；与透明代理共用 Linux 上的 Applier。
+		if dnsRedirApplier != nil {
+			aghSvc.SetDNSRedirectApplier(dnsRedirApplier)
+		}
+		// 若上次退出时 wiring=on，恢复 TProxy DNS 覆盖到 AGH 端口，
+		// 否则 Resync/重启后规则会悄悄指回 mihomo，对接名存实亡。
+		aghSvc.RestoreWiringOverrideOnBoot()
 	// enabled_at_boot 且二进制在盘：后台拉起，不阻塞面板启动。
 	// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
 	if aghSvc.ShouldStartAtBoot() {

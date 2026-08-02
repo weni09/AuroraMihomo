@@ -67,11 +67,13 @@ type WiringPlan struct {
 
 	// 下列标志记录「计划里选中了哪些动作」，apply/rollback 按标志执行，
 	// 避免仅靠中文 Actions 文案做分支。
-	DidRedirect        bool `json:"didRedirect,omitempty"`
-	DidResolveConflict bool `json:"didResolveConflict,omitempty"`
-	DidPatchUpstream   bool `json:"didPatchUpstream,omitempty"`
-	DidWeakenTUN       bool `json:"didWeakenTUN,omitempty"`
-}
+		DidRedirect        bool `json:"didRedirect,omitempty"`
+		DidResolveConflict bool `json:"didResolveConflict,omitempty"`
+		DidPatchUpstream   bool `json:"didPatchUpstream,omitempty"`
+		DidWeakenTUN       bool `json:"didWeakenTUN,omitempty"`
+		// DidDNSOnlyRedirect：未开 TProxy 时用 aurora_agh_dns 表做 53→AGH 端口
+		DidDNSOnlyRedirect bool `json:"didDNSOnlyRedirect,omitempty"`
+	}
 
 // buildWiringPlan 根据选项与当前 DNS 状态生成变更清单（纯函数，无 IO）。
 //

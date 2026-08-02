@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/netcheck"
 	"auroramihomo/backend/internal/repository"
 	"auroramihomo/backend/internal/updater"
 )
@@ -35,7 +36,24 @@ func newTestAdGuardService(t *testing.T) (*AdGuardService, *repository.Database)
 		func(c string) error { return cfgSvc.UpdateBaseConfig(c) },
 	)
 	svc := NewAdGuardService(db, upd, mgr, transp, cfgSvc, workDir, "127.0.0.1:3000")
+	// 无 TProxy 的模式 2 依赖 DNS 重定向 applier；单测注入假实现
+	svc.SetDNSRedirectApplier(&fakeDNSRedirectApplier{})
 	return svc, db
+}
+
+// fakeDNSRedirectApplier 供单元测试下发/拆除 DNS 重定向。
+type fakeDNSRedirectApplier struct {
+	applied int
+}
+
+func (f *fakeDNSRedirectApplier) ApplyDNSRedirect(ctx context.Context, p netcheck.DNSRedirectParams) error {
+	f.applied++
+	return nil
+}
+
+func (f *fakeDNSRedirectApplier) TeardownDNSRedirect(ctx context.Context) error {
+	f.applied = 0
+	return nil
 }
 
 func TestComponentEnabled_DefaultFalse(t *testing.T) {

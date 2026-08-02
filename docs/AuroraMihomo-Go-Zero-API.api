@@ -688,6 +688,11 @@ type AdGuardWebPortReq {
 	Port int `json:"port"`
 }
 
+// AdGuardDNSPortReq 设置 AdGuard DNS 监听端口（重定向模式的目标端口，勿用 53）。
+type AdGuardDNSPortReq {
+	Port int `json:"port"`
+}
+
 // AdGuardCDNReq AdGuard 专用升级镜像列表（按序回落；空则用全局 CDN）。
 type AdGuardCDNReq {
 	Providers []string `json:"providers,optional"`
@@ -794,6 +799,9 @@ service aurora-api {
 
 	@handler adGuardSetWebPort
 	put /api/v1/adguard/web-port (AdGuardWebPortReq) returns (Result)
+
+	@handler adGuardSetDNSPort
+	put /api/v1/adguard/dns-port (AdGuardDNSPortReq) returns (Result)
 
 	@handler adGuardSetCDN
 	put /api/v1/adguard/cdn (AdGuardCDNReq) returns (Result)

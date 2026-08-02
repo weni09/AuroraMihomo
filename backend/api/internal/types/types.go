@@ -21,6 +21,10 @@ type AdGuardDNSModeReq struct {
 	Mode int `json:"mode"`
 }
 
+type AdGuardDNSPortReq struct {
+	Port int `json:"port"`
+}
+
 type AdGuardStatusResp struct {
 	Installed        bool     `json:"installed"`
 	Running          bool     `json:"running"`

@@ -23,6 +23,7 @@ const store = useAdGuardStore()
 const settings = useSettingsStore()
 
 const webPortInput = ref('3000')
+const dnsPortDraft = ref('1053')
 const cdnText = ref('')
 const dnsModeValue = ref('0')
 const usernameInput = ref('admin')
@@ -48,6 +49,8 @@ function parsePortFromAddr(addr: string): string {
 
 function syncFromStore() {
   webPortInput.value = parsePortFromAddr(store.status.webAddr)
+  const dp = store.status.dnsPort
+  dnsPortDraft.value = dp && dp > 0 && dp !== 53 ? String(dp) : '1053'
   cdnText.value = (store.status.cdnProviders || []).join('\n')
   dnsModeValue.value = String(store.status.dnsMode ?? 0)
   usernameInput.value = store.status.username || 'admin'
@@ -69,7 +72,7 @@ watch(
 
 
 watch(
-  () => [store.status.webAddr, store.status.dnsMode, store.status.cdnProviders, store.status.username, store.status.passwordSync],
+  () => [store.status.webAddr, store.status.dnsPort, store.status.dnsMode, store.status.cdnProviders, store.status.username, store.status.passwordSync],
   () => {
     if (props.open) syncFromStore()
   },
@@ -86,6 +89,14 @@ async function saveWebPort() {
     return
   }
   await store.setWebPort(port)
+}
+
+async function saveDnsPort() {
+  const port = Number(String(dnsPortDraft.value).trim())
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return
+  }
+  await store.setDnsPort(port)
 }
 
 async function saveCdn() {
@@ -294,10 +305,31 @@ async function onDnsModeChange(v: unknown) {
             <RadioGroupItem value="2" class="mt-0.5" />
             <span>
               <span class="font-medium text-fg">重定向 53→AdGuard</span>
-              <span class="block text-xs text-fg-subtle">AGH 高位端口；TProxy/规则把 53 转到该口</span>
+              <span class="block text-xs text-fg-subtle">
+                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 1053，可在下方设置）；系统把 53 转到该口。
+                已开 TProxy 时走透明代理规则；未开 TProxy 时在 Linux 上下发独立 nft 重定向（须先启动 AdGuard）。
+              </span>
             </span>
           </label>
         </RadioGroup>
+        <div v-if="dnsModeValue === '2'" class="space-y-2 pt-1">
+          <Label for="agh-dns-port" class="text-xs text-fg-muted">AdGuard DNS 端口（重定向目标，勿用 53）</Label>
+          <div class="flex flex-wrap items-center gap-2">
+            <Input
+              id="agh-dns-port"
+              v-model="dnsPortDraft"
+              type="number"
+              min="1"
+              max="65535"
+              class="w-28 font-mono text-sm"
+              :disabled="busy"
+            />
+            <Button size="sm" variant="outline" :disabled="busy" @click="saveDnsPort">保存端口</Button>
+          </div>
+          <p class="text-xs text-fg-subtle">
+            保存后写入 AdGuard 配置；若进程在跑会重启。再选「重定向」模式时以该端口为 53 的目标。
+          </p>
+        </div>
       </section>
 
       <div class="flex justify-end pt-1">

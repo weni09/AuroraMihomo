@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/netcheck"
 )
 
 // DNSMode 是 AdGuard DNS 服务模式。
@@ -95,6 +96,10 @@ func (s *AdGuardService) enterDNSMode0(ctx context.Context) error {
 		}
 	} else {
 		s.clearDNSPortOverride()
+		// 即使无 snapshot，也尽力拆掉可能残留的仅 DNS 表
+		if s.dnsRedir != nil {
+			_ = s.dnsRedir.TeardownDNSRedirect(ctx)
+		}
 	}
 	return s.db.SetSetting(settingAdGuardDNSMode, "0")
 }
@@ -138,14 +143,117 @@ func (s *AdGuardService) enterDNSMode2(ctx context.Context) error {
 		return s.db.SetSetting(settingAdGuardDNSMode, "2")
 	}
 
-	opts := WiringOptions{
-		RedirectTProxy:  true,
+	// 重定向目标必须是 AGH 高位端口（≠53）。未配置则用 1053。
+	port := s.resolveRedirectDNSPort()
+	if err := s.ensureAGHListenPort(ctx, port); err != nil {
+		return err
+	}
+
+	cur, err := s.collectDNSState()
+	if err != nil {
+		return err
+	}
+	cur.AGHDNSPort = port
+
+	if cur.TProxyEnabled {
+		opts := WiringOptions{
+			RedirectTProxy:  true,
+			ResolveConflict: true,
+			PatchUpstream:   true,
+			WeakenTUNHijack: false,
+		}
+		if _, err := s.WiringApply(ctx, opts); err != nil {
+			return err
+		}
+		return s.db.SetSetting(settingAdGuardDNSMode, "2")
+	}
+
+	// 无 TProxy：独立 DNS 重定向表（仍要求先启动 AGH）
+	return s.enterDNSMode2WithoutTProxy(ctx, port, cur)
+}
+
+// resolveRedirectDNSPort 模式 2 用的 AGH 监听端口：settings > yaml > 1053；禁止 53。
+func (s *AdGuardService) resolveRedirectDNSPort() int {
+	if p := s.getSettingInt(settingAdGuardDNSPort, 0); p > 0 && p != 53 {
+		return p
+	}
+	if p, err := adguard.ReadDNSPort(s.workDir); err == nil && p > 0 && p != 53 {
+		return p
+	}
+	return 1053
+}
+
+// ensureAGHListenPort 把 AGH dns.port 写成指定高位端口，运行中则重启使监听生效。
+func (s *AdGuardService) ensureAGHListenPort(ctx context.Context, port int) error {
+	if port <= 0 || port == 53 {
+		return fmt.Errorf("重定向模式要求 AdGuard DNS 使用高位端口（如 1053），不能是 %d", port)
+	}
+	if err := adguard.SetDNSPort(s.workDir, port); err != nil {
+		return fmt.Errorf("写入 AdGuard dns.port=%d 失败: %w", port, err)
+	}
+	if s.db != nil {
+		_ = s.db.SetSetting(settingAdGuardDNSPort, strconv.Itoa(port))
+	}
+	if s.mgr != nil && s.mgr.Status().Running {
+		if err := s.Restart(ctx); err != nil {
+			return fmt.Errorf("已写入 dns.port=%d，但重启 AdGuard 失败（重定向前需要进程监听该端口）: %w", port, err)
+		}
+	}
+	return nil
+}
+
+// enterDNSMode2WithoutTProxy 在未启用 TProxy 时用 aurora_agh_dns 劫持 53。
+func (s *AdGuardService) enterDNSMode2WithoutTProxy(ctx context.Context, port int, cur currentDNSState) error {
+	if s.dnsRedir == nil {
+		return fmt.Errorf("当前环境无法下发 DNS 重定向规则（需要 Linux + nft）。请启用 TProxy 后重试，或改用「使用 53 端口」模式")
+	}
+	// 真实环境下 ApplyDNSRedirect 会探测 UDP 端口是否有监听；
+	// 此处不强制 Status.Running，以便单测注入假 applier，并允许「先下发规则、监听稍后就绪」的竞态由 applier 拦截。
+
+	plan, err := buildWiringPlan(WiringOptions{
+		RedirectTProxy:  false,
 		ResolveConflict: true,
 		PatchUpstream:   true,
 		WeakenTUNHijack: false,
-	}
-	if _, err := s.WiringApply(ctx, opts); err != nil {
+	}, cur)
+	if err != nil {
 		return err
 	}
+	plan.DidDNSOnlyRedirect = true
+	plan.DidRedirect = false
+	plan.AGHDNSPort = port
+	plan.Actions = append([]string{
+		fmt.Sprintf("无 TProxy：nft 表 aurora_agh_dns 将 53 重定向到 AdGuard :%d", port),
+	}, plan.Actions...)
+
+	snap, err := marshalWiringSnapshot(plan)
+	if err != nil {
+		return err
+	}
+	if err := s.db.SetSetting(settingAdGuardSnapshot, snap); err != nil {
+		return fmt.Errorf("写入快照失败: %w", err)
+	}
+
+	if err := s.applyWiringPlan(ctx, plan, cur); err != nil {
+		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
+		return err
+	}
+
+	if err := s.dnsRedir.ApplyDNSRedirect(ctx, netcheck.DNSRedirectParams{
+		DNSPort:    port,
+		EnableIPv6: true,
+	}); err != nil {
+		_ = s.rollbackWiringPlan(ctx, plan)
+		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
+		_ = s.db.SetSetting(settingAdGuardWiring, adguardWiringOff)
+		return err
+	}
+
+	if err := s.db.SetSetting(settingAdGuardWiring, adguardWiringOn); err != nil {
+		_ = s.dnsRedir.TeardownDNSRedirect(ctx)
+		_ = s.rollbackWiringPlan(ctx, plan)
+		return err
+	}
+	_ = s.db.SetSetting(settingAdGuardDNSPort, strconv.Itoa(port))
 	return s.db.SetSetting(settingAdGuardDNSMode, "2")
 }

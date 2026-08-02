@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/netcheck"
 	"auroramihomo/backend/internal/repository"
 	"auroramihomo/backend/internal/updater"
 
@@ -51,15 +52,28 @@ type AdGuardStatusDTO struct {
 //
 // 进程细节在 adguard.Manager；下载在 updater；本服务负责 settings、
 // TransparentService 端口覆盖、ConfigService base dns.listen 与快照回滚。
+// dnsRedirectApplier 无 TProxy 时下发/拆除「53→AGH 端口」专用规则。
+type dnsRedirectApplier interface {
+	ApplyDNSRedirect(ctx context.Context, p netcheck.DNSRedirectParams) error
+	TeardownDNSRedirect(ctx context.Context) error
+}
+
 type AdGuardService struct {
 	db      *repository.Database
 	updater *updater.Manager
 	mgr     *adguard.Manager
 	transp  *TransparentService
 	cfgSvc  *ConfigService
-	workDir string
-	webAddr string
-	logger  logx.Logger
+	// dnsRedir 可选：Linux 上注入 netcheck.Applier；非 Linux 为 nil 时模式 2 无 TProxy 会明确报错
+	dnsRedir dnsRedirectApplier
+	workDir  string
+	webAddr  string
+	logger   logx.Logger
+}
+
+// SetDNSRedirectApplier 注入仅 DNS 重定向能力（与全量 TProxy 表分离）。
+func (s *AdGuardService) SetDNSRedirectApplier(a dnsRedirectApplier) {
+	s.dnsRedir = a
 }
 
 // NewAdGuardService 构造编排服务。mgr / db 不可为 nil。
@@ -612,6 +626,13 @@ func (s *AdGuardService) applyWiringPlan(ctx context.Context, plan WiringPlan, c
 
 func (s *AdGuardService) rollbackWiringPlan(ctx context.Context, plan WiringPlan) error {
 	var errs []string
+
+	// 无 TProxy 的 DNS 专用表优先拆除，避免回滚中途仍劫持 53
+	if plan.DidDNSOnlyRedirect && s.dnsRedir != nil {
+		if err := s.dnsRedir.TeardownDNSRedirect(ctx); err != nil {
+			errs = append(errs, "拆除 aurora_agh_dns: "+err.Error())
+		}
+	}
 
 	// 逆序：先 upstream / listen，最后清 override（由调用方做）
 	if plan.DidPatchUpstream {
