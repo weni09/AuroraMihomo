@@ -122,10 +122,11 @@ onBeforeUnmount(clearPageChrome)
 </script>
 
 <template>
-  <!-- 内嵌的是另一个完整应用，iframe 没有内在高度，必须自己撑出一屏；
-       外壳已不再锁一屏高度，这里改用 h-dvh 自持，而不是依赖父级传下来的
-       h-full。iframe 内部有自己的滚动，不影响本页用浏览器滚动条。 -->
-  <main class="h-dvh flex flex-col min-h-0">
+  <!-- 内嵌完整应用，iframe 必须有明确高度。
+       高度由 App 在 Zashboard 路由上锁 h-dvh 后 flex 分给本页（顶栏已占一部分），
+       这里用 flex-1/h-full 吃剩余空间，不再自己 h-dvh——否则会叠在 App 顶栏之下
+       把底栏顶出可视区（手机浏览器里表现为上下都被挡）。 -->
+  <main class="flex-1 h-full min-h-0 flex flex-col">
     <!-- 仅桌面（lg+）保留完整页面 header：标题 + 对接信息 + 重新加载/新标签页。
          小屏改由 App 顶栏承载标题/副标题/「新标签页」，这里 hidden 避免叠两层。 -->
     <div

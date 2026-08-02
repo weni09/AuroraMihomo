@@ -30,6 +30,9 @@ const route = useRoute()
 const router = useRouter()
 const mihomoStore = useMihomoStore()
 const isLogin = computed(() => route.name === 'login')
+// 内嵌 iframe 必须吃满「顶栏以下」的剩余高度；若子页再用 h-dvh 会叠在 App 顶栏之下
+// 把整屏顶出可视区，面板底栏被浏览器工具条挡住。
+const isZashboard = computed(() => route.name === 'zashboard')
 // 页面可选地往移动端顶栏挂副标题/动作（如 Zashboard 的对接信息与「新标签页」）
 const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
 
@@ -308,8 +311,12 @@ const logout = () => {
     </aside>
 
     <!-- min-w-0 防止宽内容（如日志长行、表格）把 flex 容器撑破导致横向溢出。
-         不再设 overflow-hidden：那会让上面侧边栏的 sticky 失效。 -->
-    <div class="flex-1 min-w-0 flex flex-col">
+         普通页不设 overflow-hidden：那会让侧边栏 sticky 失效。
+         仅 Zashboard 锁一屏：子页 iframe 要 flex 分走「顶栏以下」剩余高度。 -->
+    <div
+      class="flex-1 min-w-0 flex flex-col"
+      :class="isZashboard ? 'h-dvh max-h-dvh overflow-hidden' : ''"
+    >
       <!-- 移动端顶栏：承载汉堡按钮、当前页标题与主题切换。
            lg 以上隐藏，桌面布局保持原样。sticky 使其在页面滚动时常驻可见——
            取代此前靠整体锁一屏来「保证顶栏总是看得见」的做法。 -->
@@ -353,11 +360,18 @@ const logout = () => {
           >
             {{ pageAction.label }}
           </Button>
-          <ThemeToggle />
+          <!-- Zashboard 顶栏已有「新标签页」等，主题三钮过宽会挤掉标题；
+               改主题可去其它页或侧栏，此处隐藏换垂直/横向空间给面板。 -->
+          <ThemeToggle v-if="!isZashboard" />
         </div>
       </header>
 
-      <RouterView />
+      <div
+        class="flex-1 min-h-0 flex flex-col"
+        :class="isZashboard ? 'overflow-hidden' : ''"
+      >
+        <RouterView />
+      </div>
     </div>
   </div>
 </template>
