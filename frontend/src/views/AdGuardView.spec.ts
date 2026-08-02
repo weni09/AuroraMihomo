@@ -38,17 +38,23 @@ describe('AdGuardView', () => {
     clearPageChrome()
   })
 
-  it('未安装时展示下载安装 CTA，不挂 iframe', async () => {
-    mockedApi.get.mockResolvedValue({ data: statusPayload({ installed: false }) })
+  it('组件已启用且未安装时展示安装引导 CTA，含路径与 GPL，不挂 iframe', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: statusPayload({ componentEnabled: true, installed: false }),
+    })
 
     const wrapper = mount(AdGuardView)
     await flushPromises()
 
     expect(wrapper.find('[data-testid="adguard-install-cta"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('下载并安装 AdGuard Home')
+    expect(wrapper.text()).toContain('下载并安装')
     expect(wrapper.text()).toContain('GPL-3.0')
+    expect(wrapper.text()).toContain('data/bin')
+    expect(wrapper.text()).toContain('data/adguardhome')
+    expect(wrapper.find('[data-testid="adguard-install-btn"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="adguard-iframe"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="adguard-start-prompt"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adguard-page-header"]').exists()).toBe(false)
 
     wrapper.unmount()
   })
@@ -70,7 +76,7 @@ describe('AdGuardView', () => {
     wrapper.unmount()
   })
 
-  it('已安装未运行时提示启动，仍不挂 iframe', async () => {
+  it('已安装未运行时提示启动与设置，仍不挂 iframe', async () => {
     mockedApi.get.mockResolvedValue({
       data: statusPayload({ installed: true, running: false, version: 'v0.107.50' }),
     })
@@ -79,14 +85,19 @@ describe('AdGuardView', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="adguard-start-prompt"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('启动 AdGuard Home')
+    expect(wrapper.text()).toContain('启动')
+    expect(wrapper.find('[data-testid="adguard-settings-btn-start"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="adguard-iframe"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="adguard-install-cta"]').exists()).toBe(false)
+    // 主路径是设置，而非旧 wiring 大入口
+    const startCard = wrapper.get('[data-testid="adguard-start-prompt"]')
+    expect(startCard.text()).toContain('设置')
+    expect(startCard.text()).toContain('高级 · 旧版 DNS 对接')
 
     wrapper.unmount()
   })
 
-  it('运行中挂 iframe，并写入 page chrome', async () => {
+  it('运行中挂 iframe，并写入 page chrome，工具栏含设置', async () => {
     mockedApi.get.mockResolvedValue({
       data: statusPayload({
         installed: true,
@@ -112,6 +123,7 @@ describe('AdGuardView', () => {
 
     const header = wrapper.get('[data-testid="adguard-page-header"]')
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
+    expect(wrapper.find('[data-testid="adguard-settings-btn"]').exists()).toBe(true)
 
     wrapper.unmount()
     expect(subtitle.value).toBe('')
