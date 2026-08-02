@@ -182,3 +182,116 @@ func TestSetComponentEnabled_DisableWithWiring(t *testing.T) {
 		t.Fatalf("snapshot 应清空, got %q", raw)
 	}
 }
+
+func TestUninstall_RequiresConfirm(t *testing.T) {
+	svc, _ := newTestAdGuardService(t)
+	err := svc.Uninstall(context.Background(), false)
+	if err == nil {
+		t.Fatal("confirm=false 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "请确认卸载") {
+		t.Fatalf("错误文案不符: %v", err)
+	}
+	// 未确认时不应删 workDir
+	if _, statErr := os.Stat(svc.workDir); statErr != nil {
+		t.Fatalf("confirm=false 不应删除 workDir: %v", statErr)
+	}
+}
+
+func TestUninstall_RemovesBinaryWorkDirAndSettings(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+
+	bin := svc.updater.AdGuardBinaryPath()
+	bak := bin + ".bak"
+	if err := os.WriteFile(bak, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.workDir, "extra.log"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 填充已知 settings + 一个自定义 adguard.* 键
+	for k, v := range map[string]string{
+		settingAdGuardComponent: "true",
+		settingAdGuardBoot:      "true",
+		settingAdGuardVersion:   "v0.107.0",
+		settingAdGuardDNSPort:   "1053",
+		settingAdGuardWebAddr:   "127.0.0.1:3000",
+		settingAdGuardWiring:    adguardWiringOff,
+		"adguard.sync_password":  "true",
+		"adguard.custom_flag":    "keep-me-gone",
+	} {
+		if err := db.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := svc.Uninstall(ctx, true); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+
+	if _, err := os.Stat(bin); !os.IsNotExist(err) {
+		t.Fatalf("二进制应已删除, err=%v", err)
+	}
+	if _, err := os.Stat(bak); !os.IsNotExist(err) {
+		t.Fatalf(".bak 应已删除, err=%v", err)
+	}
+	if _, err := os.Stat(svc.workDir); !os.IsNotExist(err) {
+		t.Fatalf("workDir 应已删除, err=%v", err)
+	}
+	if svc.ComponentEnabled() {
+		t.Fatal("卸载后 component_enabled 应为 false")
+	}
+	if v, err := db.GetSetting(settingAdGuardComponent); err != nil || v != "false" {
+		t.Fatalf("component_enabled 应为 false, got %q err=%v", v, err)
+	}
+	for _, k := range []string{
+		settingAdGuardBoot, settingAdGuardVersion, settingAdGuardDNSPort,
+		settingAdGuardWebAddr, "adguard.sync_password", "adguard.custom_flag",
+	} {
+		if v, _ := db.GetSetting(k); strings.TrimSpace(v) != "" {
+			t.Fatalf("设置 %s 应已清空, got %q", k, v)
+		}
+	}
+	if svc.BinaryPresent() {
+		t.Fatal("卸载后 BinaryPresent 应为 false")
+	}
+}
+
+func TestUninstall_WithWiringRollsBackFirst(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+
+	plan := WiringPlan{
+		Actions:    []string{"test"},
+		AGHDNSPort: 1053,
+		WiringOn:   true,
+	}
+	snap, err := marshalWiringSnapshot(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(settingAdGuardSnapshot, snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(settingAdGuardWiring, adguardWiringOn); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(settingAdGuardComponent, "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Uninstall(ctx, true); err != nil {
+		t.Fatalf("Uninstall with wiring: %v", err)
+	}
+	if v, _ := db.GetSetting(settingAdGuardWiring); strings.TrimSpace(v) == adguardWiringOn {
+		t.Fatal("卸载应先解除 wiring")
+	}
+	if _, err := os.Stat(svc.workDir); !os.IsNotExist(err) {
+		t.Fatalf("workDir 应已删除, err=%v", err)
+	}
+	if svc.ComponentEnabled() {
+		t.Fatal("卸载后 component 应为 false")
+	}
+}

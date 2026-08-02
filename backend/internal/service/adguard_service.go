@@ -364,6 +364,113 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 	return s.db.SetSetting(settingAdGuardComponent, "false")
 }
 
+// Uninstall 彻底卸载 AdGuard Home。必须 confirm=true。
+//
+// 顺序：
+//  1. wiring=on 时 WiringRollback（失败则中止，不删文件）
+//  2. Stop
+//  3. 删除二进制与 .bak
+//  4. RemoveAll workDir
+//  5. 清除 adguard.* settings
+//  6. 强制 component_enabled=false
+func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
+	if !confirm {
+		return errors.New("请确认卸载（confirm=true）")
+	}
+
+	// 1. 优先保证 DNS 回滚成功再删文件
+	if s.getSetting(settingAdGuardWiring, adguardWiringOff) == adguardWiringOn {
+		if err := s.WiringRollback(ctx); err != nil {
+			return fmt.Errorf("卸载前解除 DNS 对接失败: %w", err)
+		}
+	}
+
+	// 2. Stop（未运行时 Manager.Stop 返回 nil）
+	if err := s.Stop(ctx); err != nil {
+		return fmt.Errorf("卸载时停止 AdGuard 失败: %w", err)
+	}
+
+	// 3. 删除二进制与备份
+	if s.updater != nil {
+		bin := s.updater.AdGuardBinaryPath()
+		if bin != "" {
+			if err := os.Remove(bin); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("删除 AdGuard 二进制失败: %w", err)
+			}
+			if err := os.Remove(bin + ".bak"); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("删除 AdGuard 备份失败: %w", err)
+			}
+		}
+	}
+
+	// 4. 删除工作目录（配置、日志等）
+	if s.workDir != "" {
+		if err := os.RemoveAll(s.workDir); err != nil {
+			return fmt.Errorf("删除 AdGuard 工作目录失败: %w", err)
+		}
+	}
+
+	// 5. 清除 adguard.* settings
+	if err := s.clearAdGuardSettings(); err != nil {
+		return err
+	}
+
+	// 6. 强制关闭组件
+	if s.db == nil {
+		return errors.New("数据库未初始化")
+	}
+	return s.db.SetSetting(settingAdGuardComponent, "false")
+}
+
+// knownAdGuardSettingKeys 是卸载时要清除的已知键（含尚未落地的产品化键）。
+// component_enabled 由 Uninstall 最后单独写 false，不在此清空为空串。
+var knownAdGuardSettingKeys = []string{
+	settingAdGuardBoot,
+	settingAdGuardWebAddr,
+	settingAdGuardDNSPort,
+	settingAdGuardVersion,
+	settingAdGuardWiring,
+	settingAdGuardSnapshot,
+	"adguard.sync_password",
+	"adguard.username",
+	"adguard.dns_mode",
+	"adguard.auto_update",
+	"adguard.cdn_providers",
+}
+
+func (s *AdGuardService) clearAdGuardSettings() error {
+	if s.db == nil {
+		return errors.New("数据库未初始化")
+	}
+	seen := make(map[string]struct{}, len(knownAdGuardSettingKeys)+8)
+	keys := make([]string, 0, len(knownAdGuardSettingKeys)+8)
+	add := func(k string) {
+		k = strings.TrimSpace(k)
+		if k == "" || k == settingAdGuardComponent {
+			return
+		}
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	for _, k := range knownAdGuardSettingKeys {
+		add(k)
+	}
+	if m, err := s.db.GetSettings("adguard."); err == nil {
+		for k := range m {
+			add(k)
+		}
+	}
+	for _, k := range keys {
+		if err := s.db.SetSetting(k, ""); err != nil {
+			return fmt.Errorf("清除设置 %s 失败: %w", k, err)
+		}
+	}
+	return nil
+}
+
 // ShouldStartAtBoot 需组件开启、enabled_at_boot 且二进制存在。
 func (s *AdGuardService) ShouldStartAtBoot() bool {
 	if !s.ComponentEnabled() {
