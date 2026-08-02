@@ -332,7 +332,7 @@ func main() {
 	watchReloadSignal(rootCtx, reloadMgr)
 
 	fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
-	// 同源 /adguard 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI。
+	// 同源 /adguard-ui 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI。
 	// 上游优先读 work-dir 里的 web 端口，且只允许回环地址，避免误反代到外网。
 	aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, func() string {
 		if svcCtx.AdGuardManager == nil {
@@ -350,7 +350,7 @@ func main() {
 		}
 		return addr
 	})
-	// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard 反代，其余走静态文件（含 SPA 回退）
+	// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard-ui 反代，其余走静态（含 SPA /adguard）文件（含 SPA 回退）
 	server.StartWithOpts(func(svr *http.Server) {
 		svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy)
 		applyServerTimeouts(svr, c)
@@ -464,7 +464,7 @@ func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
 }
 
 // staticFallback 包装在 go-zero handler 之外：
-// API / WebSocket 请求交给 go-zero 路由，/adguard 走同源反代，其余由静态文件处理。
+// API 走 go-zero，/adguard-ui 走 AGH 反代，/adguard 走 SPA，其余由静态文件处理。
 // 这样可支持任意深度的静态资源路径与 SPA 客户端路由回退。
 func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -483,9 +483,10 @@ func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handle
 		}
 
 		// AdGuard Home Web UI 同源反代（iframe 嵌入管理端）
-		if strings.HasPrefix(path, "/adguard") {
-			if path == "/adguard" {
-				http.Redirect(w, r, "/adguard/", http.StatusMovedPermanently)
+		// 仅 /adguard-ui 反代 AGH；/adguard 留给 Vue 路由（刷新仍留在 Aurora 壳内）
+		if strings.HasPrefix(path, "/adguard-ui") {
+			if path == "/adguard-ui" {
+				http.Redirect(w, r, "/adguard-ui/", http.StatusMovedPermanently)
 				return
 			}
 			if adguardHandler != nil {

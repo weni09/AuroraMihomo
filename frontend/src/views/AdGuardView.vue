@@ -24,7 +24,7 @@ const wiringOpts = reactive<WiringOptions>({
   weakenTunHijack: false,
 })
 
-const entryPath = computed(() => store.status.entryPath || '/adguard/')
+const entryPath = computed(() => store.status.entryPath || '/adguard-ui/')
 const busy = computed(() => store.isLoading || store.actionLoading)
 const componentEnabled = computed(() => store.status.componentEnabled)
 const installed = computed(() => store.status.installed)
@@ -216,7 +216,7 @@ onBeforeUnmount(clearPageChrome)
         <CardContent class="flex flex-col gap-4">
           <p class="text-sm text-fg-muted">
             AdGuard Home 为 <strong class="text-fg">GPL-3.0</strong> 独立程序。安装后 Web 仅监听回环，
-            经本面板同源路径 <code class="text-xs">/adguard/</code> 访问。
+            经本面板同源路径 <code class="text-xs">/adguard-ui/</code> 访问。
           </p>
           <div class="rounded border border-line bg-elevated p-3 text-xs text-fg-muted space-y-1">
             <p>落盘路径（相对数据目录）：</p>

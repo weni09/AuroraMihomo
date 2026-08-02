@@ -64,7 +64,7 @@ const emptyStatus = (): AdGuardStatus => ({
   dnsMode: 0,
   wiring: 'off',
   wiringLabel: '未对接',
-  entryPath: '/adguard/',
+  entryPath: '/adguard-ui/',
   cdnProviders: [],
   autoUpdate: false,
   username: 'admin',
@@ -97,7 +97,7 @@ export const useAdGuardStore = defineStore('adguard', {
           ...res.data,
           // 显式归一：缺省/非法值按关闭处理，避免侧栏误显示
           componentEnabled: res.data?.componentEnabled === true,
-          entryPath: res.data?.entryPath || '/adguard/',
+          entryPath: res.data?.entryPath || '/adguard-ui/',
           dnsMode: Number.isFinite(dnsMode) && dnsMode >= 0 && dnsMode <= 2 ? dnsMode : 0,
           cdnProviders: Array.isArray(res.data?.cdnProviders) ? res.data.cdnProviders : [],
           autoUpdate: res.data?.autoUpdate === true,

@@ -30,14 +30,14 @@ func signTestJWT(t *testing.T, secret string, expOffset time.Duration) string {
 }
 
 func TestAuthorizeRequest_NoCredentials(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	if AuthorizeRequest(r, testJWTSecret) {
 		t.Fatal("expected unauthorized without cookie/bearer")
 	}
 }
 
 func TestAuthorizeRequest_InvalidCookie(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "not-a-jwt"})
 	if AuthorizeRequest(r, testJWTSecret) {
 		t.Fatal("expected unauthorized for invalid cookie")
@@ -47,13 +47,13 @@ func TestAuthorizeRequest_InvalidCookie(t *testing.T) {
 func TestAuthorizeRequest_ValidCookieAndBearer(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
-	rCookie := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	rCookie := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	rCookie.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	if !AuthorizeRequest(rCookie, testJWTSecret) {
 		t.Fatal("valid cookie should authorize")
 	}
 
-	rBearer := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	rBearer := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	rBearer.Header.Set("Authorization", "Bearer "+token)
 	if !AuthorizeRequest(rBearer, testJWTSecret) {
 		t.Fatal("valid bearer should authorize")
@@ -65,7 +65,7 @@ func TestProxyHandler_NoCookie_401(t *testing.T) {
 	h := NewProxyHandler(mgr, testJWTSecret, nil)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/adguard/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -75,7 +75,7 @@ func TestProxyHandler_InvalidCookie_401(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
 	h := NewProxyHandler(mgr, testJWTSecret, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/adguard/control/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage.token.value"})
 
 	rec := httptest.NewRecorder()
@@ -107,7 +107,7 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host })
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
-	req := httptest.NewRequest(http.MethodGet, "http://panel.example/adguard/control/status?x=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://panel.example/adguard-ui/control/status?x=1", nil)
 	req.Host = "panel.example"
 	req.RemoteAddr = "203.0.113.10:54321"
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -144,7 +144,7 @@ func TestProxyHandler_NotRunning_503(t *testing.T) {
 	h := NewProxyHandler(mgr, testJWTSecret, nil)
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
-	req := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 
 	rec := httptest.NewRecorder()
@@ -156,10 +156,10 @@ func TestProxyHandler_NotRunning_503(t *testing.T) {
 
 func TestStripAdguardPrefix(t *testing.T) {
 	cases := map[string]string{
-		"/adguard":         "/",
-		"/adguard/":        "/",
-		"/adguard/foo":     "/foo",
-		"/adguard/foo/bar": "/foo/bar",
+		"/adguard-ui":         "/",
+		"/adguard-ui/":        "/",
+		"/adguard-ui/foo":     "/foo",
+		"/adguard-ui/foo/bar": "/foo/bar",
 		"/other":           "/other",
 		"":                 "/",
 	}
@@ -172,9 +172,9 @@ func TestStripAdguardPrefix(t *testing.T) {
 
 func TestRewriteLocationUnderAdguard(t *testing.T) {
 	cases := map[string]string{
-		"/":           "/adguard/",
-		"/login.html": "/adguard/login.html",
-		"/adguard/x":  "/adguard/x",
+		"/":           "/adguard-ui/",
+		"/login.html": "/adguard-ui/login.html",
+		"/adguard-ui/x":  "/adguard-ui/x",
 		"relative":    "relative",
 		"https://x/y": "https://x/y",
 	}
@@ -210,7 +210,7 @@ func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	h := NewProxyHandler(mgr, testJWTSecret, func() string { return "8.8.8.8:53" })
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
-	req := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 
 	rec := httptest.NewRecorder()

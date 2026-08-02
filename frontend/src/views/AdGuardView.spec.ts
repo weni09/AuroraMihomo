@@ -27,7 +27,7 @@ function statusPayload(partial: Record<string, unknown> = {}) {
     dnsPort: 1053,
     wiring: 'off',
     wiringLabel: '未对接',
-    entryPath: '/adguard/',
+    entryPath: '/adguard-ui/',
     ...partial,
   }
 }
@@ -108,7 +108,7 @@ describe('AdGuardView', () => {
         version: 'v0.107.50',
         wiringLabel: '已对接',
         wiring: 'on',
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       }),
     })
 
@@ -116,7 +116,7 @@ describe('AdGuardView', () => {
     await flushPromises()
 
     const iframe = wrapper.get('[data-testid="adguard-iframe"]')
-    expect(iframe.attributes('src')).toBe('/adguard/')
+    expect(iframe.attributes('src')).toBe('/adguard-ui/')
     expect(iframe.attributes('title')).toBe('AdGuard Home')
 
     const { subtitle, action } = usePageChrome()

@@ -27,7 +27,7 @@ describe('useAdGuardStore component controls', () => {
         componentEnabled: true,
         installed: false,
         running: false,
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -39,7 +39,7 @@ describe('useAdGuardStore component controls', () => {
   it('setComponent 调用 PUT /adguard/component', async () => {
     mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
     mockedApi.get.mockResolvedValue({
-      data: { componentEnabled: true, installed: false, running: false, entryPath: '/adguard/' },
+      data: { componentEnabled: true, installed: false, running: false, entryPath: '/adguard-ui/' },
     })
     const store = useAdGuardStore()
     await store.setComponent(true)
@@ -50,7 +50,7 @@ describe('useAdGuardStore component controls', () => {
   it('uninstall 调用 POST /adguard/uninstall', async () => {
     mockedApi.post.mockResolvedValue({ data: { success: true, message: '已卸载' } })
     mockedApi.get.mockResolvedValue({
-      data: { componentEnabled: false, installed: false, running: false, entryPath: '/adguard/' },
+      data: { componentEnabled: false, installed: false, running: false, entryPath: '/adguard-ui/' },
     })
     const store = useAdGuardStore()
     await store.uninstall(true)
@@ -65,7 +65,7 @@ describe('useAdGuardStore component controls', () => {
         running: false,
         dnsMode: 2,
         cdnProviders: ['https://cdn.example/'],
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -82,7 +82,7 @@ describe('useAdGuardStore component controls', () => {
         installed: true,
         running: false,
         webAddr: '127.0.0.1:4123',
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -99,7 +99,7 @@ describe('useAdGuardStore component controls', () => {
         installed: true,
         running: true,
         dnsMode: 1,
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -116,7 +116,7 @@ describe('useAdGuardStore component controls', () => {
         installed: true,
         running: false,
         cdnProviders: ['https://a.example/'],
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -131,7 +131,7 @@ describe('useAdGuardStore component controls', () => {
         componentEnabled: true,
         username: 'admin',
         passwordSync: true,
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
@@ -154,7 +154,7 @@ describe('useAdGuardStore component controls', () => {
         componentEnabled: true,
         username: 'agh',
         passwordSync: true,
-        entryPath: '/adguard/',
+        entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()

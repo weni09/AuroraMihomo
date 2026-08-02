@@ -114,7 +114,7 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 		ComponentEnabled: s.ComponentEnabled(),
 		DnsMode:          int(s.DNSMode()),
 		LastError:        st.LastError,
-		EntryPath:        "/adguard/",
+		EntryPath:        "/adguard-ui/",
 		Wiring:           adguardWiringOff,
 		WiringLabel:      "未对接",
 	}

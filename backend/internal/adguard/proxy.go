@@ -15,7 +15,7 @@ import (
 )
 
 const sessionCookieName = "aurora_session"
-const adguardURLPrefix = "/adguard"
+const adguardURLPrefix = "/adguard-ui"
 
 // AuthorizeRequest 校验 AdGuard 反代请求：优先 aurora_session cookie，
 // 其次 Authorization Bearer。JWT 校验方式与 aurora.verifyWSToken 一致（HMAC）。
@@ -44,7 +44,7 @@ func AuthorizeRequest(r *http.Request, secret string) bool {
 	return err == nil && token.Valid
 }
 
-// NewProxyHandler 返回挂在 /adguard 下的同源反代。
+// NewProxyHandler 返回挂在 /adguard-ui 下的同源反代（与 SPA 路由 /adguard 分离，避免刷新整页变成裸 AGH）。
 func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !AuthorizeRequest(r, jwtSecret) {
@@ -133,10 +133,10 @@ func isLoopbackHost(host string) bool {
 
 func stripAdguardPrefix(path string) string {
 	switch {
-	case path == "/adguard":
+	case path == "/adguard-ui":
 		return "/"
-	case strings.HasPrefix(path, "/adguard/"):
-		p := strings.TrimPrefix(path, "/adguard")
+	case strings.HasPrefix(path, "/adguard-ui/"):
+		p := strings.TrimPrefix(path, "/adguard-ui")
 		if p == "" {
 			return "/"
 		}
