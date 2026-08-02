@@ -4,6 +4,7 @@ import AppLogo from './components/AppLogo.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useMihomoStore } from './stores/mihomo'
+import { useAdGuardStore } from './stores/adguard'
 import {
   Menu,
   X,
@@ -15,6 +16,7 @@ import {
   ScrollText,
   Settings,
   Gauge,
+  Shield,
   BookOpen,
   LogOut,
   ChevronsLeft,
@@ -25,10 +27,12 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSidebar } from './composables/useSidebar'
 import { usePageChrome } from './composables/usePageChrome'
+import api from './api'
 
 const route = useRoute()
 const router = useRouter()
 const mihomoStore = useMihomoStore()
+const adguardStore = useAdGuardStore()
 const isLogin = computed(() => route.name === 'login')
 // 内嵌 iframe 必须吃满「顶栏以下」的剩余高度；若子页再用 h-dvh 会叠在 App 顶栏之下
 // 把整屏顶出可视区，面板底栏被浏览器工具条挡住。
@@ -37,10 +41,11 @@ const isZashboard = computed(() => route.name === 'zashboard')
 const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
 
 onMounted(() => {
-  // /system/status 需 JWT；登录页无 token 时请求只会 401 刷控制台噪音。
+  // /system/status、/adguard/status 需 JWT；登录页无 token 时请求只会 401 刷控制台。
   // 等离开登录页（或已带 token 进主界面）再拉状态。
   if (!isLogin.value && localStorage.getItem('aurora_token')) {
     void mihomoStore.fetchStatus()
+    void adguardStore.fetchStatus()
   }
 })
 
@@ -48,8 +53,19 @@ onMounted(() => {
 watch(isLogin, (login, wasLogin) => {
   if (wasLogin && !login && localStorage.getItem('aurora_token')) {
     void mihomoStore.fetchStatus()
+    void adguardStore.fetchStatus()
   }
 })
+
+// 登录成功后路由离开 login 页时再补拉 AdGuard（与 isLogin watch 互补，避免时序漏拉）
+watch(
+  () => route.name,
+  (name, prev) => {
+    if (prev === 'login' && name !== 'login' && localStorage.getItem('aurora_token')) {
+      void adguardStore.fetchStatus()
+    }
+  },
+)
 
 // 侧边栏折叠。只作用于 lg 以上的桌面布局：窄屏侧边栏是覆盖式抽屉，
 // 收起后一点宽度都不占，再做一个图标条没有意义。
@@ -58,7 +74,8 @@ const { collapsed, toggle: toggleCollapsed } = useSidebar()
 // 导航项集中成数组：原先九段 RouterLink 手写重复，active-class 出现了
 // 三种不一致的写法（部分项漏了 text-white font-medium），逐项维护易漂移。
 // prefix 用于 Sub-Store 这类含子路由的项，需要按前缀而非精确路径判断高亮。
-const navItems = [
+// AdGuard 仅在组件开启时出现（默认关）。
+const allNavItems = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
   { to: '/mihomo', label: '内核管理', icon: Cpu },
   { to: '/substore', label: 'Sub-Store 管理', prefix: '/substore', icon: Layers3 },
@@ -67,8 +84,13 @@ const navItems = [
   { to: '/logs', label: '运行日志', icon: ScrollText },
   { to: '/settings', label: '系统设置', icon: Settings },
   { to: '/zashboard', label: 'Zashboard', icon: Gauge },
+  { to: '/adguard', label: 'AdGuard', icon: Shield, requireAdGuard: true },
   { to: '/docs', label: '使用文档', icon: BookOpen },
-]
+] as const
+
+const navItems = computed(() =>
+  allNavItems.filter((item) => !('requireAdGuard' in item && item.requireAdGuard) || adguardStore.status.componentEnabled),
+)
 
 const isActive = (item: { to: string; prefix?: string }) =>
   item.prefix ? route.path.startsWith(item.prefix) : route.path === item.to
@@ -116,8 +138,14 @@ onBeforeUnmount(() => {
   document.body.classList.remove('overflow-hidden')
 })
 
-const logout = () => {
+const logout = async () => {
   if (!confirm('确定退出登录吗？')) return
+  // aurora_session 是 HttpOnly，只能由服务端清 cookie；失败也继续清本地 token
+  try {
+    await api.post('/auth/logout')
+  } catch {
+    // ignore
+  }
   localStorage.removeItem('aurora_token')
   router.push({ name: 'login' })
 }

@@ -12,9 +12,10 @@ import (
 func TestSecurityHeadersAppliedOnBothPaths(t *testing.T) {
 	apiHit, staticHit := false, false
 	h := staticFallback(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { apiHit = true }),
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { staticHit = true }),
-	)
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { apiHit = true }),
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { staticHit = true }),
+			nil,
+		)
 
 	// 三个基础头对所有路径都必须存在
 	// X-Frame-Options 用 SAMEORIGIN 而非 DENY：管理端需要内嵌同源的 /ui/ 面板
@@ -81,9 +82,10 @@ func TestSecurityHeadersAppliedOnBothPaths(t *testing.T) {
 // 该头应留给反向代理层决定。
 func TestNoHSTSByDefault(t *testing.T) {
 	h := staticFallback(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
-	)
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+			nil,
+		)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -97,11 +99,12 @@ func TestNoHSTSByDefault(t *testing.T) {
 func TestHealthzRoutedToAPI(t *testing.T) {
 	routedToAPI := false
 	h := staticFallback(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { routedToAPI = true }),
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			t.Error("/healthz 不应交给静态服务")
-		}),
-	)
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { routedToAPI = true }),
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("/healthz 不应交给静态服务")
+			}),
+			nil,
+		)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if !routedToAPI {
 		t.Error("/healthz 应被路由到 API")

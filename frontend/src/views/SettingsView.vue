@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { useNotifyStore } from '../stores/notify'
+import { useAdGuardStore } from '../stores/adguard'
 import { useTransparentStore, type TransparentMode } from '../stores/transparent'
 import { useCopy } from '../composables/useCopy'
 import api from '../api'
@@ -16,6 +17,7 @@ import { Badge } from '@/components/ui/badge'
 
 const store = useSettingsStore()
 const notify = useNotifyStore()
+const adguard = useAdGuardStore()
 const tp = useTransparentStore()
 const { copy: copyText } = useCopy()
 const form = reactive({
@@ -38,6 +40,8 @@ onMounted(async () => {
   // 自定义规则与内置规则展示数据独立拉取（见 store 的 fetchRules 注释）
   await tp.fetchRules()
   if (tp.rules) customRulesDraft.value = tp.rules.customRules
+  // 组件开关状态来自 /adguard/status（关组件时 status 仍可读）
+  await adguard.fetchStatus()
 })
 
 /** 自定义规则草稿：textarea 直接双向绑定（与 CDN 列表同款），保存时才提交 */
@@ -179,6 +183,30 @@ const confirmUpdateMihomo = () => {
 }
 const confirmUpdateZashboard = () => {
   if (confirm('将下载并替换面板静态资源，确定继续？')) store.updateZashboard()
+}
+const confirmUpdateAdGuard = () => {
+  if (confirm('将下载并替换 AdGuard Home 二进制（若正在运行会先停后启），确定继续？')) {
+    store.updateAdGuard()
+  }
+}
+
+/** 组件开关：与透明代理同样用 model-value + 事件，避免 Switch 在请求失败后 UI 与后端脱节 */
+async function onToggleAdGuardComponent(next: boolean | 'indeterminate') {
+  const enabled = next === true
+  if (enabled === adguard.status.componentEnabled) return
+  await adguard.setComponent(enabled)
+}
+
+/** 彻底卸载：强确认后 POST confirm=true */
+async function onUninstallAdGuard() {
+  if (
+    !confirm(
+      '彻底卸载将删除 AdGuard Home 二进制、工作目录与相关配置，且不可恢复。\n\n确定继续？',
+    )
+  ) {
+    return
+  }
+  await adguard.uninstall(true)
 }
 
 // ---- 透明代理 ----
@@ -583,6 +611,38 @@ const navOpen = ref(false)
             <Button variant="outline" :disabled="store.updating" @click="confirmUpdateZashboard()">
               {{ store.updatingZashboard ? '处理中…' : '更新 Zashboard' }}
             </Button>
+            <Button variant="outline" :disabled="store.updating" @click="confirmUpdateAdGuard()">
+              {{ store.updatingAdGuard ? '处理中…' : '更新 AdGuard Home' }}
+            </Button>
+          </div>
+
+          <!-- 可选组件：AdGuard Home 默认关闭；关组件仅停进程+藏菜单，文件保留 -->
+          <div
+            class="mt-4 p-4 rounded-lg border border-line bg-elevated/50 space-y-3"
+            data-testid="adguard-component-card"
+          >
+            <h3 class="text-base font-semibold text-fg">AdGuard Home</h3>
+            <label class="flex items-center gap-3">
+              <Switch
+                :model-value="adguard.status.componentEnabled"
+                :disabled="adguard.actionLoading || adguard.isLoading"
+                @update:model-value="onToggleAdGuardComponent"
+              />
+              <span class="text-sm font-medium">启用组件</span>
+            </label>
+            <p class="text-xs text-fg-subtle">
+              关闭将停止进程并隐藏侧栏菜单，文件保留
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <Button
+                variant="destructive"
+                size="sm"
+                :disabled="adguard.actionLoading"
+                @click="onUninstallAdGuard"
+              >
+                {{ adguard.actionLoading ? '处理中…' : '彻底卸载' }}
+              </Button>
+            </div>
           </div>
         </section>
 

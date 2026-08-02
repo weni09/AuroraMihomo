@@ -1504,6 +1504,79 @@ func (s *ConfigService) KernelDNSPort() (int, error) {
 	return port, nil
 }
 
+// BaseDNSListen 读取 base 配置中的 dns.listen 原文（如 "0.0.0.0:1053"）。
+// 未配置时返回空串。wiring 冲突解决与回滚都依赖这份「用户本地意图」，
+// 不能用最终 config.yaml——那可能混入了订阅层的 listen。
+func (s *ConfigService) BaseDNSListen() (string, error) {
+	raw, err := s.loadBaseYAML()
+	if err != nil {
+		return "", err
+	}
+	return readBaseDNSListen(raw), nil
+}
+
+// SetBaseDNSListen 通过 base 定点改写 dns.listen 并落库。
+//
+// AdGuard wiring 开启时若 AGH 与 mihomo 抢同一端口，需要把 mihomo 的
+// listen 挪到 127.0.0.1:<空闲>；必须走 base 路径（而不是只改最终
+// config.yaml），否则下次合并会把改动冲掉。wiring=off 时同样可用，
+// 本方法本身不检查 wiring 状态——是否该改由编排层决定。
+func (s *ConfigService) SetBaseDNSListen(listen string) error {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return fmt.Errorf("dns.listen 不能为空")
+	}
+	raw, err := s.loadBaseYAML()
+	if err != nil {
+		return err
+	}
+	patched, err := patchBaseYAML(raw, "dns.listen", listen)
+	if err != nil {
+		return fmt.Errorf("改写 dns.listen 失败: %w", err)
+	}
+	return s.UpdateBaseConfig(patched)
+}
+
+// readBaseDNSListen 从 base YAML 文本取出 dns.listen 标量值。
+func readBaseDNSListen(src string) string {
+	if strings.TrimSpace(src) == "" {
+		return ""
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		return ""
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return ""
+	}
+	_, dnsNode := findMapEntry(doc.Content[0], "dns")
+	if dnsNode == nil || dnsNode.Kind != yaml.MappingNode {
+		return ""
+	}
+	_, listenNode := findMapEntry(dnsNode, "listen")
+	if listenNode == nil {
+		return ""
+	}
+	return strings.TrimSpace(listenNode.Value)
+}
+
+// parseListenPort 从 "host:port" / ":port" 中取出端口；失败返回 0。
+func parseListenPort(addr string) int {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return 0
+	}
+	portStr := addr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		portStr = strings.TrimSpace(addr[i+1:])
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
 func (s *ConfigService) KernelAPITarget() (DashboardTarget, error) {
 	raw, err := os.ReadFile(s.configPath())
 	if err != nil {

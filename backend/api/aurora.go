@@ -16,6 +16,7 @@ import (
 	"auroramihomo/backend/api/internal/config"
 	"auroramihomo/backend/api/internal/handler"
 	"auroramihomo/backend/api/internal/svc"
+	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/service"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -145,6 +146,7 @@ func main() {
 	reloadMgr.Register("remote-pull-schedule", svcCtx.SettingsService.ApplyRemotePullSchedule)
 	reloadMgr.Register("applog-cleanup-schedule", svcCtx.SettingsService.ApplyLogCleanupSchedule)
 	registerSystemRoutes(server, svcCtx, reloadMgr)
+	registerPublicAuthRoutes(server, svcCtx)
 
 	// 此处曾有一个「每分钟轮询、按各订阅自身 interval 逐条刷新」的任务，已移除。
 	// 它与上面的远程拉取 Cron 构成两套并行调度：用户在配置中心关掉定时拉取后，
@@ -310,6 +312,11 @@ func main() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), kernelStopTimeout)
 		defer stopCancel()
 		_ = svcCtx.MihomoManager.Stop(stopCtx)
+		// AdGuard 是可选常驻子进程，关停主进程时必须一并停掉，
+		// 否则会留下占着 DNS/Web 端口的孤儿进程。
+		if svcCtx.AdGuardManager != nil {
+			_ = svcCtx.AdGuardManager.Stop(stopCtx)
+		}
 
 		// 释放 SQLite 句柄，避免文件被占用。
 		// 此时 HTTP 服务已停、定时任务已收尾，不会再有人使用连接。
@@ -325,9 +332,27 @@ func main() {
 	watchReloadSignal(rootCtx, reloadMgr)
 
 	fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
-	// 最外层包装静态资源分流：API/WS 走 go-zero，其余走静态文件（含 SPA 回退）
+	// 同源 /adguard 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI。
+	// 上游优先读 work-dir 里的 web 端口，且只允许回环地址，避免误反代到外网。
+	aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, func() string {
+		if svcCtx.AdGuardManager == nil {
+			return "127.0.0.1:3000"
+		}
+		st := svcCtx.AdGuardManager.Status()
+		if st.WorkDir != "" {
+			if port, err := adguard.ReadWebPort(st.WorkDir); err == nil && port > 0 {
+				return fmt.Sprintf("127.0.0.1:%d", port)
+			}
+		}
+		addr := strings.TrimSpace(st.WebAddr)
+		if addr == "" {
+			return "127.0.0.1:3000"
+		}
+		return addr
+	})
+	// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard 反代，其余走静态文件（含 SPA 回退）
 	server.StartWithOpts(func(svr *http.Server) {
-		svr.Handler = staticFallback(svr.Handler, staticMux)
+		svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy)
 		applyServerTimeouts(svr, c)
 		// 交给关停 goroutine，让它能自己调 Shutdown 真正停掉监听
 		srvReady <- svr
@@ -439,9 +464,9 @@ func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
 }
 
 // staticFallback 包装在 go-zero handler 之外：
-// API / WebSocket 请求交给 go-zero 路由，其余全部由静态文件服务处理。
+// API / WebSocket 请求交给 go-zero 路由，/adguard 走同源反代，其余由静态文件处理。
 // 这样可支持任意深度的静态资源路径与 SPA 客户端路由回退。
-func staticFallback(apiHandler http.Handler, static http.Handler) http.Handler {
+func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		// /healthz 必须走 go-zero，否则会被静态服务返回 index.html，
@@ -456,6 +481,21 @@ func staticFallback(apiHandler http.Handler, static http.Handler) http.Handler {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
+
+		// AdGuard Home Web UI 同源反代（iframe 嵌入管理端）
+		if strings.HasPrefix(path, "/adguard") {
+			if path == "/adguard" {
+				http.Redirect(w, r, "/adguard/", http.StatusMovedPermanently)
+				return
+			}
+			if adguardHandler != nil {
+				adguardHandler.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "adguard proxy unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		static.ServeHTTP(w, r)
 	})
 }

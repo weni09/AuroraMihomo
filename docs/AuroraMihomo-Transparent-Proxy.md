@@ -215,6 +215,9 @@ fail2ban、k8s 的规则，整体清空会一并抹掉。
    **重定向目标是 mihomo 的 DNS 端口（`dns.listen`），不是 tproxy-port**：
    TPROXY 保留原始目的端口，送到 tproxy-port 时 mihomo 看到的是"目的端口 53
    的普通流量"，不会按 DNS 协议应答——劫持发生了但送错了门（真机实测的根因）。
+   若启用了可选组件 **AdGuard Home** 的「DNS 对接」，面板可把上述 DNS 重定向
+   目标改为 AGH 端口（并可回滚）；详见用户文档「AdGuard Home」与设计
+   `docs/superpowers/specs/2026-08-02-adguardhome-embed-design.md`。
 4. **放行局域网网段**
 5. **其余 TCP/UDP 交给 TPROXY**
 
@@ -477,6 +480,11 @@ bind-address: "*"
 
 路由器 DHCP 只下发 DNS 指向面板主机，配合 `enhanced-mode: fake-ip` 与
 `dns-hijack`。访问 fake-ip 段的流量会被路由到面板主机。
+
+若还需要查询日志 / 广告过滤，可安装可选的 **AdGuard Home**，并把设备 DNS
+（或 TProxy DNS 劫持）指到 AGH；面板提供一键「DNS 对接」与回滚。注意 TUN
+内部 `dns-hijack` 可能不经 AGH，私人 DNS / DoH 也会绕过——见用户文档
+「AdGuard Home」。
 
 **注意**：Android 的"私人 DNS"（Private DNS）会绕过 DHCP 下发的 DNS，
 必须在系统设置里关闭，否则分流不生效。

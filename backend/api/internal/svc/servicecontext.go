@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"auroramihomo/backend/api/internal/config"
+	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/applog"
 	"auroramihomo/backend/internal/auth"
 	"auroramihomo/backend/internal/engine"
@@ -42,8 +43,13 @@ type ServiceContext struct {
 	// TransparentService 管理透明代理开关。开启会改动内核配置（TUN 模式）
 	// 或宿主的防火墙与策略路由（TProxy 模式），因此带强制确认与自动回滚。
 	TransparentService *service.TransparentService
-	LoginLimiter       *auth.LoginLimiter
-	Hub                *realtime.Hub
+	// AdGuardService 编排可选的 AdGuard Home 子进程与 DNS 一键对接。
+	// 未安装时主路径不依赖它；API logic 层通过本字段调用。
+	AdGuardService *service.AdGuardService
+	// AdGuardManager 供 /adguard/ 反代读取运行状态与 web 上游（后续任务挂载）。
+	AdGuardManager *adguard.Manager
+	LoginLimiter   *auth.LoginLimiter
+	Hub            *realtime.Hub
 	// AppLog 缓存本项目自身的运行日志（logx 的输出），供界面查看。
 	// 与 MihomoManager 的内核日志分开：一个是"本程序说的"、
 	// 一个是"内核说的"，混成一条流反而更难排查。
@@ -279,6 +285,36 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		return port
 	})
 
+	// AdGuard Home：可选子进程。默认不下载；仅用户安装后才会 Installed。
+	// work-dir 与二进制分开放：yaml/统计在 data/adguardhome，可执行文件在 data/bin。
+	aghWorkDir := filepath.Join(dataDir, "adguardhome")
+	aghWebAddr := "127.0.0.1:3000"
+	if v, err := db.GetSetting("adguard.web_addr"); err == nil && strings.TrimSpace(v) != "" {
+		aghWebAddr = strings.TrimSpace(v)
+	}
+	aghMgr := adguard.NewManager(adguard.Config{
+		BinaryPath: upd.AdGuardBinaryPath(),
+		WorkDir:    aghWorkDir,
+		WebAddr:    aghWebAddr,
+	})
+	aghSvc := service.NewAdGuardService(db, upd, aghMgr, transparentSvc, cfgSvc, aghWorkDir, aghWebAddr)
+	// 若上次退出时 wiring=on，恢复 TProxy DNS 覆盖到 AGH 端口，
+	// 否则 Resync/重启后规则会悄悄指回 mihomo，对接名存实亡。
+	aghSvc.RestoreWiringOverrideOnBoot()
+	// enabled_at_boot 且二进制在盘：后台拉起，不阻塞面板启动。
+	// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
+	if aghSvc.ShouldStartAtBoot() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := aghSvc.Start(ctx); err != nil {
+				logx.Errorf("AdGuard Home 开机自启失败: %v", err)
+			} else {
+				logx.Info("AdGuard Home 已按 enabled_at_boot 启动")
+			}
+		}()
+	}
+
 	// 老版本 SubFile 无 share_token，升级后需补齐，否则这些文件的直链失效
 	if err := db.BackfillFileShareTokens(func() string { return mustRandomToken(16) }); err != nil {
 		logx.Errorf("补齐文件直链 token 失败: %v", err)
@@ -304,6 +340,8 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		SettingsService:    settingsService,
 		RenderService:      renderSvc,
 		TransparentService: transparentSvc,
+		AdGuardService:     aghSvc,
+		AdGuardManager:     aghMgr,
 		// 5 分钟内失败 5 次锁定 15 分钟，抵御口令爆破
 		LoginLimiter: auth.NewLoginLimiter(5, 5*time.Minute, 15*time.Minute),
 		Hub:          hub,
