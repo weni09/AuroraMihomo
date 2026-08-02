@@ -3,6 +3,34 @@
 
 package types
 
+type AdGuardStatusResp struct {
+	Installed   bool   `json:"installed"`
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid"`
+	Version     string `json:"version"`
+	WorkDir     string `json:"workDir"`
+	WebAddr     string `json:"webAddr"`
+	DNSPort     int    `json:"dnsPort"`
+	Wiring      string `json:"wiring"`
+	WiringLabel string `json:"wiringLabel"`
+	LastError   string `json:"lastError,optional"`
+	EntryPath   string `json:"entryPath"`
+}
+
+type AdGuardWiringApplyReq struct {
+	RedirectTProxy  bool `json:"redirectTProxy,optional"`
+	ResolveConflict bool `json:"resolveConflict,optional"`
+	PatchUpstream   bool `json:"patchUpstream,optional"`
+	WeakenTUNHijack bool `json:"weakenTunHijack,optional"`
+}
+
+type AdGuardWiringResp struct {
+	Wiring     string   `json:"wiring"`
+	Actions    []string `json:"actions"`
+	Warnings   []string `json:"warnings,optional"`
+	AGHDNSPort int      `json:"aghDnsPort"`
+}
+
 type ChangePasswordReq struct {
 	OldPassword string `json:"oldPassword"`
 	NewPassword string `json:"newPassword"`
@@ -261,10 +289,8 @@ type Status struct {
 	Version    string `json:"version"`
 	AppVersion string `json:"appVersion"`
 	Pid        int    `json:"pid"`
-	// ServerTime 宿主当前时间（RFC3339，含时区偏移）
 	ServerTime string `json:"serverTime,optional"`
-	// Timezone IANA 时区名（如 Asia/Shanghai）
-	Timezone string `json:"timezone,optional"`
+	Timezone   string `json:"timezone,optional"`
 }
 
 type SubFile struct {

@@ -18,6 +18,46 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 		[]rest.Route{
 			{
 				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/install",
+				Handler: protected.AdGuardInstallHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/restart",
+				Handler: protected.AdGuardRestartHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/start",
+				Handler: protected.AdGuardStartHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/adguard/status",
+				Handler: protected.AdGuardStatusHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/stop",
+				Handler: protected.AdGuardStopHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/adguard/wiring",
+				Handler: protected.AdGuardWiringHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/wiring/apply",
+				Handler: protected.AdGuardWiringApplyHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/wiring/rollback",
+				Handler: protected.AdGuardWiringRollbackHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
 				Path:    "/api/v1/auth/password",
 				Handler: protected.ChangePasswordHandler(serverCtx),
 			},
@@ -285,6 +325,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodGet,
 				Path:    "/api/v1/transparent/status",
 				Handler: protected.GetTransparentStatusHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/update/adguard",
+				Handler: protected.UpdateAdGuardHandler(serverCtx),
 			},
 			{
 				Method:  http.MethodGet,

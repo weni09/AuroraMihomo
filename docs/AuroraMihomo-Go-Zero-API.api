@@ -9,15 +9,15 @@ info (
 // 本文件与 backend/api/internal/{types,handler} 下的生成物保持一致。
 // 改接口时两侧需同步：规格是唯一的对外契约描述，落后于代码会误导调用方。
 type Status {
-		Status     string `json:"status"`
-		Version    string `json:"version"`
-		AppVersion string `json:"appVersion"`
-		Pid        int    `json:"pid"`
-		// ServerTime 宿主当前时间（RFC3339，含时区偏移），供控制台时钟与调度对齐
-		ServerTime string `json:"serverTime,optional"`
-		// Timezone IANA 时区名（如 Asia/Shanghai）；读不到时可能是 Local / UTC
-		Timezone string `json:"timezone,optional"`
-	}
+	Status     string `json:"status"`
+	Version    string `json:"version"`
+	AppVersion string `json:"appVersion"`
+	Pid        int    `json:"pid"`
+	// ServerTime 宿主当前时间（RFC3339，含时区偏移），供控制台时钟与调度对齐
+	ServerTime string `json:"serverTime,optional"`
+	// Timezone IANA 时区名（如 Asia/Shanghai）；读不到时可能是 Local / UTC
+	Timezone string `json:"timezone,optional"`
+}
 
 type Result {
 	Success bool   `json:"success"`
@@ -639,6 +639,38 @@ type DashboardEntryResp {
 	Message   string `json:"message"`
 }
 
+// ---------- AdGuard Home（可选嵌入） ----------
+// AdGuardStatusResp 面板状态视图；EntryPath 为同源反代前缀（默认 /adguard/）。
+type AdGuardStatusResp {
+	Installed   bool   `json:"installed"`
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid"`
+	Version     string `json:"version"`
+	WorkDir     string `json:"workDir"`
+	WebAddr     string `json:"webAddr"`
+	DNSPort     int    `json:"dnsPort"`
+	Wiring      string `json:"wiring"`
+	WiringLabel string `json:"wiringLabel"`
+	LastError   string `json:"lastError,optional"`
+	EntryPath   string `json:"entryPath"`
+}
+
+// AdGuardWiringResp 一键对接预检结果（不落库）。
+type AdGuardWiringResp {
+	Wiring     string   `json:"wiring"`
+	Actions    []string `json:"actions"`
+	Warnings   []string `json:"warnings,optional"`
+	AGHDNSPort int      `json:"aghDnsPort"`
+}
+
+// AdGuardWiringApplyReq 一键对接向导可勾选项。
+type AdGuardWiringApplyReq {
+	RedirectTProxy  bool `json:"redirectTProxy,optional"`
+	ResolveConflict bool `json:"resolveConflict,optional"`
+	PatchUpstream   bool `json:"patchUpstream,optional"`
+	WeakenTUNHijack bool `json:"weakenTunHijack,optional"`
+}
+
 type LoginReq {
 	Password string `json:"password"`
 }
@@ -696,6 +728,31 @@ service aurora-api {
 
 	@handler getMihomoLogs
 	get /api/v1/mihomo/logs (GetMihomoLogsReq) returns ([]LogLine)
+
+	// AdGuard Home：可选嵌入的 DNS 过滤子进程
+	@handler adGuardStatus
+	get /api/v1/adguard/status returns (AdGuardStatusResp)
+
+	@handler adGuardInstall
+	post /api/v1/adguard/install returns (Result)
+
+	@handler adGuardStart
+	post /api/v1/adguard/start returns (Result)
+
+	@handler adGuardStop
+	post /api/v1/adguard/stop returns (Result)
+
+	@handler adGuardRestart
+	post /api/v1/adguard/restart returns (Result)
+
+	@handler adGuardWiring
+	get /api/v1/adguard/wiring returns (AdGuardWiringResp)
+
+	@handler adGuardWiringApply
+	post /api/v1/adguard/wiring/apply (AdGuardWiringApplyReq) returns (Result)
+
+	@handler adGuardWiringRollback
+	post /api/v1/adguard/wiring/rollback returns (Result)
 
 	@handler listSubscriptions
 	get /api/v1/subscriptions returns ([]Subscription)
@@ -857,6 +914,9 @@ service aurora-api {
 
 	@handler updateZashboard
 	post /api/v1/update/zashboard returns (Result)
+
+	@handler updateAdGuard
+	post /api/v1/update/adguard returns (Result)
 
 	@handler listTasks
 	get /api/v1/tasks returns ([]TaskItem)
