@@ -363,7 +363,7 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 
 ### 组件状态
 
-显示 mihomo、Zashboard、AdGuard Home 的安装状态与版本，按钮：检查更新（只读版本不下载）、更新 Mihomo、更新 Zashboard、更新 AdGuard Home（后三者有确认）。AdGuard 的安装/更新也可在侧栏「AdGuard Home」页或设置弹窗中完成；**侧栏仅在已启用 AdGuard 组件时出现**（见[AdGuard Home](#adguard-home)）。
+显示 mihomo、Zashboard 的安装状态与版本，按钮：检查更新（只读版本不下载）、更新 Mihomo、更新 Zashboard（后两者有确认）。下方另有 **AdGuard Home 组件开关**（启用/关闭、彻底卸载），不在此页做 AdGuard 二进制更新——安装与更新在侧栏「AdGuard Home」页的安装引导与**设置弹窗**中完成；**侧栏仅在已启用 AdGuard 组件时出现**（见[AdGuard Home](#adguard-home)）。
 
 内核版本由 `mihomo -v` 探测。面板是纯静态资源，本地无法反查版本，只记录经本平台更新的那一次——手工放入或旧版本装的面板会显示「版本未知」。
 
@@ -654,7 +654,7 @@ nslookup www.google.com
 |---|---|
 | 许可 | AdGuard Home 为 **GPL-3.0** 独立程序 |
 | 默认 | **组件关闭**（`component_enabled` 默认 false）；侧栏不出现「AdGuard Home」 |
-| 二进制 | 不随安装包捆绑；启用组件后在侧栏页按安装引导下载，或「系统设置 → 组件状态 → 更新 AdGuard Home」 |
+| 二进制 | 不随安装包捆绑；启用组件后在侧栏页按安装引导下载；检查/更新在 AdGuard 页**设置弹窗**中管理 |
 | 落盘 | 可执行文件在数据目录 `bin/`，工作目录 `adguardhome/`（自管 yaml、统计、列表） |
 | 进程 | 由面板拉起/停止；面板退出时一并停止，不注册 systemd / Windows 服务 |
 | 出网 | 下载与更新 **遵循**「系统设置 → 下载与更新出网」，不另开开关 |

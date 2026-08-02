@@ -184,11 +184,6 @@ const confirmUpdateMihomo = () => {
 const confirmUpdateZashboard = () => {
   if (confirm('将下载并替换面板静态资源，确定继续？')) store.updateZashboard()
 }
-const confirmUpdateAdGuard = () => {
-  if (confirm('将下载并替换 AdGuard Home 二进制（若正在运行会先停后启），确定继续？')) {
-    store.updateAdGuard()
-  }
-}
 
 /** 组件开关：与透明代理同样用 model-value + 事件，避免 Switch 在请求失败后 UI 与后端脱节 */
 async function onToggleAdGuardComponent(next: boolean | 'indeterminate') {
@@ -611,12 +606,10 @@ const navOpen = ref(false)
             <Button variant="outline" :disabled="store.updating" @click="confirmUpdateZashboard()">
               {{ store.updatingZashboard ? '处理中…' : '更新 Zashboard' }}
             </Button>
-            <Button variant="outline" :disabled="store.updating" @click="confirmUpdateAdGuard()">
-              {{ store.updatingAdGuard ? '处理中…' : '更新 AdGuard Home' }}
-            </Button>
           </div>
 
-          <!-- 可选组件：AdGuard Home 默认关闭；关组件仅停进程+藏菜单，文件保留 -->
+          <!-- 可选组件：AdGuard Home 默认关闭；关组件仅停进程+藏菜单，文件保留。
+               安装/更新不在本页：启用后在侧栏 AdGuard 页安装引导与设置弹窗中管理。 -->
           <div
             class="mt-4 p-4 rounded-lg border border-line bg-elevated/50 space-y-3"
             data-testid="adguard-component-card"
