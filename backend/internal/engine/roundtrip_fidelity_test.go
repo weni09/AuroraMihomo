@@ -241,7 +241,8 @@ func TestDefaultTrueFieldsNotEmittedAsFalse(t *testing.T) {
 func TestExplicitFalseIsPreserved(t *testing.T) {
 	e := NewMergeEngine()
 	cfg, err := e.LoadAndParse([]byte(
-		"tun:\n  enable: true\n  auto-route: false\nsniffer:\n  enable: true\n  parse-pure-ip: false\n"))
+		"ipv6: false\ngeodata-mode: false\n" +
+			"tun:\n  enable: true\n  auto-route: false\nsniffer:\n  enable: true\n  parse-pure-ip: false\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +252,12 @@ func TestExplicitFalseIsPreserved(t *testing.T) {
 	}
 	got := string(out)
 
+	if !strings.Contains(got, "ipv6: false") {
+		t.Errorf("顶层 ipv6: false 必须保留（mihomo 默认 true，丢掉等于关不掉），实际产物:\n%s", got)
+	}
+	if !strings.Contains(got, "geodata-mode: false") {
+		t.Errorf("geodata-mode: false 必须保留，实际产物:\n%s", got)
+	}
 	if !strings.Contains(got, "auto-route: false") {
 		t.Errorf("用户显式设为 false 时必须保留，实际产物:\n%s", got)
 	}
