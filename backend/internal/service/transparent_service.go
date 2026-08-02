@@ -195,6 +195,12 @@ type TransparentService struct {
 	// 指向旧端口。为 nil 或返回 0 时回落到 netcheck 的默认端口。
 	dnsPortFn func() int
 
+	// dnsPortOverride 在 AdGuard DNS wiring 开启时优先于 dnsPortFn。
+	// 对接后 TProxy 要把 :53 重定向到 AGH，而不是 mihomo 的 dns.listen；
+	// 用 override 而不是改掉 dnsPortFn，是为了回滚时一清就恢复原路径，
+	// 不必重建 mihomo 端口注入。为 nil 或返回 ≤0 时走 dnsPortFn。
+	dnsPortOverride func() int
+
 	// 新增：用于读写 base.yaml
 	getBaseFn    func() (string, error)
 	updateBaseFn func(content string) error
@@ -281,12 +287,25 @@ func (s *TransparentService) SetDNSPortFn(fn func() int) {
 	s.dnsPortFn = fn
 }
 
+// SetDNSPortOverride 注入 DNS 重定向目标的覆盖来源（AdGuard wiring 用）。
+//
+// 传 nil 可清除覆盖，恢复到 dnsPortFn / 默认端口路径。
+func (s *TransparentService) SetDNSPortOverride(fn func() int) {
+	s.dnsPortOverride = fn
+}
+
 // dnsPort 返回下发规则时使用的 DNS 重定向目标端口。
 //
-// 取不到时回落到 netcheck 的默认值：规则里必须有一个确定的端口，
+// 优先 dnsPortOverride（wiring 对接 AGH），其次 dnsPortFn（mihomo listen），
+// 都取不到时回落到 netcheck 的默认值：规则里必须有一个确定的端口，
 // 写 0 会让整份规则被 nft 拒绝、一条都不生效（连带整个 TProxy 失效），
 // 那比"重定向到默认端口可能不对"糟得多。
 func (s *TransparentService) dnsPort() int {
+	if s.dnsPortOverride != nil {
+		if p := s.dnsPortOverride(); p > 0 {
+			return p
+		}
+	}
 	if s.dnsPortFn != nil {
 		if p := s.dnsPortFn(); p > 0 {
 			return p
