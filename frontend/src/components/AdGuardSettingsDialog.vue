@@ -132,7 +132,7 @@ async function onDnsModeChange(v: unknown) {
   <ModalDialog
     :open="open"
     title="AdGuard 设置"
-    max-width="max-w-lg"
+    max-width="max-w-3xl"
     data-testid="adguard-settings-dialog"
     @close="close"
   >
