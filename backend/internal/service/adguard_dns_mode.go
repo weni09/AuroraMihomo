@@ -222,7 +222,7 @@ func (s *AdGuardService) enterDNSMode2(ctx context.Context) error {
 		return s.db.SetSetting(settingAdGuardDNSMode, "2")
 	}
 
-	// 重定向目标必须是 AGH 高位端口（≠53）。未配置则用 1053。
+	// 重定向目标必须是 AGH 高位端口（≠53）。未配置则用 5353（避免与 mihomo 默认 1053 冲突）。
 	port := s.resolveRedirectDNSPort()
 	if err := s.ensureAGHListenPort(ctx, port); err != nil {
 		return err
@@ -259,7 +259,7 @@ func (s *AdGuardService) resolveRedirectDNSPort() int {
 	if p, err := adguard.ReadDNSPort(s.workDir); err == nil && p > 0 && p != 53 {
 		return p
 	}
-	return 1053
+	return 5353
 }
 
 // ensureAGHListenPort 把 AGH dns.port 写成指定高位端口，运行中则重启使监听生效。

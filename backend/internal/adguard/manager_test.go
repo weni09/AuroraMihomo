@@ -106,9 +106,9 @@ func TestStartStop_FakeBinary(t *testing.T) {
 		t.Fatalf("WorkDir 应存在: %v", err)
 	}
 
-	// 重复 Start 应报 already running
-	if err := mgr.Start(ctx); err == nil {
-		t.Fatal("已运行时 Start 应报错")
+	// 重复 Start 幂等成功
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatalf("已运行时 Start 应幂等成功: %v", err)
 	}
 
 	if err := mgr.Stop(ctx); err != nil {
