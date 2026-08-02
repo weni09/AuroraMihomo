@@ -654,6 +654,7 @@ type AdGuardStatusResp {
 	LastError        string `json:"lastError,optional"`
 	EntryPath        string `json:"entryPath"`
 	ComponentEnabled bool   `json:"componentEnabled"`
+	DnsMode          int    `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
 }
 
 // AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
@@ -664,6 +665,11 @@ type AdGuardComponentReq {
 // AdGuardUninstallReq 彻底卸载；Confirm 必须为 true。
 type AdGuardUninstallReq {
 	Confirm bool `json:"confirm"`
+}
+
+// AdGuardDNSModeReq 切换 DNS 服务模式 0/1/2。
+type AdGuardDNSModeReq {
+	Mode int `json:"mode"`
 }
 
 // AdGuardWiringResp 一键对接预检结果（不落库）。
@@ -761,6 +767,9 @@ service aurora-api {
 
 	@handler adGuardUninstall
 	post /api/v1/adguard/uninstall (AdGuardUninstallReq) returns (Result)
+
+	@handler adGuardSetDNSMode
+	put /api/v1/adguard/dns-mode (AdGuardDNSModeReq) returns (Result)
 
 	@handler adGuardWiring
 	get /api/v1/adguard/wiring returns (AdGuardWiringResp)

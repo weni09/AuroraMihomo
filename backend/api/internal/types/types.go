@@ -7,6 +7,10 @@ type AdGuardComponentReq struct {
 	Enabled bool `json:"enabled"`
 }
 
+type AdGuardDNSModeReq struct {
+	Mode int `json:"mode"`
+}
+
 type AdGuardStatusResp struct {
 	Installed        bool   `json:"installed"`
 	Running          bool   `json:"running"`
@@ -20,6 +24,7 @@ type AdGuardStatusResp struct {
 	LastError        string `json:"lastError,optional"`
 	EntryPath        string `json:"entryPath"`
 	ComponentEnabled bool   `json:"componentEnabled"`
+	DnsMode          int    `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
 }
 
 type AdGuardUninstallReq struct {

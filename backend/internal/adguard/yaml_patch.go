@@ -143,6 +143,24 @@ func ReadDNSPort(workDir string) (int, error) {
 	return defaultDNSPort, nil
 }
 
+// SetDNSPort 写入 dns.port；文件不存在时创建含 dns 段的最小配置。
+func SetDNSPort(workDir string, port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("无效的 DNS 端口: %d", port)
+	}
+	m, _, err := loadConfigMap(workDir)
+	if err != nil {
+		return err
+	}
+	dns := asMap(m["dns"])
+	if dns == nil {
+		dns = map[string]any{}
+	}
+	dns["port"] = port
+	m["dns"] = dns
+	return saveConfigMap(workDir, m)
+}
+
 // ReadWebPort 读取 Web 监听端口。
 // 优先解析现代 AGH 的 http.address（如 "127.0.0.1:3000"），
 // 其次 http.port；均缺失时默认 3000。

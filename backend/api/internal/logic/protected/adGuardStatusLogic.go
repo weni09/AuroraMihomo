@@ -50,5 +50,6 @@ func (l *AdGuardStatusLogic) AdGuardStatus() (resp *types.AdGuardStatusResp, err
 		LastError:        dto.LastError,
 		EntryPath:        entryPath,
 		ComponentEnabled: dto.ComponentEnabled,
+		DnsMode:          dto.DnsMode,
 	}, nil
 }

@@ -27,6 +27,8 @@ type AdGuardStatusDTO struct {
 	DNSPort   int    `json:"dnsPort"`
 	// ComponentEnabled 产品化组件总开关（默认 false）
 	ComponentEnabled bool `json:"componentEnabled"`
+	// DnsMode 0 未托管 / 1 绑定 53 / 2 重定向 53→AGH
+	DnsMode int `json:"dnsMode"`
 	// Wiring 为 "off" / "on"；展示层可把 on 渲染成「已对接」
 	Wiring      string `json:"wiring"`
 	WiringLabel string `json:"wiringLabel"` // "未对接" / "已对接"
@@ -88,6 +90,7 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 		WorkDir:          st.WorkDir,
 		WebAddr:          st.WebAddr,
 		ComponentEnabled: s.ComponentEnabled(),
+		DnsMode:          int(s.DNSMode()),
 		LastError:        st.LastError,
 		EntryPath:        "/adguard/",
 		Wiring:           adguardWiringOff,
@@ -339,7 +342,7 @@ func (s *AdGuardService) ComponentEnabled() bool {
 // SetComponentEnabled 开关组件。
 //
 // enabled=true：仅写 settings，不自动安装/启动。
-// enabled=false：若 wiring=on 先 WiringRollback（失败则不写 false）；
+// enabled=false：强制 DNS 模式 0（含 wiring 回滚，失败则不写 false）；
 // 再 Stop（失败则不写 false）；最后写 component_enabled=false。
 func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) error {
 	if enabled {
@@ -349,11 +352,9 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 		return s.db.SetSetting(settingAdGuardComponent, "true")
 	}
 
-	// 关闭前：若 DNS 已对接，先回滚劫持路径（ExitDNSMode 属 Task 6）
-	if s.getSetting(settingAdGuardWiring, adguardWiringOff) == adguardWiringOn {
-		if err := s.WiringRollback(ctx); err != nil {
-			return fmt.Errorf("关闭组件前解除 DNS 对接失败: %w", err)
-		}
+	// 关闭前：强制退出 DNS 模式（回滚劫持 + dns_mode=0）
+	if err := s.SetDNSMode(ctx, DNSModeNone); err != nil {
+		return fmt.Errorf("关闭组件前退出 DNS 模式失败: %w", err)
 	}
 	if err := s.Stop(ctx); err != nil {
 		return fmt.Errorf("关闭组件时停止 AdGuard 失败: %w", err)
@@ -433,7 +434,7 @@ var knownAdGuardSettingKeys = []string{
 	settingAdGuardSnapshot,
 	"adguard.sync_password",
 	"adguard.username",
-	"adguard.dns_mode",
+	settingAdGuardDNSMode,
 	"adguard.auto_update",
 	"adguard.cdn_providers",
 }

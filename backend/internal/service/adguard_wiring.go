@@ -15,6 +15,7 @@ const (
 	settingAdGuardWiring    = "adguard.dns_wiring"          // "off" | "on"
 	settingAdGuardSnapshot  = "adguard.dns_wiring_snapshot" // JSON of WiringPlan
 	settingAdGuardComponent = "adguard.component_enabled"   // "true" / "false"，默认 false
+	settingAdGuardDNSMode   = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
 )
 
 const (

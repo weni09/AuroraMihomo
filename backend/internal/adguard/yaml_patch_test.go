@@ -68,6 +68,45 @@ func TestReadDNSPort_MissingPortKey(t *testing.T) {
 	}
 }
 
+func TestSetDNSPort(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "bind_host: 127.0.0.1\ndns:\n  port: 1053\n  upstream_dns:\n    - 1.1.1.1\n")
+	if err := SetDNSPort(dir, 53); err != nil {
+		t.Fatalf("SetDNSPort: %v", err)
+	}
+	port, err := ReadDNSPort(dir)
+	if err != nil || port != 53 {
+		t.Fatalf("port=%d err=%v", port, err)
+	}
+	m := readAGHMap(t, dir)
+	dns := asMap(m["dns"])
+	if dns == nil {
+		t.Fatal("dns 段丢失")
+	}
+	ups := asStringList(dns["upstream_dns"])
+	if len(ups) != 1 || ups[0] != "1.1.1.1" {
+		t.Fatalf("SetDNSPort 不应破坏 upstream: %#v", ups)
+	}
+}
+
+func TestSetDNSPort_CreateYaml(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetDNSPort(dir, 5353); err != nil {
+		t.Fatalf("SetDNSPort create: %v", err)
+	}
+	port, err := ReadDNSPort(dir)
+	if err != nil || port != 5353 {
+		t.Fatalf("port=%d err=%v", port, err)
+	}
+}
+
+func TestSetDNSPort_Invalid(t *testing.T) {
+	dir := t.TempDir()
+	if err := SetDNSPort(dir, 0); err == nil {
+		t.Fatal("port=0 应失败")
+	}
+}
+
 func TestReadWebPort(t *testing.T) {
 	dir := t.TempDir()
 	writeAGHYaml(t, dir, "http:\n  port: 3000\n")

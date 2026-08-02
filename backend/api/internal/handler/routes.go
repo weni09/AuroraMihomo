@@ -22,6 +22,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: protected.AdGuardSetComponentHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/dns-mode",
+				Handler: protected.AdGuardSetDNSModeHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodPost,
 				Path:    "/api/v1/adguard/install",
 				Handler: protected.AdGuardInstallHandler(serverCtx),
