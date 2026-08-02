@@ -388,7 +388,7 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 
 **默认选 TUN。** 单机接管本机流量靠 mihomo 的 **auto-route**（改路由表）即可；进程退出时相关状态会回收。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
 
-> **坑（必读）**：`tun.auto-redirect`（自动防火墙重定向）与 auto-route 不是一回事。前者让 mihomo 自己写 nftables/iptables，主要服务**旁路由/网关**把局域网设备流量拐进 TUN。部分环境（尤其 Alpine virt、精简 nft 组合）开启后 mihomo 可能**静默关掉整个 TUN**：配置里仍是 `enable: true`，系统却没有 `Meta` 虚拟网卡。单机自用请保持 **auto-redirect 关闭**；详见下方「常见问题」。
+> **旁路由注意**：`tun.auto-redirect` 与 auto-route 不是一回事。auto-route 管本机路由；auto-redirect 用 REDIRECT 接管**转发流量**，zashboard 里局域网连接常显示为 **Redir**（只开 auto-route 时多为 **Tun**）。Alpine 上 auto-redirect 的 nft 后端可能报 `netlink ... file exists` 并拖垮整个 TUN——v0.3.1 起面板默认给 mihomo 注入 `DISABLE_NFTABLES=1` 走 iptables 后端。详见「常见问题」。
 
 **启用流程**
 
@@ -683,28 +683,31 @@ chmod +x <数据目录>/bin/mihomo
 
 **TUN 显示已开启，但系统没有 Meta 虚拟网卡 / 完全不生效？**（常见坑）
 
-多半是开了 **`tun.auto-redirect`（自动防火墙重定向）**。
+多半是 **`tun.auto-redirect` 启动失败**，连带整个 TUN 监听失败。
 
 | | auto-route | auto-redirect |
 |---|---|---|
-| 改什么 | 本机**路由表** | 本机**防火墙**（nftables/iptables） |
+| 改什么 | 本机**路由表** | 本机**防火墙**（REDIRECT / iptables 或 nft） |
 | 主要服务谁 | **本机**进程出网 | 经本机**转发**的流量（旁路由/网关下的局域网设备） |
-| 单机自用 | 需要开 | **一般保持关** |
+| zashboard 连接类型 | 多为 **Tun** | 局域网设备多为 **Redir**（这才是旁路由常见形态） |
+| 单机自用 | 需要开 | 可关 |
+| 旁路由/网关 | 需要开 | **建议开**（手机/电脑当网关指本机时） |
 
-部分 Linux 环境（已复现：Alpine virt 等）上，`auto-redirect: true` 会让 mihomo **静默停用整个 TUN**：
+**Alpine virt 上的特殊坑（已复现）**：
 
-- 配置 / 面板仍可能显示 `tun.enable: true`
-- 运行时 `tun.enable` 实为 `false`，`ip link` 看不到 `Meta`
-- 没有 900x 段策略路由；外网表现像「透明代理开了但没用」
-- 外部控制器 API 对 PATCH 仍可能返回成功，**不会给出显眼报错**
+- 错误日志：`Start TUN listening error: auto redirect: conn.Receive: netlink receive: file exists`
+- 配置里仍是 `tun.enable: true` / `auto-redirect: true`，运行时却是 `enable: false`、没有 `Meta`
+- 根因是 mihomo 默认走 **nftables** 后端，在 Alpine 的 iptables-nft 混合环境下 netlink 冲突
+- **本面板从 v0.3.1 起**在 Linux 启动 mihomo 时默认注入 `DISABLE_NFTABLES=1`，强制改走 **iptables** 后端，旁路由可同时保留 auto-route + auto-redirect
+- 成功时日志类似：`Tun adapter listening at: Meta(...), auto route: true, auto redir: true`
+- 成功时 `iptables-save -t nat` 可见 `mihomo-prerouting ... -p tcp -j REDIRECT`
 
-处理：
+若仍失败：
 
-1. 打开 **配置中心 → 虚拟网卡 (TUN)**，关闭 **「自动防火墙重定向 (Auto Redirect)」**
-2. 点 **保存并应用**（或系统设置里关开一次 TUN）
-3. 在宿主执行 `ip -br link`，应能看到 `Meta`；也可用内核 API `GET /configs` 确认 `tun.enable` 为 true
-
-仅在本机确实充当网关、且确认环境能正常建出 `Meta` 之后，再考虑打开 auto-redirect。macOS 会忽略该字段。
+1. 看 **内核管理 / mihomo 日志** 是否还有 `file exists` / `Start TUN listening error`
+2. 确认进程环境有 `DISABLE_NFTABLES=1`（`tr '\\0' '\\n' < /proc/$(pgrep -n mihomo)/environ | grep DISABLE`）
+3. 临时残留规则后冷启动：清掉旧的 `mihomo-*` nat 链、`aurora_tproxy` 表与 900x 策略路由，再重启内核
+4. 临时应急可临时关 auto-redirect，至少恢复本机 TUN；旁路由手机再改回 true
 
 **TUN 开了但局域网设备没走代理？**
 

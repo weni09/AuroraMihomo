@@ -95,9 +95,10 @@ tun:
   stack: mixed
   auto-route: true
   auto-detect-interface: true
-  # 默认关 auto-redirect：部分 Alpine/virt 上开启会导致 mihomo 静默关闭整个 TUN
-  #（无 Meta 网卡）。需要网关级防火墙劫持时再在配置中心显式改为 true。
-  auto-redirect: false
+  # 旁路由/网关建议 true：mihomo 用 REDIRECT 接管转发流量（连接类型 Redir）。
+  # Alpine 上 nft 后端可能 netlink "file exists"，进程启动会注入 DISABLE_NFTABLES=1
+  # 改走 iptables 后端；单机自用也可改 false（仅 auto-route 接管本机）。
+  auto-redirect: true
   # 私网与特殊地址不走 TUN 路由（旁路由/网关场景更稳）
   route-exclude-address:
     - 10.0.0.0/8

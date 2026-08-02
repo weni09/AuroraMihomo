@@ -199,3 +199,27 @@ func TestReloadConfigFallbackOnAPIError(t *testing.T) {
 		t.Fatal("API 报错后应回退重启，且因假二进制路径而报错")
 	}
 }
+
+func TestWithDefaultEnvAddsMissing(t *testing.T) {
+	got := withDefaultEnv([]string{"PATH=/bin", "HOME=/tmp"}, "DISABLE_NFTABLES", "1")
+	found := false
+	for _, e := range got {
+		if e == "DISABLE_NFTABLES=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应补上 DISABLE_NFTABLES=1，实际 %v", got)
+	}
+}
+
+func TestWithDefaultEnvRespectsExisting(t *testing.T) {
+	in := []string{"DISABLE_NFTABLES=0", "PATH=/bin"}
+	got := withDefaultEnv(in, "DISABLE_NFTABLES", "1")
+	if len(got) != len(in) {
+		t.Fatalf("已有键时不应追加，got=%v", got)
+	}
+	if got[0] != "DISABLE_NFTABLES=0" {
+		t.Fatalf("不得覆盖用户值，got=%v", got)
+	}
+}

@@ -512,14 +512,16 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	var patches map[string]interface{}
 	switch mode {
 	case string(netcheck.ModeTUN):
-		// auto-redirect 默认写 false 并落进 base：合并注入对已声明键只补不覆盖，
-		// 避免 Linux 上无条件注入 true 时，在部分 Alpine/virt 环境把整个 TUN
-		// 静默打挂（runtime enable=false、看不见 Meta 网卡）。
-		// 需要网关级劫持的用户可在配置中心改回 true。
+		// auto-redirect：让 mihomo 用 REDIRECT 接管经本机转发的局域网流量，
+		// 旁路由/网关场景下 zashboard 连接类型为 Redir（而非仅 auto-route 时的 Tun）。
+		// Alpine 上 auto-redirect 的 nft 后端会 netlink "file exists" 失败，
+		// 进程启动时由 mihomo manager 注入 DISABLE_NFTABLES=1 改走 iptables 后端。
+		// 同时强制 auto-route=true（mihomo 要求 auto-redirect 依赖它）。
 		patches = map[string]interface{}{
 			"tun.enable":        true,
 			"tun.stack":         tunStack,
-			"tun.auto-redirect": false,
+			"tun.auto-route":    true,
+			"tun.auto-redirect": true,
 			"tproxy-port":       nil,
 		}
 	case string(netcheck.ModeTProxy):

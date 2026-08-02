@@ -183,6 +183,15 @@ func (m *ProcessManager) startLocked(ctx context.Context) error {
 	// 请求 ctx 取消而被杀掉。
 	//nolint:noctx // 常驻进程不应绑定请求级 context
 	cmd := exec.Command(m.config.BinaryPath, "-d", m.config.ConfigDir)
+	// Alpine / iptables-nft 混合环境下，mihomo 的 tun.auto-redirect 走 nftables
+	// 后端会在 netlink 上报 "file exists"，随后整个 TUN 监听失败（enable 变 false、
+	// 无 Meta 网卡）。官方 DISABLE_NFTABLES=1 强制改走 iptables 后端后，
+	// auto-redirect 可正常建立；局域网设备在 zashboard 里也会回到 Redir 类型
+	// （与「仅 auto-route、流量进 Tun 设备」不同，后者对旁路由手机不友好）。
+	// 仅 Linux 注入；用户已显式设置同名变量时不覆盖。
+	if runtime.GOOS == "linux" {
+		cmd.Env = withDefaultEnv(os.Environ(), "DISABLE_NFTABLES", "1")
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -490,4 +499,16 @@ func putConfigsAPI(ctx context.Context, controller, secret, configPath string) e
 		return fmt.Errorf("external-controller returned %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 	return nil
+}
+
+// withDefaultEnv 在 env 上补默认键=值；若已有同名键（含空值）则原样返回，
+// 避免覆盖用户通过服务单元 / 容器环境显式设置的同名变量。
+func withDefaultEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return env
+		}
+	}
+	return append(append([]string{}, env...), prefix+value)
 }
