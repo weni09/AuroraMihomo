@@ -100,22 +100,31 @@ onMounted(load)
        外壳已不再锁一屏高度，这里改用 h-dvh 自持，而不是依赖父级传下来的
        h-full。iframe 内部有自己的滚动，不影响本页用浏览器滚动条。 -->
   <main class="h-dvh flex flex-col min-h-0">
-    <!-- 小屏与 App 顶栏（菜单+标题）叠两层会挤掉 iframe 高度；
-         ≥lg 再显示本页标题、对接信息与「重新加载 / 新标签页」。 -->
+    <!-- 小屏要保留「重新加载 / 新标签页」，但不能再占两行大标题区挤掉 iframe：
+         强制单行 + 更矮内边距；对接副标题仅桌面显示。 -->
     <div
       data-testid="zashboard-page-header"
-      class="hidden lg:flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b bg-surface shrink-0"
+      class="flex flex-nowrap items-center justify-between gap-2 px-3 py-1.5 sm:px-4 sm:py-2 lg:gap-3 lg:px-6 lg:py-3 border-b bg-surface shrink-0"
     >
-      <div>
-        <h1 class="text-xl font-bold">Zashboard</h1>
-        <p v-if="entryHost" class="text-xs text-fg-subtle">
+      <div class="min-w-0">
+        <h1 class="text-base sm:text-lg lg:text-xl font-bold truncate">Zashboard</h1>
+        <p v-if="entryHost" class="hidden lg:block text-xs text-fg-subtle">
           已对接内核 {{ entryHost }}:{{ entryPort }}
         </p>
       </div>
-      <div class="flex flex-wrap gap-2">
-        <Button size="sm" @click="load">重新加载</Button>
-        <Button variant="secondary" size="sm" :disabled="!frameSrc" @click="openExternally">
-          在新标签页打开
+      <div class="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
+        <Button size="sm" class="h-8 px-2.5 text-xs sm:text-sm sm:px-3" @click="load">
+          重新加载
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          class="h-8 px-2.5 text-xs sm:text-sm sm:px-3"
+          :disabled="!frameSrc"
+          @click="openExternally"
+        >
+          <span class="sm:hidden">新标签页</span>
+          <span class="hidden sm:inline">在新标签页打开</span>
         </Button>
       </div>
     </div>
