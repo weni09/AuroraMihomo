@@ -44,6 +44,9 @@ type Manager struct {
 	exited  chan struct{} // 进程 Wait 完成时关闭，供 Stop 等待
 	version string
 	lastErr string
+
+	// testForceRunning 仅供同包单测模拟 Running，不改变真实进程状态。
+	testForceRunning bool
 }
 
 func NewManager(cfg Config) *Manager {
@@ -219,7 +222,9 @@ func (m *Manager) Status() Status {
 			st.Installed = true
 		}
 	}
-	if m.isProcessAliveLocked() {
+	if m.testForceRunning {
+		st.Running = true
+	} else if m.isProcessAliveLocked() {
 		st.Running = true
 		st.PID = m.cmd.Process.Pid
 	}

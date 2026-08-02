@@ -16,6 +16,7 @@ import (
 	"auroramihomo/backend/api/internal/config"
 	"auroramihomo/backend/api/internal/handler"
 	"auroramihomo/backend/api/internal/svc"
+	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/service"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -324,14 +325,25 @@ func main() {
 	// 与关停 goroutine 分开：重载可以反复执行，不该与一次性的退出流程纠缠。
 	watchReloadSignal(rootCtx, reloadMgr)
 
-	fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
-	// 最外层包装静态资源分流：API/WS 走 go-zero，其余走静态文件（含 SPA 回退）
-	server.StartWithOpts(func(svr *http.Server) {
-		svr.Handler = staticFallback(svr.Handler, staticMux)
-		applyServerTimeouts(svr, c)
-		// 交给关停 goroutine，让它能自己调 Shutdown 真正停掉监听
-		srvReady <- svr
-	})
+		fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
+		// 同源 /adguard 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI
+		aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, func() string {
+			if svcCtx.AdGuardManager == nil {
+				return "127.0.0.1:3000"
+			}
+			addr := strings.TrimSpace(svcCtx.AdGuardManager.Status().WebAddr)
+			if addr == "" {
+				return "127.0.0.1:3000"
+			}
+			return addr
+		})
+		// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard 反代，其余走静态文件（含 SPA 回退）
+		server.StartWithOpts(func(svr *http.Server) {
+			svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy)
+			applyServerTimeouts(svr, c)
+			// 交给关停 goroutine，让它能自己调 Shutdown 真正停掉监听
+			srvReady <- svr
+		})
 
 	// StartWithOpts 返回意味着监听已结束（Shutdown 已被调用）。
 	// 等关停流程收尾后再退出，避免上面描述的中间态；设置上限以防某个
@@ -439,9 +451,9 @@ func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
 }
 
 // staticFallback 包装在 go-zero handler 之外：
-// API / WebSocket 请求交给 go-zero 路由，其余全部由静态文件服务处理。
+// API / WebSocket 请求交给 go-zero 路由，/adguard 走同源反代，其余由静态文件处理。
 // 这样可支持任意深度的静态资源路径与 SPA 客户端路由回退。
-func staticFallback(apiHandler http.Handler, static http.Handler) http.Handler {
+func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		// /healthz 必须走 go-zero，否则会被静态服务返回 index.html，
@@ -456,6 +468,21 @@ func staticFallback(apiHandler http.Handler, static http.Handler) http.Handler {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
+
+		// AdGuard Home Web UI 同源反代（iframe 嵌入管理端）
+		if strings.HasPrefix(path, "/adguard") {
+			if path == "/adguard" {
+				http.Redirect(w, r, "/adguard/", http.StatusMovedPermanently)
+				return
+			}
+			if adguardHandler != nil {
+				adguardHandler.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "adguard proxy unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
 		static.ServeHTTP(w, r)
 	})
 }
