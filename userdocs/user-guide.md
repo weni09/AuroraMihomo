@@ -386,7 +386,40 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 | 谁改防火墙 | mihomo 自己，退出时自动清理 | 本面板 |
 | 风险 | 较低 | 较高，配错可能导致主机失联 |
 
-**默认选 TUN。** 单机接管本机流量靠 mihomo 的 **auto-route**（改路由表）即可；进程退出时相关状态会回收。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
+**默认选 TUN（旁路由/网关）时的关键配置**
+
+旁路由（手机/电脑网关指本机）要让局域网设备正常上网，TUN 侧建议同时具备：
+
+```yaml
+tun:
+  enable: true
+  stack: mixed                 # TCP 内核栈 + UDP gvisor
+  auto-route: true             # 本机路由进 Meta
+  auto-detect-interface: true
+  auto-redirect: true          # 转发流量 REDIRECT → 连接类型多为 Redir
+  dns-hijack:
+    - any:53
+  route-exclude-address:       # 私网不进 TUN，避免环路
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 127.0.0.0/8
+    - 169.254.0.0/16
+    - 224.0.0.0/4
+    - 240.0.0.0/4
+    - 255.255.255.255/32
+```
+
+配套要点：
+
+| 项 | 说明 |
+|---|---|
+| `DISABLE_NFTABLES=1` | Alpine / iptables-nft 上 auto-redirect 的 nft 后端会 `netlink file exists`；**v0.3.1+** 面板启动 mihomo 时默认注入，强制 iptables 后端 |
+| DNS | 旁路由可用纯数字 `nameserver`/`fallback`；DoH 不是前提 |
+| 成功标志 | 日志 `auto route: true, auto redir: true`；`iptables-save -t nat` 有 `mihomo-prerouting ... REDIRECT`；zashboard 局域网连接多为 **Redir** |
+| 与 TProxy 互斥 | 切换模式时必须拆掉另一套规则。若「一切换就没网」，多半是 auto-redirect 与 aurora_tproxy 叠在一起 |
+
+**默认选 TUN。** 单机接管本机流量靠 mihomo 的 **auto-route** 即可；旁路由请再开 **auto-redirect**。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
 
 > **旁路由注意**：`tun.auto-redirect` 与 auto-route 不是一回事。auto-route 管本机路由；auto-redirect 用 REDIRECT 接管**转发流量**，zashboard 里局域网连接常显示为 **Redir**（只开 auto-route 时多为 **Tun**）。Alpine 上 auto-redirect 的 nft 后端可能报 `netlink ... file exists` 并拖垮整个 TUN——v0.3.1 起面板默认给 mihomo 注入 `DISABLE_NFTABLES=1` 走 iptables 后端。详见「常见问题」。
 

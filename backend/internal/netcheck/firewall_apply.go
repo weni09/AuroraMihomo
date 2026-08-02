@@ -313,6 +313,103 @@ func (a *Applier) Teardown(ctx context.Context, customRules ...[]string) error {
 	return firstErr
 }
 
+// CleanupMihomoAutoRedirect 尽力拆除 mihomo tun.auto-redirect 留下的宿主痕迹。
+//
+// 背景：旁路由 TUN 开启 auto-redirect 后，mihomo 会在宿主写入
+// iptables nat 链 mihomo-prerouting / mihomo-output（DISABLE_NFTABLES=1 时）
+// 以及 900x 段策略路由 / table 2022。热重载把 tun.enable 改成 false 时，
+// 这些痕迹**不保证**被清干净；随后再开 TProxy 会叠两套劫持，手机断网。
+//
+// 本函数只清 mihomo 命名空间内的残留，不动 aurora_tproxy 表
+// （那张表仍由 Teardown 负责）。所有步骤幂等、失败只记日志。
+func (a *Applier) CleanupMihomoAutoRedirect(ctx context.Context) {
+	// iptables-nft / iptables-legacy 都试：Alpine 上两者可能并存，
+	// mihomo 实际写入哪套取决于 DISABLE_NFTABLES 与 xtables 后端。
+	for _, ipt := range []string{"iptables", "ip6tables"} {
+		a.cleanupMihomoIptablesChain(ctx, ipt, "PREROUTING", "mihomo-prerouting")
+		a.cleanupMihomoIptablesChain(ctx, ipt, "OUTPUT", "mihomo-output")
+	}
+	// nft 后端表名是 mihomo（见 sing_tun AutoRedirect TableName）
+	for _, family := range []string{"inet", "ip", "ip6"} {
+		if out, err := a.Runner.Run(ctx, "nft", "delete", "table", family, "mihomo"); err != nil {
+			low := strings.ToLower(out)
+			if !strings.Contains(low, "no such") && !strings.Contains(low, "does not exist") {
+				a.logf("删除 mihomo nft 表 %s 失败: %v: %s", family, err, strings.TrimSpace(out))
+			}
+		}
+	}
+	// auto-route 留下的 900x 规则与 table 2022（与面板 TProxy 的 8999/table 100 不同）
+	for _, prio := range []string{"9000", "9001", "9002", "9010"} {
+		// 同一优先级可能有多条（v4/v6、多条 from），循环删到报错为止
+		for i := 0; i < 8; i++ {
+			if out, err := a.Runner.Run(ctx, "ip", "rule", "del", "priority", prio); err != nil {
+				low := strings.ToLower(out)
+				if strings.Contains(low, "no such") || strings.Contains(low, "cannot find") || strings.TrimSpace(out) == "" {
+					break
+				}
+				a.logf("删除 mihomo ip rule priority %s 失败: %v: %s", prio, err, strings.TrimSpace(out))
+				break
+			}
+		}
+		for i := 0; i < 8; i++ {
+			if out, err := a.Runner.Run(ctx, "ip", "-6", "rule", "del", "priority", prio); err != nil {
+				low := strings.ToLower(out)
+				if strings.Contains(low, "no such") || strings.Contains(low, "cannot find") || strings.TrimSpace(out) == "" {
+					break
+				}
+				break
+			}
+		}
+	}
+	for _, table := range []string{"2022"} {
+		if out, err := a.Runner.Run(ctx, "ip", "route", "flush", "table", table); err != nil {
+			low := strings.ToLower(out)
+			if !strings.Contains(low, "no such") && strings.TrimSpace(out) != "" {
+				a.logf("flush mihomo route table %s 失败: %v: %s", table, err, strings.TrimSpace(out))
+			}
+		}
+		_, _ = a.Runner.Run(ctx, "ip", "-6", "route", "flush", "table", table)
+	}
+	// Meta 网卡：热重载关掉 TUN 后偶发残留，TProxy 不需要它
+	if out, err := a.Runner.Run(ctx, "ip", "link", "del", "Meta"); err != nil {
+		low := strings.ToLower(out)
+		if !strings.Contains(low, "cannot find") && !strings.Contains(low, "no such") && strings.TrimSpace(out) != "" {
+			a.logf("删除 Meta 网卡失败: %v: %s", err, strings.TrimSpace(out))
+		}
+	}
+	a.logf("已尽力清理 mihomo auto-redirect / auto-route 残留")
+}
+
+// cleanupMihomoIptablesChain 从 hook 上摘掉 -j chain 引用并删除 user chain。
+func (a *Applier) cleanupMihomoIptablesChain(ctx context.Context, ipt, hook, chain string) {
+	// 同一 jump 可能被重复 -A，多删几次直到没有
+	for i := 0; i < 4; i++ {
+		if out, err := a.Runner.Run(ctx, ipt, "-t", "nat", "-D", hook, "-j", chain); err != nil {
+			low := strings.ToLower(out)
+			if strings.Contains(low, "bad rule") || strings.Contains(low, "no chain") ||
+				strings.Contains(low, "doesn't exist") || strings.Contains(low, "does not exist") {
+				break
+			}
+			// 其他错误也停，避免死循环
+			break
+		}
+	}
+	if out, err := a.Runner.Run(ctx, ipt, "-t", "nat", "-F", chain); err != nil {
+		low := strings.ToLower(out)
+		if !strings.Contains(low, "no chain") && !strings.Contains(low, "doesn't exist") &&
+			!strings.Contains(low, "does not exist") {
+			a.logf("%s -F %s 失败: %v: %s", ipt, chain, err, strings.TrimSpace(out))
+		}
+	}
+	if out, err := a.Runner.Run(ctx, ipt, "-t", "nat", "-X", chain); err != nil {
+		low := strings.ToLower(out)
+		if !strings.Contains(low, "no chain") && !strings.Contains(low, "doesn't exist") &&
+			!strings.Contains(low, "does not exist") {
+			a.logf("%s -X %s 失败: %v: %s", ipt, chain, err, strings.TrimSpace(out))
+		}
+	}
+}
+
 // removeCustomRules 逆序拆除自定义规则（-A/-I → -D）。
 //
 // "Bad rule" 是 iptables 对 -D 找不到匹配规则的报错——宿主重启后

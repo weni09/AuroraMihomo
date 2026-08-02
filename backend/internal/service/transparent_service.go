@@ -137,6 +137,10 @@ type TransparentApplier interface {
 	// DumpRules 输出本面板 nft 表的当前规则集，供界面展示内置规则。
 	// TProxy 未开启时返回空字符串。
 	DumpRules(ctx context.Context) (string, error)
+	// CleanupMihomoAutoRedirect 清理 mihomo tun.auto-redirect/auto-route
+	// 留在宿主上的 iptables/nft/策略路由/Meta 网卡残留。
+	// 从 TUN 切到 TProxy（或关闭）时必须调用，否则两套劫持会叠在一起断网。
+	CleanupMihomoAutoRedirect(ctx context.Context)
 }
 
 // transparentProvisioner 补齐系统条件（装包、写 sysctl）。
@@ -561,6 +565,13 @@ func (s *TransparentService) enable(ctx context.Context, mode string,
 	// 配错会让操作者失去 SSH 与面板两条通道。TUN 由 mihomo 自管规则并在
 	// 退出时清理，进程一停就恢复，不存在"改错了却关不掉"的处境。
 	if mode == string(netcheck.ModeTProxy) {
+		// 从 TUN(auto-redirect) 切过来时，必须先清 mihomo 残留再下发 TProxy。
+		// 热重载只关 tun.enable 不会可靠拆掉 mihomo-prerouting REDIRECT /
+		// 900x 路由；两套劫持叠在一起，表现就是"一切换到 TProxy 就没网"。
+		if s.hasApplier() {
+			s.applier.CleanupMihomoAutoRedirect(ctx)
+		}
+
 		// 先记确认截止时间再下发规则：反序的话，规则生效后若进程立刻崩溃，
 		// 数据库里没有待确认记录，重启后就不会回滚。
 		until := s.now().Add(ConfirmWindow)
@@ -841,6 +852,12 @@ func (s *TransparentService) disable(ctx context.Context) error {
 		}
 	} else if !tproxyManaged {
 		s.logger.Info("透明代理关闭：未托管，跳过防火墙拆除（仅落关闭状态）")
+	}
+	// 无论之前是不是 TProxy：关闭时都清掉 mihomo auto-redirect 残留。
+	// 用户从旁路由 TUN 点关闭后，若不拆 REDIRECT/900x，局域网设备仍会被劫持
+	// 到已无人监听的端口。
+	if s.hasApplier() {
+		s.applier.CleanupMihomoAutoRedirect(ctx)
 	}
 
 	// 关闭要写进 base.yaml，且必须显式写 tun.enable: false，不能只把键删掉。

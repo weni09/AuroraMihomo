@@ -47,12 +47,14 @@ func (f *fakeStore) SetSetting(key, value string) error {
 
 // fakeApplier 记录调用，可注入失败。
 type fakeApplier struct {
-	mu         sync.Mutex
-	applied    int
-	tornDown   int
-	snapshots  int
-	applyErr   error
-	lastParams netcheck.TProxyParams
+	mu        sync.Mutex
+	applied   int
+	tornDown  int
+	snapshots int
+	// mihomoCleaned 记录 CleanupMihomoAutoRedirect 调用次数
+	mihomoCleaned int
+	applyErr      error
+	lastParams    netcheck.TProxyParams
 	// rulesActive 与 rulesActiveErr 控制 RulesActive 的返回值，
 	// 默认 rulesActive=true：多数测试不关心这个探测，默认"规则还在"
 	// 才不会意外触发 ReconcileState 的回滚路径
@@ -79,6 +81,12 @@ func (f *fakeApplier) DumpRules(_ context.Context) (string, error) {
 	return "table inet aurora_tproxy { }", nil
 }
 
+func (f *fakeApplier) CleanupMihomoAutoRedirect(_ context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mihomoCleaned++
+}
+
 func (f *fakeApplier) Snapshot(_ context.Context) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -90,6 +98,12 @@ func (f *fakeApplier) counts() (int, int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.applied, f.tornDown, f.snapshots
+}
+
+func (f *fakeApplier) cleanCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mihomoCleaned
 }
 
 func (f *fakeApplier) RulesActive(_ context.Context) (bool, error) {
@@ -356,7 +370,7 @@ func TestEnableRestoresBaseWhenStoreFails(t *testing.T) {
 	}
 }
 
-// TUN 模式由 mihomo 自管防火墙，面板不该去动规则
+// TUN 模式由 mihomo 自管防火墙，面板不该去动 aurora_tproxy 规则
 func TestEnableTUNDoesNotTouchFirewall(t *testing.T) {
 	s, _, app := newSvc(t, reportWith("linux", netcheck.ModeTUN))
 
@@ -365,6 +379,48 @@ func TestEnableTUNDoesNotTouchFirewall(t *testing.T) {
 	}
 	if applied, _, snaps := app.counts(); applied != 0 || snaps != 0 {
 		t.Errorf("TUN 模式不该下发防火墙规则，实际 applied=%d snapshots=%d", applied, snaps)
+	}
+}
+
+// 从 TUN 切到 TProxy 必须先清 mihomo auto-redirect 残留，再下发 aurora 规则。
+// 否则 REDIRECT + TProxy 两套劫持叠在一起，旁路由手机会直接断网。
+func TestSwitchFromTUNToTProxyCleansMihomoRedirect(t *testing.T) {
+	s, _, app, base := newSvcWithBase(t, reportWith("linux", netcheck.ModeTUN, netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tun", 0, "mixed"); err != nil {
+		t.Fatalf("启用 TUN 失败: %v", err)
+	}
+	if app.cleanCount() != 0 {
+		t.Fatalf("启用 TUN 不该清理 mihomo 残留，实际 clean=%d", app.cleanCount())
+	}
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("切换到 TProxy 失败: %v", err)
+	}
+	if app.cleanCount() < 1 {
+		t.Fatal("切到 TProxy 前应调用 CleanupMihomoAutoRedirect")
+	}
+	if applied, _, _ := app.counts(); applied < 1 {
+		t.Fatal("切到 TProxy 后应下发 aurora 防火墙规则")
+	}
+	text := base.text()
+	if !strings.Contains(text, "enable: false") {
+		t.Errorf("切换后 base 应显式关闭 tun.enable，实际: %s", text)
+	}
+	if !strings.Contains(text, "tproxy-port:") {
+		t.Errorf("切换后 base 应有 tproxy-port，实际: %s", text)
+	}
+}
+
+// 关闭透明代理时，即使之前不是面板托管的 TProxy，也要清 mihomo auto-redirect 残留。
+func TestDisableCleansMihomoAutoRedirect(t *testing.T) {
+	s, _, app, _ := newSvcWithBase(t, reportWith("linux", netcheck.ModeTUN), "")
+	if err := s.Update(context.Background(), true, "tun", 0, ""); err != nil {
+		t.Fatalf("启用 TUN 失败: %v", err)
+	}
+	if err := s.Update(context.Background(), false, "off", 0, ""); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+	if app.cleanCount() < 1 {
+		t.Fatal("关闭时应清理 mihomo auto-redirect 残留")
 	}
 }
 
