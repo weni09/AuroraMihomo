@@ -105,16 +105,49 @@ func (s *AdGuardService) SetWebPort(ctx context.Context, port int) error {
 	return nil
 }
 
-// SetDNSListenPort 设置 AdGuard DNS 监听高位端口（重定向模式目标）。
-// 禁止 53：绑定 53 请用 DNS 模式 1。
+// SetDNSListenPort 设置 AdGuard DNS 监听端口（含 53）。
+//
+// 占用校验：空闲或 AdGuard 自身占用 → 成功；其它进程占用 → 失败。
+// 写入 yaml 后若进程在跑则重启以应用监听。
 func (s *AdGuardService) SetDNSListenPort(ctx context.Context, port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("DNS 端口无效: %d（须为 1-65535）", port)
 	}
-	if port == 53 {
-		return fmt.Errorf("请使用「使用 53 端口」模式绑定 53；此处仅配置重定向目标的高位端口（如 1053）")
+	aghRunning := s.mgr != nil && s.mgr.Status().Running
+	curPort := 0
+	if p, err := adguard.ReadDNSPort(s.workDir); err == nil {
+		curPort = p
 	}
-	return s.ensureAGHListenPort(ctx, port)
+	if p := s.getSettingInt(settingAdGuardDNSPort, 0); p > 0 {
+		curPort = p
+	}
+	av, owner, err := adguard.CheckDNSPortAvailability(port, aghRunning, curPort)
+	if err != nil {
+		return err
+	}
+	_ = av
+	_ = owner
+
+	if err := adguard.SetDNSPort(s.workDir, port); err != nil {
+		return fmt.Errorf("写入 AdGuard dns.port=%d 失败: %w", port, err)
+	}
+	if s.db != nil {
+		_ = s.db.SetSetting(settingAdGuardDNSPort, fmt.Sprintf("%d", port))
+	}
+	// 与「入口 53」相关的 dns_mode 标记：53 → 1，其它高位 → 保持/置 0 不强制改模式业务
+	if s.db != nil {
+		if port == 53 {
+			_ = s.db.SetSetting(settingAdGuardDNSMode, "1")
+		} else if s.getSetting(settingAdGuardDNSMode, "0") == "1" {
+			_ = s.db.SetSetting(settingAdGuardDNSMode, "0")
+		}
+	}
+	if s.mgr != nil && s.mgr.Status().Running {
+		if err := s.Restart(ctx); err != nil {
+			return fmt.Errorf("端口已写入，但重启 AdGuard 失败: %w", err)
+		}
+	}
+	return nil
 }
 
 // CDNProviders 读取 adguard.cdn_providers JSON 数组；损坏或空则返回 nil。

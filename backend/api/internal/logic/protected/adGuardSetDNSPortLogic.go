@@ -24,7 +24,7 @@ func NewAdGuardSetDNSPortLogic(ctx context.Context, svcCtx *svc.ServiceContext) 
 	}
 }
 
-// AdGuardSetDNSPort 设置 AdGuard DNS 高位监听端口（重定向 53 的目标）；运行中会重启。
+// AdGuardSetDNSPort 设置 AdGuard DNS 监听端口（空闲或自身占用成功；其它进程占用失败）。
 func (l *AdGuardSetDNSPortLogic) AdGuardSetDNSPort(req *types.AdGuardDNSPortReq) (resp *types.Result, err error) {
 	if l.svcCtx.AdGuardService == nil {
 		return &types.Result{Success: false, Message: "AdGuard 服务未初始化"}, nil

@@ -9,7 +9,6 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Play, Power, RefreshCw, Download } from 'lucide-vue-next'
 
 /**
@@ -25,7 +24,6 @@ const settings = useSettingsStore()
 const webPortInput = ref('3000')
 const dnsPortDraft = ref('5353')
 const cdnText = ref('')
-const dnsModeValue = ref('0')
 const usernameInput = ref('admin')
 const passwordInput = ref('')
 const syncWithAurora = ref(false)
@@ -52,7 +50,6 @@ function syncFromStore() {
   const dp = store.status.dnsPort
   dnsPortDraft.value = dp && dp > 0 && dp !== 53 ? String(dp) : '5353'
   cdnText.value = (store.status.cdnProviders || []).join('\n')
-  dnsModeValue.value = String(store.status.dnsMode ?? 0)
   usernameInput.value = store.status.username || 'admin'
   syncWithAurora.value = store.status.passwordSync === true
   // 密码不回填
@@ -72,7 +69,7 @@ watch(
 
 
 watch(
-  () => [store.status.webAddr, store.status.dnsPort, store.status.dnsMode, store.status.cdnProviders, store.status.username, store.status.passwordSync],
+  () => [store.status.webAddr, store.status.dnsPort, store.status.cdnProviders, store.status.username, store.status.passwordSync],
   () => {
     if (props.open) syncFromStore()
   },
@@ -91,13 +88,6 @@ async function saveWebPort() {
   await store.setWebPort(port)
 }
 
-async function saveDnsPort() {
-  const port = Number(String(dnsPortDraft.value).trim())
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return
-  }
-  await store.setDnsPort(port)
-}
 
 async function saveCdn() {
   const providers = cdnText.value
@@ -118,13 +108,23 @@ async function saveCredentials() {
   passwordInput.value = ''
 }
 
-async function onDnsModeChange(v: unknown) {
-  if (v === null || v === undefined) return
-  const mode = Number(v)
-  if (!Number.isInteger(mode) || mode < 0 || mode > 2) return
-  if (mode === store.status.dnsMode) return
-  await store.setDnsMode(mode)
+async function saveDnsPort() {
+  const port = Number(String(dnsPortDraft.value).trim())
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return
+  }
+  // 与当前配置相同则跳过（自身占用也算已成功）
+  if (port === store.status.dnsPort) {
+    return
+  }
+  await store.setDnsPort(port)
 }
+
+async function onDnsPortBlur() {
+  if (busy.value) return
+  await saveDnsPort()
+}
+
 
 </script>
 
@@ -277,64 +277,35 @@ async function onDnsModeChange(v: unknown) {
         </p>
       </section>
 
-      <!-- DNS 模式 -->
-      <section class="space-y-3" data-testid="adguard-settings-dnsmode">
-        <h3 class="text-sm font-semibold text-fg" id="agh-dns-mode-label">DNS 服务模式</h3>
-        <RadioGroup
-          v-model="dnsModeValue"
-          aria-labelledby="agh-dns-mode-label"
-          class="space-y-2"
-          :disabled="busy"
-          @update:model-value="onDnsModeChange"
-        >
-          <label class="flex items-start gap-3 cursor-pointer">
-            <RadioGroupItem value="0" class="mt-0.5" />
-            <span>
-              <span class="font-medium text-fg">未托管</span>
-              <span class="block text-xs text-fg-subtle">不劫持系统 53；AGH 可用高位端口</span>
-            </span>
-          </label>
-          <label class="flex items-start gap-3 cursor-pointer">
-            <RadioGroupItem value="1" class="mt-0.5" />
-            <span>
-              <span class="font-medium text-fg">使用 53 端口（入口 DNS）</span>
-              <span class="block text-xs text-fg-subtle">
-                AdGuard 直接监听 <strong>:53</strong>，客户端 DNS 指到本机即可完整日志与拦截。
-                面板会把 AdGuard <strong>上游</strong>指到 mihomo 高位端口（如 1053），并尽量清空
-                <code class="text-[11px]">tun.dns-hijack</code>，避免 TUN 抢走 53。
-                这不是把 53「防火墙重定向」到 1053，而是 AGH 解析时再去问 mihomo。
-              </span>
-            </span>
-          </label>
-          <label class="flex items-start gap-3 cursor-pointer">
-            <RadioGroupItem value="2" class="mt-0.5" />
-            <span>
-              <span class="font-medium text-fg">重定向 53→AdGuard</span>
-              <span class="block text-xs text-fg-subtle">
-                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 5353，可在下方设置）；系统把发往 53 的查询转到该口。
-                已开 TProxy 时走透明代理规则；未开 TProxy 时在 Linux 上下发独立 nft 重定向（须 AdGuard 已在目标端口监听）。
-              </span>
-            </span>
-          </label>
-        </RadioGroup>
-        <div v-if="dnsModeValue === '2'" class="space-y-2 pt-1">
-          <Label for="agh-dns-port" class="text-xs text-fg-muted">AdGuard DNS 端口（重定向目标，勿用 53）</Label>
-          <div class="flex flex-wrap items-center gap-2">
-            <Input
-              id="agh-dns-port"
-              v-model="dnsPortDraft"
-              type="number"
-              min="1"
-              max="65535"
-              class="w-28 font-mono text-sm"
-              :disabled="busy"
-            />
-            <Button size="sm" variant="outline" :disabled="busy" @click="saveDnsPort">保存端口</Button>
-          </div>
-          <p class="text-xs text-fg-subtle">
-            保存后写入 AdGuard 配置；若进程在跑会重启。再选「重定向」模式时以该端口为 53 的目标。
-          </p>
+      <!-- DNS 端口（取代原「服务模式」） -->
+      <section class="space-y-3" data-testid="adguard-settings-dnsport">
+        <h3 class="text-sm font-semibold text-fg" id="agh-dns-port-label">DNS 端口</h3>
+        <p class="text-xs text-fg-subtle">
+          AdGuard 监听的 DNS 端口。失焦或点击保存时校验：空闲或已被 AdGuard 自身占用则成功；被其它进程占用则失败。
+          常用 <span class="font-mono">5353</span>（默认，避免与 mihomo <span class="font-mono">1053</span> 冲突）或
+          <span class="font-mono">53</span>（作入口 DNS 时，请确保无其它 DNS 占用）。
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <Label for="agh-dns-port" class="text-xs text-fg-muted sr-only">DNS 端口</Label>
+          <Input
+            id="agh-dns-port"
+            v-model="dnsPortDraft"
+            type="number"
+            min="1"
+            max="65535"
+            class="w-32 font-mono text-sm"
+            :disabled="busy"
+            aria-labelledby="agh-dns-port-label"
+            @blur="onDnsPortBlur"
+            @keydown.enter.prevent="saveDnsPort"
+          />
+          <Button size="sm" variant="outline" :disabled="busy" @click="saveDnsPort">保存</Button>
         </div>
+        <p class="text-xs text-fg-subtle">
+          当前配置端口：
+          <span class="font-mono">{{ store.status.dnsPort || '—' }}</span>
+          ；保存后写入配置，若 AdGuard 在跑会重启以应用。
+        </p>
       </section>
 
       <div class="flex justify-end pt-1">
