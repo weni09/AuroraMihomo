@@ -156,12 +156,12 @@ func TestProxyHandler_NotRunning_503(t *testing.T) {
 
 func TestStripAdguardPrefix(t *testing.T) {
 	cases := map[string]string{
-		"/adguard":           "/",
-		"/adguard/":          "/",
-		"/adguard/foo":       "/foo",
-		"/adguard/foo/bar":   "/foo/bar",
-		"/other":             "/other",
-		"":                   "/",
+		"/adguard":         "/",
+		"/adguard/":        "/",
+		"/adguard/foo":     "/foo",
+		"/adguard/foo/bar": "/foo/bar",
+		"/other":           "/other",
+		"":                 "/",
 	}
 	for in, want := range cases {
 		if got := stripAdguardPrefix(in); got != want {
@@ -172,11 +172,11 @@ func TestStripAdguardPrefix(t *testing.T) {
 
 func TestRewriteLocationUnderAdguard(t *testing.T) {
 	cases := map[string]string{
-		"/":            "/adguard/",
-		"/login.html":  "/adguard/login.html",
-		"/adguard/x":   "/adguard/x",
-		"relative":     "relative",
-		"https://x/y":  "https://x/y",
+		"/":           "/adguard/",
+		"/login.html": "/adguard/login.html",
+		"/adguard/x":  "/adguard/x",
+		"relative":    "relative",
+		"https://x/y": "https://x/y",
 	}
 	for in, want := range cases {
 		if got := rewriteLocationUnderAdguard(in); got != want {

@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	aghConfigFile    = "AdGuardHome.yaml"
-	defaultDNSPort   = 1053
-	defaultWebPort   = 80
-	localhostBind    = "127.0.0.1"
+	aghConfigFile  = "AdGuardHome.yaml"
+	defaultDNSPort = 1053
+	defaultWebPort = 80
+	localhostBind  = "127.0.0.1"
 )
 
 // configPath 返回 work-dir 下的 AdGuardHome.yaml 路径。
