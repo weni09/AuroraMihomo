@@ -12,7 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Play, Power, RefreshCw, Download } from 'lucide-vue-next'
 
 /**
- * AdGuard 设置弹窗：账号、运行控制、Web 端口、版本更新、DNS 模式、升级链接。
+ * AdGuard 设置弹窗：账号、运行控制、Web 端口、DNS 端口、版本更新、升级链接。
  * 出网策略只读展示系统设置。
  */
 const props = defineProps<{ open: boolean }>()
@@ -217,7 +217,7 @@ async function onDnsPortBlur() {
         <h3 class="text-sm font-semibold text-fg">网页管理端口</h3>
         <p class="text-xs text-fg-subtle">
           仅绑定回环 <code class="font-mono">127.0.0.1</code>，外网经面板
-          <code class="font-mono">/adguard/</code> 反代访问。改端口后若在运行会自动重启。
+          <code class="font-mono">/adguard-ui/</code> 反代访问。改端口后若在运行会自动重启。
         </p>
         <div class="flex flex-wrap items-end gap-2">
           <div class="space-y-1.5 min-w-[8rem]">
@@ -235,6 +235,38 @@ async function onDnsPortBlur() {
           <Button size="sm" :disabled="busy" @click="saveWebPort">保存端口</Button>
         </div>
       </section>
+
+      <!-- DNS 端口（取代原「服务模式」） -->
+      <section class="space-y-3" data-testid="adguard-settings-dnsport">
+        <h3 class="text-sm font-semibold text-fg" id="agh-dns-port-label">DNS 端口</h3>
+        <p class="text-xs text-fg-subtle">
+          AdGuard 监听的 DNS 端口。失焦或点击保存时校验：空闲或已被 AdGuard 自身占用则成功；被其它进程占用则失败。
+          常用 <span class="font-mono">5353</span>（默认，避免与 mihomo <span class="font-mono">1053</span> 冲突）或
+          <span class="font-mono">53</span>（作入口 DNS 时，请确保无其它 DNS 占用）。
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <Label for="agh-dns-port" class="text-xs text-fg-muted sr-only">DNS 端口</Label>
+          <Input
+            id="agh-dns-port"
+            v-model="dnsPortDraft"
+            type="number"
+            min="1"
+            max="65535"
+            class="w-32 font-mono text-sm"
+            :disabled="busy"
+            aria-labelledby="agh-dns-port-label"
+            @blur="onDnsPortBlur"
+            @keydown.enter.prevent="saveDnsPort"
+          />
+          <Button size="sm" variant="outline" :disabled="busy" @click="saveDnsPort">保存</Button>
+        </div>
+        <p class="text-xs text-fg-subtle">
+          当前配置端口：
+          <span class="font-mono">{{ store.status.dnsPort || '—' }}</span>
+          ；保存后写入配置，若 AdGuard 在跑会重启以应用。
+        </p>
+      </section>
+
 
       <!-- 版本与更新 -->
       <section class="space-y-3" data-testid="adguard-settings-version">
@@ -279,37 +311,6 @@ async function onDnsPortBlur() {
             <span v-else>，探测中或未就绪</span>）
           </span>
           <span v-else>（当前不强制走 mihomo 代理）</span>
-        </p>
-      </section>
-
-      <!-- DNS 端口（取代原「服务模式」） -->
-      <section class="space-y-3" data-testid="adguard-settings-dnsport">
-        <h3 class="text-sm font-semibold text-fg" id="agh-dns-port-label">DNS 端口</h3>
-        <p class="text-xs text-fg-subtle">
-          AdGuard 监听的 DNS 端口。失焦或点击保存时校验：空闲或已被 AdGuard 自身占用则成功；被其它进程占用则失败。
-          常用 <span class="font-mono">5353</span>（默认，避免与 mihomo <span class="font-mono">1053</span> 冲突）或
-          <span class="font-mono">53</span>（作入口 DNS 时，请确保无其它 DNS 占用）。
-        </p>
-        <div class="flex flex-wrap items-center gap-2">
-          <Label for="agh-dns-port" class="text-xs text-fg-muted sr-only">DNS 端口</Label>
-          <Input
-            id="agh-dns-port"
-            v-model="dnsPortDraft"
-            type="number"
-            min="1"
-            max="65535"
-            class="w-32 font-mono text-sm"
-            :disabled="busy"
-            aria-labelledby="agh-dns-port-label"
-            @blur="onDnsPortBlur"
-            @keydown.enter.prevent="saveDnsPort"
-          />
-          <Button size="sm" variant="outline" :disabled="busy" @click="saveDnsPort">保存</Button>
-        </div>
-        <p class="text-xs text-fg-subtle">
-          当前配置端口：
-          <span class="font-mono">{{ store.status.dnsPort || '—' }}</span>
-          ；保存后写入配置，若 AdGuard 在跑会重启以应用。
         </p>
       </section>
 
