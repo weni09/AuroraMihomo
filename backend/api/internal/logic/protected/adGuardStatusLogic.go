@@ -38,16 +38,17 @@ func (l *AdGuardStatusLogic) AdGuardStatus() (resp *types.AdGuardStatusResp, err
 		entryPath = "/adguard/"
 	}
 	return &types.AdGuardStatusResp{
-		Installed:   dto.Installed,
-		Running:     dto.Running,
-		PID:         dto.PID,
-		Version:     dto.Version,
-		WorkDir:     dto.WorkDir,
-		WebAddr:     dto.WebAddr,
-		DNSPort:     dto.DNSPort,
-		Wiring:      dto.Wiring,
-		WiringLabel: dto.WiringLabel,
-		LastError:   dto.LastError,
-		EntryPath:   entryPath,
+		Installed:        dto.Installed,
+		Running:          dto.Running,
+		PID:              dto.PID,
+		Version:          dto.Version,
+		WorkDir:          dto.WorkDir,
+		WebAddr:          dto.WebAddr,
+		DNSPort:          dto.DNSPort,
+		Wiring:           dto.Wiring,
+		WiringLabel:      dto.WiringLabel,
+		LastError:        dto.LastError,
+		EntryPath:        entryPath,
+		ComponentEnabled: dto.ComponentEnabled,
 	}, nil
 }

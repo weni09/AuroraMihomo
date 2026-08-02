@@ -642,17 +642,28 @@ type DashboardEntryResp {
 // ---------- AdGuard Home（可选嵌入） ----------
 // AdGuardStatusResp 面板状态视图；EntryPath 为同源反代前缀（默认 /adguard/）。
 type AdGuardStatusResp {
-	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	PID         int    `json:"pid"`
-	Version     string `json:"version"`
-	WorkDir     string `json:"workDir"`
-	WebAddr     string `json:"webAddr"`
-	DNSPort     int    `json:"dnsPort"`
-	Wiring      string `json:"wiring"`
-	WiringLabel string `json:"wiringLabel"`
-	LastError   string `json:"lastError,optional"`
-	EntryPath   string `json:"entryPath"`
+	Installed        bool   `json:"installed"`
+	Running          bool   `json:"running"`
+	PID              int    `json:"pid"`
+	Version          string `json:"version"`
+	WorkDir          string `json:"workDir"`
+	WebAddr          string `json:"webAddr"`
+	DNSPort          int    `json:"dnsPort"`
+	Wiring           string `json:"wiring"`
+	WiringLabel      string `json:"wiringLabel"`
+	LastError        string `json:"lastError,optional"`
+	EntryPath        string `json:"entryPath"`
+	ComponentEnabled bool   `json:"componentEnabled"`
+}
+
+// AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
+type AdGuardComponentReq {
+	Enabled bool `json:"enabled"`
+}
+
+// AdGuardUninstallReq 彻底卸载；Confirm 必须为 true。
+type AdGuardUninstallReq {
+	Confirm bool `json:"confirm"`
 }
 
 // AdGuardWiringResp 一键对接预检结果（不落库）。
@@ -744,6 +755,12 @@ service aurora-api {
 
 	@handler adGuardRestart
 	post /api/v1/adguard/restart returns (Result)
+
+	@handler adGuardSetComponent
+	put /api/v1/adguard/component (AdGuardComponentReq) returns (Result)
+
+	@handler adGuardUninstall
+	post /api/v1/adguard/uninstall (AdGuardUninstallReq) returns (Result)
 
 	@handler adGuardWiring
 	get /api/v1/adguard/wiring returns (AdGuardWiringResp)

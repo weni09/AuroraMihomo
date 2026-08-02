@@ -3,18 +3,27 @@
 
 package types
 
+type AdGuardComponentReq struct {
+	Enabled bool `json:"enabled"`
+}
+
 type AdGuardStatusResp struct {
-	Installed   bool   `json:"installed"`
-	Running     bool   `json:"running"`
-	PID         int    `json:"pid"`
-	Version     string `json:"version"`
-	WorkDir     string `json:"workDir"`
-	WebAddr     string `json:"webAddr"`
-	DNSPort     int    `json:"dnsPort"`
-	Wiring      string `json:"wiring"`
-	WiringLabel string `json:"wiringLabel"`
-	LastError   string `json:"lastError,optional"`
-	EntryPath   string `json:"entryPath"`
+	Installed        bool   `json:"installed"`
+	Running          bool   `json:"running"`
+	PID              int    `json:"pid"`
+	Version          string `json:"version"`
+	WorkDir          string `json:"workDir"`
+	WebAddr          string `json:"webAddr"`
+	DNSPort          int    `json:"dnsPort"`
+	Wiring           string `json:"wiring"`
+	WiringLabel      string `json:"wiringLabel"`
+	LastError        string `json:"lastError,optional"`
+	EntryPath        string `json:"entryPath"`
+	ComponentEnabled bool   `json:"componentEnabled"`
+}
+
+type AdGuardUninstallReq struct {
+	Confirm bool `json:"confirm"`
 }
 
 type AdGuardWiringApplyReq struct {
