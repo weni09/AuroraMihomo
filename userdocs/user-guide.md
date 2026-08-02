@@ -265,7 +265,7 @@ function operator(proxies) {
 | **GeoData 规则库** | GeoIP/GeoSite 数据源与自动更新间隔 |
 | **运行状态持久化** | 记住手选节点（建议开启）、记住 fake-ip 映射 |
 | **域名解析** | DNS 全部行为：enhanced-mode（推荐 fake-ip）、fake-ip 段与过滤、各类 nameserver、respect-rules 等，以及**自定义 hosts 映射**（域名 → IP 的行编辑器，需同组的「使用 hosts 映射」开启才生效）。**用 TUN 时必须开 dns.enable** |
-| **虚拟网卡** | TUN 的 enable / stack / auto-route / **auto-redirect** / dns-hijack / mtu / strict-route 等。单机自用重点看 auto-route；auto-redirect 见「常见问题」里那条坑 |
+| **虚拟网卡** | TUN 的 enable / stack / auto-route / **auto-redirect** / dns-hijack / mtu / strict-route 等。旁路由重点看 auto-redirect（规则由 **mihomo 内核**写 iptables/nft，不是面板 aurora_tproxy）；见「常见问题」 |
 | **域名嗅探** | 从流量还原域名。注意：只开总开关不配 `sniffer.sniff` 的话嗅探不会生效 |
 | **策略组** | YAML 数组定义本地策略组，与订阅中同名组合并 |
 | **基础路由规则** | 每行一条，会被置顶插入最终配置，顺序即优先级 |
@@ -414,14 +414,14 @@ tun:
 
 | 项 | 说明 |
 |---|---|
-| `DISABLE_NFTABLES=1` | Alpine / iptables-nft 上 auto-redirect 的 nft 后端会 `netlink file exists`；**v0.3.1+** 面板启动 mihomo 时默认注入，强制 iptables 后端 |
+| `DISABLE_NFTABLES=1` | **仅 Alpine 等环境需要**：mihomo 默认 nft 后端可能 `netlink file exists` 导致整个 TUN 起不来。**v0.3.1+** 面板在 Linux 启动 mihomo 时默认注入，强制走 **iptables** 后端。注意：TUN 的 auto-redirect 成功后本来就会写 iptables（`mihomo-prerouting` REDIRECT），这是 mihomo 的规则，不是“没用 iptables” |
 | DNS | 旁路由可用纯数字 `nameserver`/`fallback`；DoH 不是前提 |
-| 成功标志 | 日志 `auto route: true, auto redir: true`；`iptables-save -t nat` 有 `mihomo-prerouting ... REDIRECT`；zashboard 局域网连接多为 **Redir** |
+| 成功标志 | 日志 `auto route: true, auto redir: true`；`ip link` 有 `Meta`；`iptables-save -t nat` 有 **mihomo** 的 `REDIRECT`（内核写的）；zashboard 局域网连接多为 **Redir**。TProxy 成功则是面板的 `aurora_tproxy` nft 表，两套不要叠 |
 | 与 TProxy 互斥 | 切换模式时必须拆掉另一套规则。若「一切换就没网」，多半是 auto-redirect 与 aurora_tproxy 叠在一起 |
 
 **默认选 TUN。** 单机接管本机流量靠 mihomo 的 **auto-route** 即可；旁路由请再开 **auto-redirect**。TProxy 的意义是覆盖没有 TUN 设备的环境（宿主未加载 `tun` 模块、容器未映射 `/dev/net/tun` 且无法调整）。
 
-> **旁路由注意**：`tun.auto-redirect` 与 auto-route 不是一回事。auto-route 管本机路由；auto-redirect 用 REDIRECT 接管**转发流量**，zashboard 里局域网连接常显示为 **Redir**（只开 auto-route 时多为 **Tun**）。Alpine 上 auto-redirect 的 nft 后端可能报 `netlink ... file exists` 并拖垮整个 TUN——v0.3.1 起面板默认给 mihomo 注入 `DISABLE_NFTABLES=1` 走 iptables 后端。详见「常见问题」。
+> **旁路由注意**：`tun.auto-redirect` 与 auto-route 不是一回事。auto-route 管本机路由；auto-redirect 由 **mihomo 内核**写防火墙 REDIRECT 接管**转发流量**（连接类型多为 **Redir**；只开 auto-route 时多为 **Tun**）。规则在 iptables nat 的 `mihomo-*` 链上，**不是**面板的 `aurora_tproxy`。Alpine 上若日志出现 `netlink ... file exists`，是 mihomo 默认 nft 后端的环境问题——v0.3.1+ 默认 `DISABLE_NFTABLES=1` 强制 iptables 后端。详见「常见问题」。
 
 **启用流程**
 
@@ -716,31 +716,32 @@ chmod +x <数据目录>/bin/mihomo
 
 **TUN 显示已开启，但系统没有 Meta 虚拟网卡 / 完全不生效？**（常见坑）
 
-多半是 **`tun.auto-redirect` 启动失败**，连带整个 TUN 监听失败。
+先分清两套东西，避免文档和现象对不上：
 
-| | auto-route | auto-redirect |
-|---|---|---|
-| 改什么 | 本机**路由表** | 本机**防火墙**（REDIRECT / iptables 或 nft） |
-| 主要服务谁 | **本机**进程出网 | 经本机**转发**的流量（旁路由/网关下的局域网设备） |
-| zashboard 连接类型 | 多为 **Tun** | 局域网设备多为 **Redir**（这才是旁路由常见形态） |
-| 单机自用 | 需要开 | 可关 |
-| 旁路由/网关 | 需要开 | **建议开**（手机/电脑当网关指本机时） |
+| | auto-route | auto-redirect | 面板 TProxy |
+|---|---|---|---|
+| 谁写规则 | mihomo（路由） | **mihomo 内核**（防火墙 REDIRECT） | **本面板**（`aurora_tproxy` nft） |
+| 常见落点 | 策略路由 / Meta 网卡 | **iptables** nat：`mihomo-prerouting` 等 | `nft list table inet aurora_tproxy` |
+| 主要服务谁 | 本机出网 | 经本机**转发**的局域网设备 | 经本机转发的局域网设备 |
+| zashboard 类型 | 多为 **Tun** | 局域网多为 **Redir** | 多为 **TProxy** |
 
-**Alpine virt 上的特殊坑（已复现）**：
+旁路由/网关：**建议同时开 auto-route + auto-redirect**。单机自用通常 auto-route + dns-hijack 已够。  
+TUN 开了 auto-redirect 之后看到 iptables，是**正常且预期**的——规则由 mihomo 写，不是“TProxy 才用 iptables/nft”。
 
-- 错误日志：`Start TUN listening error: auto redirect: conn.Receive: netlink receive: file exists`
-- 配置里仍是 `tun.enable: true` / `auto-redirect: true`，运行时却是 `enable: false`、没有 `Meta`
-- 根因是 mihomo 默认走 **nftables** 后端，在 Alpine 的 iptables-nft 混合环境下 netlink 冲突
-- **本面板从 v0.3.1 起**在 Linux 启动 mihomo 时默认注入 `DISABLE_NFTABLES=1`，强制改走 **iptables** 后端，旁路由可同时保留 auto-route + auto-redirect
-- 成功时日志类似：`Tun adapter listening at: Meta(...), auto route: true, auto redir: true`
-- 成功时 `iptables-save -t nat` 可见 `mihomo-prerouting ... -p tcp -j REDIRECT`
+**Alpine 环境拉不起 Meta 的特殊坑（已复现）**：
+
+- 日志：`Start TUN listening error: auto redirect: conn.Receive: netlink receive: file exists`
+- 配置仍写 `tun.enable: true`，运行时却是 `enable: false`、没有 `Meta`
+- 原因：该环境下 mihomo 默认 **nft** 后端与 netlink 冲突；**不是**“auto-redirect 本身不能用”
+- **v0.3.1+** 面板在 Linux 启动 mihomo 时默认注入 `DISABLE_NFTABLES=1`，强制 **iptables** 后端后即可同时保留 auto-route + auto-redirect
+- 成功标志：日志 `auto route: true, auto redir: true`；`ip link` 有 Meta；`iptables-save -t nat` 有 mihomo 的 REDIRECT
 
 若仍失败：
 
-1. 看 **内核管理 / mihomo 日志** 是否还有 `file exists` / `Start TUN listening error`
-2. 确认进程环境有 `DISABLE_NFTABLES=1`（`tr '\\0' '\\n' < /proc/$(pgrep -n mihomo)/environ | grep DISABLE`）
-3. 临时残留规则后冷启动：清掉旧的 `mihomo-*` nat 链、`aurora_tproxy` 表与 900x 策略路由，再重启内核
-4. 临时应急可临时关 auto-redirect，至少恢复本机 TUN；旁路由手机再改回 true
+1. 看 **内核管理 / mihomo 日志** 是否还有 `file exists`
+2. 确认 `DISABLE_NFTABLES=1` 在 mihomo 进程环境中
+3. 清理残留（旧 `mihomo-*` nat 链、误留的 `aurora_tproxy`、900x 路由）后**冷启动**内核
+4. 仅作临时应急时可关 auto-redirect 先恢复本机；旁路由恢复后应再打开
 
 **TUN 开了但局域网设备没走代理？**
 

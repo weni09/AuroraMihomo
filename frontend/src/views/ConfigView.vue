@@ -612,8 +612,9 @@ const displayValue = (key: string, type: string) => {
               </RouterLink>
               的开关是同一项配置，两边改的都是它。在本页修改后需点「保存并应用」才会生效，
               系统设置里的开关状态也在那时同步。只点「保存基础配置」不会重新下发配置。
-              若开启后系统看不到 Meta 虚拟网卡，请先关闭下方「自动防火墙重定向 (Auto Redirect)」再保存下发——
-              部分 Linux 环境上该项会导致 mihomo 静默停用整个 TUN。
+              若开启 Auto Redirect 后看不到 Meta 网卡，请先查内核日志是否
+              netlink “file exists”（Alpine 常见）：确认 mihomo 进程带有
+              DISABLE_NFTABLES=1 后冷启动内核；旁路由场景一般应保持 Auto Redirect 开启。
             </p>
           </div>
           

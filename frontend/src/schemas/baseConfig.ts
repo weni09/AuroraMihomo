@@ -284,13 +284,16 @@ export const baseConfigSchema: FormSection[] = [
         title: '自动防火墙重定向 (Auto Redirect)',
         type: 'switch',
         help:
-          '让 mihomo 自行下发并在退出时清理 nftables/iptables 重定向规则（仅 Linux 生效，macOS 会忽略）。' +
-          '与「自动路由」不同：auto-route 改的是本机路由表，管本机进程出网；auto-redirect 改的是防火墙，' +
-          '用于把经过本机转发的流量（旁路由/网关场景下的局域网设备）也拐进 TUN。' +
-          '单机自用一般保持关闭即可——开着 auto-route + dns-hijack 已能接管本机流量。' +
-          '部分环境（如 Alpine virt、精简内核/nft 组合）开启后 mihomo 可能静默关掉整个 TUN：' +
-          '配置里仍写 enable: true，但运行时无 Meta 虚拟网卡、策略路由也不出现，表现为「TUN 开了却完全不生效」。' +
-          '若遇此现象请关闭本项并重新保存下发。仅在确认本机要做网关、且环境能正常建立 Meta 网卡时再开启。',
+          '让 mihomo 内核自行写入并在退出时清理防火墙重定向规则（仅 Linux 生效，macOS 会忽略）。' +
+          '规则由 mihomo 维护，不是本面板的 aurora_tproxy；在本面板默认环境下通常表现为 iptables nat 链' +
+          '（mihomo-prerouting / REDIRECT），而不是“系统里没有 iptables”。' +
+          '与「自动路由」不同：auto-route 改本机路由表，管本机进程出网；auto-redirect 改防火墙，' +
+          '把经本机转发的流量（旁路由/网关下的局域网设备）也拐进 TUN，zashboard 中连接类型多为 Redir。' +
+          '旁路由/网关建议开启；单机自用开 auto-route + dns-hijack 通常已够。' +
+          '若开启后拉不起 Meta 虚拟网卡，请先看内核日志是否出现 netlink “file exists”：' +
+          '这是部分 Alpine 环境上 mihomo 默认 nft 后端的问题。本面板从 v0.3.1 起在 Linux 启动 mihomo 时' +
+          '默认注入 DISABLE_NFTABLES=1，强制走 iptables 后端。确认进程带有该环境变量后冷启动内核即可，' +
+          '一般不必再靠关闭本项来“救命”。',
       },
       { key: 'tun.dns-hijack', title: 'DNS 劫持 (DNS Hijack)', type: 'string-array', placeholder: 'any:53, tcp://any:53', help: '劫持这些地址的 DNS 请求，多个用逗号分隔。不写协议默认为 udp://。' },
       { key: 'tun.device', title: '网卡名称 (Device)', type: 'text', placeholder: 'utun0', help: '留空由内核自动命名，如 utun0。' },

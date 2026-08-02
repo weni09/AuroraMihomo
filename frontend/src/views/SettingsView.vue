@@ -269,10 +269,11 @@ function transparentConfirmMessage(mode: TransparentMode, switching: boolean): s
     mode === 'tproxy'
       ? 'TProxy 会修改本机的防火墙规则与路由表。若配置不当，可能导致 SSH 与面板都无法访问。\n\n' +
         '启用后需在 90 秒内点击"网络正常，确认"，否则将自动回滚。\n确定继续？'
-      : 'TUN 由 mihomo 自行管理本机路由（auto-route）等；进程退出时会清理。\n\n' +
-        '开启时会写入基础配置的 tun.enable，并默认将 auto-redirect 设为关闭：' +
-        '该项是防火墙级重定向，部分环境开启会导致 TUN 静默失效（无 Meta 网卡）。' +
-        '若本机需做网关劫持局域网流量，请到「配置中心 → 虚拟网卡」再手动打开。\n\n' +
+      : 'TUN 由 mihomo 管理本机路由（auto-route）与可选的防火墙重定向（auto-redirect）；进程退出时会清理。\n\n' +
+        '开启时会写入基础配置的 tun.enable，并默认打开 auto-route / auto-redirect（旁路由可用的组合）。\n' +
+        'auto-redirect 的规则由 mihomo 内核写入（通常为 iptables nat REDIRECT），不是面板的 aurora_tproxy。\n' +
+        '若开启后无 Meta 网卡，请查内核日志是否 netlink “file exists”（Alpine）：' +
+        'v0.3.1+ 启动 mihomo 默认注入 DISABLE_NFTABLES=1，冷启动即可，一般不必关 auto-redirect。\n\n' +
         '该操作会立即重新下发配置。\n确定继续？'
   return head + body
 }
