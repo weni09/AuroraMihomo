@@ -44,6 +44,11 @@ export const useMihomoStore = defineStore('mihomo', {
       if (this.recentLogs.length > 100) this.recentLogs.splice(0, this.recentLogs.length - 100)
     },
     async fetchStatus() {
+      // 未登录时不要打受保护接口：App 壳层与部分页面都会调这里，
+      // 登录页上 401 只会污染控制台，没有可展示的状态。
+      if (!localStorage.getItem('aurora_token')) {
+        return
+      }
       this.isLoading = true
       try {
         const response = await api.get<Status>('/system/status')

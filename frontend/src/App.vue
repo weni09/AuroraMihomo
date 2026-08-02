@@ -37,7 +37,18 @@ const isZashboard = computed(() => route.name === 'zashboard')
 const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
 
 onMounted(() => {
-  mihomoStore.fetchStatus()
+  // /system/status 需 JWT；登录页无 token 时请求只会 401 刷控制台噪音。
+  // 等离开登录页（或已带 token 进主界面）再拉状态。
+  if (!isLogin.value && localStorage.getItem('aurora_token')) {
+    void mihomoStore.fetchStatus()
+  }
+})
+
+// 登录成功进入主界面时补一次状态（onMounted 时还在 /login 会跳过）
+watch(isLogin, (login, wasLogin) => {
+  if (wasLogin && !login && localStorage.getItem('aurora_token')) {
+    void mihomoStore.fetchStatus()
+  }
 })
 
 // 侧边栏折叠。只作用于 lg 以上的桌面布局：窄屏侧边栏是覆盖式抽屉，
