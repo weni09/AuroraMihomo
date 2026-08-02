@@ -3,6 +3,7 @@ package protected
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/api/internal/types"
@@ -52,8 +53,12 @@ func describeComponentCheck(name string, c updater.ComponentCheck) string {
 // 而不只是判断本地文件是否存在——"检查更新"应告知用户是否真的有新版本可用。
 func (l *UpdateCheckLogic) UpdateCheck() (resp *types.Result, err error) {
 	localVersion, _ := l.svcCtx.MihomoManager.Version(l.ctx)
-	// AdGuard 版本探测尚未接入，先传空串：只能判断是否已安装
-	mihomoCheck, zashCheck, adguardCheck := l.svcCtx.Updater.CheckLatest(l.ctx, localVersion, "")
+	// AdGuard 本地版本来自安装时写入的 settings（adguard.version）
+	aghLocal := ""
+	if v, err := l.svcCtx.Database.GetSetting("adguard.version"); err == nil {
+		aghLocal = strings.TrimSpace(v)
+	}
+	mihomoCheck, zashCheck, adguardCheck := l.svcCtx.Updater.CheckLatest(l.ctx, localVersion, aghLocal)
 
 	msg := fmt.Sprintf("%s；%s；%s；自动更新=%v",
 		describeComponentCheck("mihomo", mihomoCheck),

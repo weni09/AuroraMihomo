@@ -184,3 +184,41 @@ func TestRewriteLocationUnderAdguard(t *testing.T) {
 		}
 	}
 }
+
+func TestIsLoopbackHost(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1":   true,
+		"127.0.0.2":   true,
+		"::1":         true,
+		"localhost":   true,
+		"LOCALHOST":   true,
+		"0.0.0.0":     false,
+		"8.8.8.8":     false,
+		"example.com": false,
+		"":            false,
+	}
+	for in, want := range cases {
+		if got := isLoopbackHost(in); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
+	mgr := NewManager(Config{WebAddr: "8.8.8.8:53"})
+	mgr.testForceRunning = true
+	h := NewProxyHandler(mgr, testJWTSecret, func() string { return "8.8.8.8:53" })
+	token := signTestJWT(t, testJWTSecret, time.Hour)
+
+	req := httptest.NewRequest(http.MethodGet, "/adguard/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for non-loopback upstream", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "loopback") {
+		t.Fatalf("body = %q, want loopback hint", rec.Body.String())
+	}
+}

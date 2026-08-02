@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"auroramihomo/backend/api/internal/handler/public"
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/applog"
 	"auroramihomo/backend/internal/service"
@@ -72,6 +73,21 @@ func watchReloadSignal(ctx context.Context, mgr *service.ReloadManager) {
 			}
 		}
 	}()
+}
+
+// registerPublicAuthRoutes 注册无需 JWT 的鉴权辅助路由。
+//
+// logout 必须可在无 token / 过期 cookie 时调用：HttpOnly 的 aurora_session
+// 只能由服务端 Set-Cookie 过期清掉，前端 JS 删不掉。
+// 不改 goctl 生成的 routes.go，与 system 路由同模式手挂。
+func registerPublicAuthRoutes(server *rest.Server, svcCtx *svc.ServiceContext) {
+	server.AddRoutes([]rest.Route{
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/auth/logout",
+			Handler: public.LogoutHandler(svcCtx),
+		},
+	})
 }
 
 // registerSystemRoutes 暴露热重载与重启接口。

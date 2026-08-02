@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSidebar } from './composables/useSidebar'
 import { usePageChrome } from './composables/usePageChrome'
+import api from './api'
 
 const route = useRoute()
 const router = useRouter()
@@ -104,8 +105,14 @@ onBeforeUnmount(() => {
   document.body.classList.remove('overflow-hidden')
 })
 
-const logout = () => {
+const logout = async () => {
   if (!confirm('确定退出登录吗？')) return
+  // aurora_session 是 HttpOnly，只能由服务端清 cookie；失败也继续清本地 token
+  try {
+    await api.post('/auth/logout')
+  } catch {
+    // ignore
+  }
   localStorage.removeItem('aurora_token')
   router.push({ name: 'login' })
 }

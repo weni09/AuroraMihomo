@@ -106,6 +106,11 @@ func (m *Manager) startLocked() error {
 			m.setLastErr(msg)
 			return fmt.Errorf("create work dir failed: %w", err)
 		}
+		// 启动前强制 Web/DNS 绑定回环，避免 AGH 默认 0.0.0.0 暴露。
+		// 失败不阻断启动（yaml 损坏时仍应尽量拉起），但记入 lastErr 便于排查。
+		if err := EnsureBindLocalhost(m.cfg.WorkDir); err != nil {
+			m.setLastErr("ensure bind localhost: " + err.Error())
+		}
 	}
 
 	//nolint:noctx // 常驻进程不应绑定请求级 context

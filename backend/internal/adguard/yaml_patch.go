@@ -2,8 +2,11 @@ package adguard
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -11,7 +14,9 @@ import (
 const (
 	aghConfigFile  = "AdGuardHome.yaml"
 	defaultDNSPort = 1053
-	defaultWebPort = 80
+	// defaultWebPort 与面板默认反代上游 127.0.0.1:3000 对齐；
+	// AGH 官方默认 80，但嵌入场景用 3000 避免与宿主机其它 Web 冲突。
+	defaultWebPort = 3000
 	localhostBind  = "127.0.0.1"
 )
 
@@ -138,7 +143,9 @@ func ReadDNSPort(workDir string) (int, error) {
 	return defaultDNSPort, nil
 }
 
-// ReadWebPort 读取 http.port；文件或键缺失时默认 80。
+// ReadWebPort 读取 Web 监听端口。
+// 优先解析现代 AGH 的 http.address（如 "127.0.0.1:3000"），
+// 其次 http.port；均缺失时默认 3000。
 func ReadWebPort(workDir string) (int, error) {
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {
@@ -148,20 +155,68 @@ func ReadWebPort(workDir string) (int, error) {
 	if httpSec == nil {
 		return defaultWebPort, nil
 	}
+	if addr, ok := httpSec["address"].(string); ok {
+		if p := portFromAddress(addr); p > 0 {
+			return p, nil
+		}
+	}
 	if p, ok := asInt(httpSec["port"]); ok && p > 0 {
 		return p, nil
 	}
 	return defaultWebPort, nil
 }
 
-// EnsureBindLocalhost 将顶层 bind_host 设为 127.0.0.1，保留其它键。
-// 文件不存在时创建仅含 bind_host 的最小配置。
+// portFromAddress 从 "host:port" / ":port" / "port" 中抽出端口。
+func portFromAddress(addr string) int {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return 0
+	}
+	// net.SplitHostPort 要求带括号的 IPv6；纯数字则直接当端口
+	if p, err := strconv.Atoi(addr); err == nil && p > 0 && p <= 65535 {
+		return p
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 可能是 "0.0.0.0" 无端口
+		_ = host
+		return 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p <= 0 || p > 65535 {
+		return 0
+	}
+	return p
+}
+
+// EnsureBindLocalhost 将顶层 bind_host 与 http.address 固定到回环。
+//
+// - bind_host: 127.0.0.1
+// - http.address: 127.0.0.1:<port>，port 优先取现有 address / http.port，否则 3000
+//
+// 文件不存在时创建最小安全配置。启动前必须调用，防止 AGH 默认 0.0.0.0 暴露。
 func EnsureBindLocalhost(workDir string) error {
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {
 		return err
 	}
 	m["bind_host"] = localhostBind
+
+	httpSec := asMap(m["http"])
+	if httpSec == nil {
+		httpSec = map[string]any{}
+	}
+	port := defaultWebPort
+	if addr, ok := httpSec["address"].(string); ok {
+		if p := portFromAddress(addr); p > 0 {
+			port = p
+		}
+	} else if p, ok := asInt(httpSec["port"]); ok && p > 0 {
+		port = p
+	}
+	httpSec["address"] = fmt.Sprintf("%s:%d", localhostBind, port)
+	m["http"] = httpSec
+
 	return saveConfigMap(workDir, m)
 }
 

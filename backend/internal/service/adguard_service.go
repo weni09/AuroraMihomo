@@ -234,9 +234,14 @@ func (s *AdGuardService) WiringApply(ctx context.Context, opts WiringOptions) (*
 
 	if s.transp != nil {
 		if err := s.transp.Resync(ctx); err != nil {
-			s.logger.Errorf("wiring apply 后 Resync 失败: %v", err)
-			// 不自动 rollback：配置已改、标记已 on；规则同步失败应暴露给用户重试 Resync
-			return &plan, fmt.Errorf("对接已写入，但 TProxy 规则同步失败: %w", err)
+			s.logger.Errorf("wiring apply 后 Resync 失败，自动回滚: %v", err)
+			// Resync 失败说明防火墙规则未跟上，对接处于半生效；
+			// 与 applyWiringPlan 失败路径一致：回滚配置并清 wiring 标记。
+			_ = s.rollbackWiringPlan(ctx, plan)
+			_ = s.db.SetSetting(settingAdGuardWiring, adguardWiringOff)
+			_ = s.db.SetSetting(settingAdGuardSnapshot, "")
+			s.clearDNSPortOverride()
+			return &plan, fmt.Errorf("对接写入后 TProxy 规则同步失败，已回滚: %w", err)
 		}
 	}
 	return &plan, nil

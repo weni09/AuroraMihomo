@@ -71,6 +71,11 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() stri
 			http.Error(w, "invalid upstream", http.StatusBadGateway)
 			return
 		}
+		// 安全边界：反代上游必须是回环，禁止被配置成外网地址当跳板。
+		if !isLoopbackHost(target.Hostname()) {
+			http.Error(w, "upstream must be loopback", http.StatusBadGateway)
+			return
+		}
 
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		// 流式/WebSocket：禁用缓冲刷新间隔
@@ -107,6 +112,22 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() stri
 		}
 		proxy.ServeHTTP(w, r)
 	})
+}
+
+// isLoopbackHost 判断 host 是否仅回环（127.0.0.0/8、::1、localhost）。
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func stripAdguardPrefix(path string) string {

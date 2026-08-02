@@ -83,20 +83,36 @@ func TestReadWebPort_MissingYaml(t *testing.T) {
 	if err != nil {
 		t.Fatalf("缺失 yaml 应返回默认值: %v", err)
 	}
-	if port != 80 {
-		t.Fatalf("default web port want 80 got %d", port)
+	if port != 3000 {
+		t.Fatalf("default web port want 3000 got %d", port)
+	}
+}
+
+func TestReadWebPort_FromAddress(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "http:\n  address: 0.0.0.0:8080\n")
+	port, err := ReadWebPort(dir)
+	if err != nil || port != 8080 {
+		t.Fatalf("port=%d err=%v", port, err)
 	}
 }
 
 func TestEnsureBindLocalhost(t *testing.T) {
 	dir := t.TempDir()
-	writeAGHYaml(t, dir, "bind_host: 0.0.0.0\ndns:\n  port: 53\n  bootstrap_dns:\n    - 8.8.8.8\n")
+	writeAGHYaml(t, dir, "bind_host: 0.0.0.0\nhttp:\n  address: 0.0.0.0:3000\ndns:\n  port: 53\n  bootstrap_dns:\n    - 8.8.8.8\n")
 	if err := EnsureBindLocalhost(dir); err != nil {
 		t.Fatalf("EnsureBindLocalhost: %v", err)
 	}
 	m := readAGHMap(t, dir)
 	if m["bind_host"] != "127.0.0.1" {
 		t.Fatalf("bind_host=%v, want 127.0.0.1", m["bind_host"])
+	}
+	httpSec, ok := m["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http 段丢失: %#v", m["http"])
+	}
+	if httpSec["address"] != "127.0.0.1:3000" {
+		t.Fatalf("http.address=%v, want 127.0.0.1:3000", httpSec["address"])
 	}
 	// 其它键必须保留
 	dns, ok := m["dns"].(map[string]any)
@@ -116,6 +132,26 @@ func TestEnsureBindLocalhost_MissingYaml(t *testing.T) {
 	m := readAGHMap(t, dir)
 	if m["bind_host"] != "127.0.0.1" {
 		t.Fatalf("bind_host=%v", m["bind_host"])
+	}
+	httpSec, ok := m["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http 段应被创建: %#v", m)
+	}
+	if httpSec["address"] != "127.0.0.1:3000" {
+		t.Fatalf("http.address=%v", httpSec["address"])
+	}
+}
+
+func TestEnsureBindLocalhost_PreserveCustomPort(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "http:\n  address: 192.168.1.1:8088\n")
+	if err := EnsureBindLocalhost(dir); err != nil {
+		t.Fatal(err)
+	}
+	m := readAGHMap(t, dir)
+	httpSec := m["http"].(map[string]any)
+	if httpSec["address"] != "127.0.0.1:8088" {
+		t.Fatalf("http.address=%v, want preserve port 8088", httpSec["address"])
 	}
 }
 
