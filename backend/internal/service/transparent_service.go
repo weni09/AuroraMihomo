@@ -1115,14 +1115,34 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 // 合并流程末尾的 resyncTransparent 仍可忽略返回值（配置已落盘，规则同步
 // 失败不该让"保存配置"报失败）。
 func (s *TransparentService) Resync(ctx context.Context) error {
-	if !s.hasApplier() || !s.tproxyManaged() {
+	if !s.hasApplier() {
 		return nil
 	}
 	st := s.state()
+	// 配置中心把 tun.enable 打开（或保持 TUN）时：若仍挂着面板托管的
+	// aurora_tproxy，必须拆掉。否则 TProxy 残留规则与 TUN/auto-redirect
+	// 叠在一起，旁路由会断网。系统设置一键切 TUN 会走 enable() 里的
+	// Teardown；配置中心只走合并+Resync，必须在这里补上。
+	if st.Mode == string(netcheck.ModeTUN) && st.Enabled {
+		if s.tproxyManaged() {
+			if err := s.applier.Teardown(ctx, s.customRulesForTeardown()); err != nil {
+				s.logger.Errorf("配置已是 TUN，拆除残留 aurora_tproxy 失败: %v", err)
+				return fmt.Errorf("拆除残留 TProxy 规则失败: %w", err)
+			}
+			if err := s.setTProxyManaged(false); err != nil {
+				s.logger.Errorf("清理 TProxy 托管标记失败: %v", err)
+			} else {
+				s.logger.Info("配置已是 TUN：已拆除残留 aurora_tproxy 并清除托管标记")
+			}
+		}
+		return nil
+	}
+	if !s.tproxyManaged() {
+		return nil
+	}
 	if !st.Enabled || st.Mode != string(netcheck.ModeTProxy) {
-		// 配置已经不是"面板托管的 TProxy"了。这属于状态不一致，由
-		// ReconcileState 在启动时处理（它会拆掉孤儿规则）；
-		// 这里不越权拆规则——合并流程每次都跑，误判的代价太大。
+		// 配置已经不是"面板托管的 TProxy"了，也不是上面的 TUN 分支。
+		// 启动时的 ReconcileState 会处理更重的不一致；合并热路径不越权。
 		return nil
 	}
 	// 待确认状态下不介入：此时用户正在验证网络，重下发会打断他的验证，

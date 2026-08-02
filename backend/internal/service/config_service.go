@@ -723,6 +723,19 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 	if err != nil {
 		return nil, fmt.Errorf("load base config: %w", err)
 	}
+	// 配置中心开启 TUN（只改 tun.enable）时不会走系统设置的 enable() patches。
+	// 若 base 里 auto-redirect 未声明，合并后旁路由会缺默认 Redir 路径——此处仅补未声明项；
+	// 显式 false 尊重用户。残留 aurora_tproxy 由合并末尾 Resync 在 TUN 模式下拆除。
+	if normalized, changed, nerr := ensureBaseTUNGatewayDefaults(baseYAML); nerr != nil {
+		s.logger.Errorf("规范化 base TUN 网关默认值失败（继续用原文合并）: %v", nerr)
+	} else if changed {
+		if err := s.UpdateBaseConfig(normalized); err != nil {
+			s.logger.Errorf("回写 base TUN 网关默认值失败（继续用规范化文本合并）: %v", err)
+		} else {
+			s.logger.Info("base 已开启 TUN：已按需补齐 auto-route / 未声明的 auto-redirect")
+		}
+		baseYAML = normalized
+	}
 	baseCfg, err := s.engine.LoadAndParse([]byte(baseYAML))
 	if err != nil {
 		return nil, fmt.Errorf("parse base config: %w", err)

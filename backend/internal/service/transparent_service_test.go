@@ -1545,6 +1545,7 @@ func TestResyncSkipsWhilePendingConfirm(t *testing.T) {
 
 // 未托管时 Resync 什么都不做：用户手填 tproxy-port、自己维护规则的情形，
 // 那些规则不属于面板。
+
 func TestResyncIgnoresUnmanagedTProxy(t *testing.T) {
 	s, _, app, _ := newSvcWithBase(t,
 		reportWith("linux", netcheck.ModeTProxy), "tproxy-port: 7893\n")

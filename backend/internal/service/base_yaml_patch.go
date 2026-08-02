@@ -317,3 +317,103 @@ func readBaseSwitchState(src string) (tunEnabled bool, tunStack string, tproxyPo
 	}
 	return tunEnabled, tunStack, tproxyPort, nil
 }
+
+// readTUNAutoRedirect 读取 base.yaml 里 tun.auto-redirect 的三态。
+//
+// 返回值 set=false 表示键不存在（未声明）；set=true 时 enabled 是显式 true/false。
+// 解析不出合法布尔时按未声明处理并报错，与 readBaseSwitchState 对非法值的态度一致。
+func readTUNAutoRedirect(src string) (set bool, enabled bool, err error) {
+	if strings.TrimSpace(src) == "" {
+		return false, false, nil
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+		return false, false, fmt.Errorf("解析 YAML 失败: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false, false, nil
+	}
+	root := doc.Content[0]
+	_, tunNode := findMapEntry(root, "tun")
+	if tunNode == nil || tunNode.Kind != yaml.MappingNode {
+		return false, false, nil
+	}
+	_, ar := findMapEntry(tunNode, "auto-redirect")
+	if ar == nil {
+		return false, false, nil
+	}
+	v, ok := decodeNodeBool(ar)
+	if !ok {
+		return false, false, fmt.Errorf("tun.auto-redirect 不是合法布尔值: %q", ar.Value)
+	}
+	return true, v, nil
+}
+
+// ensureBaseTUNGatewayDefaults 在 base 已开启 TUN 时补齐旁路由常用默认值。
+//
+//   - auto-redirect：仅「未声明」时补 true；显式 false 尊重用户（配置中心可关）
+//   - auto-route：未声明或 false 时补 true（开着 TUN 却关 auto-route 等于没开）
+//
+// 配置中心只改 tun.enable 时不会走系统设置的 enable() patches，缺省
+// auto-redirect 时需在此补上，否则合并后局域网缺 Redir 路径。
+//
+// 返回：改写后的 YAML、是否发生了改动。
+func ensureBaseTUNGatewayDefaults(src string) (string, bool, error) {
+	tunOn, _, _, err := readBaseSwitchState(src)
+	if err != nil {
+		return src, false, err
+	}
+	if !tunOn {
+		return src, false, nil
+	}
+	set, _, err := readTUNAutoRedirect(src)
+	if err != nil {
+		return src, false, err
+	}
+	// auto-route：未声明或 false 时补 true（auto-redirect 依赖它；显式 false 也拉回，
+	// 因为开着 TUN 却关掉 auto-route 等于没开，与「开启 TUN」语义冲突）
+	var needRoute bool
+	{
+		var doc yaml.Node
+		_ = yaml.Unmarshal([]byte(src), &doc)
+		if len(doc.Content) > 0 && doc.Content[0].Kind == yaml.MappingNode {
+			if _, tunNode := findMapEntry(doc.Content[0], "tun"); tunNode != nil && tunNode.Kind == yaml.MappingNode {
+				if _, ar := findMapEntry(tunNode, "auto-route"); ar == nil {
+					needRoute = true
+				} else if v, ok := decodeNodeBool(ar); !ok || !v {
+					needRoute = true
+				}
+			} else {
+				needRoute = true
+			}
+		}
+	}
+	// auto-redirect：仅未声明时补 true；显式 false 尊重用户
+	needRedirect := !set
+	// 与系统设置 enable(TUN) 一致：TUN 与 tproxy-port 互斥。
+	// 配置中心只开 tun.enable 时若仍留着 tproxy-port，最终配置会双开，
+	// 且 state() 虽以 TUN 为先，内核仍可能监听无流量的 tproxy 端口。
+	_, _, tproxyPort, err := readBaseSwitchState(src)
+	if err != nil {
+		return src, false, err
+	}
+	needDropTProxy := tproxyPort > 0
+	if !needRedirect && !needRoute && !needDropTProxy {
+		return src, false, nil
+	}
+	patches := map[string]interface{}{}
+	if needRoute {
+		patches["tun.auto-route"] = true
+	}
+	if needRedirect {
+		patches["tun.auto-redirect"] = true
+	}
+	if needDropTProxy {
+		patches["tproxy-port"] = nil
+	}
+	out, err := patchBaseYAMLMulti(src, patches)
+	if err != nil {
+		return src, false, err
+	}
+	return out, true, nil
+}
