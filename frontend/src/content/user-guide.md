@@ -22,6 +22,7 @@
 - [运行日志](#运行日志)
 - [系统设置](#系统设置)
 - [Zashboard 面板](#zashboard-面板)
+- [AdGuard Home](#adguard-home)
 - [配置文件与环境变量](#配置文件与环境变量)
 - [常见问题](#常见问题)
 
@@ -362,7 +363,7 @@ mihomo 有三条透明代理路径，本面板只一键支持其中两条：
 
 ### 组件状态
 
-显示 mihomo 与 Zashboard 的安装状态、版本、路径，三个按钮：检查更新（只读版本不下载）、更新 Mihomo（有确认）、更新 Zashboard（有确认）。
+显示 mihomo、Zashboard、AdGuard Home 的安装状态与版本，按钮：检查更新（只读版本不下载）、更新 Mihomo、更新 Zashboard、更新 AdGuard Home（后三者有确认）。AdGuard 也可在侧栏「AdGuard」页安装/更新；此处入口与之一致。
 
 内核版本由 `mihomo -v` 探测。面板是纯静态资源，本地无法反查版本，只记录经本平台更新的那一次——手工放入或旧版本装的面板会显示「版本未知」。
 
@@ -633,6 +634,69 @@ nslookup www.google.com
 
 ---
 
+## AdGuard Home
+
+可选的 DNS 过滤 / 查询日志组件，**不是**代理核心。Aurora 只按需下载官方 release 并作为子进程托管，**不**把 AdGuard 链进本程序二进制。未安装时主流程（内核、订阅、透明代理）不受影响。
+
+| 项 | 说明 |
+|---|---|
+| 许可 | AdGuard Home 为 **GPL-3.0** 独立程序 |
+| 二进制 | 不随安装包捆绑；侧栏「AdGuard」点安装，或「系统设置 → 组件状态 → 更新 AdGuard Home」 |
+| 落盘 | 可执行文件在数据目录 `bin/`，工作目录 `adguardhome/`（自管 yaml、统计、列表） |
+| 进程 | 由面板拉起/停止；面板退出时一并停止，不注册 systemd / Windows 服务 |
+
+### 安装与打开
+
+1. 侧栏进入 **AdGuard**
+2. 未安装时点「下载并安装」；已安装可启停、重启、更新
+3. **运行中**后本页用同源 iframe 嵌入官方 Web UI，地址为 `http://<面板>/adguard/`（也可「新标签页」打开）
+4. 首次进入 iframe 后走 **AdGuard 自带** 管理员与 DNS 向导，与 Aurora 登录无关
+
+Web 默认只绑 `127.0.0.1`，外网只能经面板反代访问，不能绕过 Aurora 直连管理口。
+
+### 双层登录
+
+| 层 | 作用 |
+|---|---|
+| Aurora 会话 | 访问 `/adguard/` 反代需要已登录面板（与 API 同级鉴权；iframe 靠会话 cookie，不靠 URL 挂 token） |
+| AdGuard 管理员 | 官方 UI 自己的账号密码；**没有**与 Aurora 的单点登录 |
+
+两边都要过：只登面板进不去 AGH 管理；只在 AGH 设了管理员，未登面板时外网仍打不开 `/adguard/`。
+
+### 职责分工与 DNS 对接
+
+| 组件 | 职责 |
+|---|---|
+| AdGuard Home | 面向客户端的 DNS：查询日志、过滤列表、拦截 |
+| mihomo | 代理 / 分流；（可选）内核 DNS、fake-ip、策略 DNS |
+
+默认 **不对接**：装了 AGH 也不会自动改 TProxy 或 mihomo DNS。需要日志/过滤时，在 AdGuard 页点 **DNS 对接**，先预检再勾选应用；会写快照，可 **回滚对接**。
+
+常见勾选项：
+
+| 选项 | 默认 | 作用 |
+|---|---|---|
+| TProxy DNS 指向 AGH | TProxy 开启时倾向勾选 | 透明代理把 :53 转到 AdGuard 的 DNS 端口 |
+| 解决端口冲突 | 倾向勾选 | mihomo `dns.listen` 与 AGH 抢口时，把 mihomo 挪到回环备用口 |
+| AGH 上游指向 mihomo DNS | mihomo DNS 开启时倾向勾选 | 过滤后再走 mihomo，保留 fake-ip / 策略 DNS；只要过滤可改指公共 DNS |
+| 弱化 TUN dns-hijack | **默认关** | 高级项；见下方限制 |
+
+对接后的典型路径：终端 DNS →（TProxy / 手工指 DNS）→ AGH（日志与拦截）→（可选）mihomo DNS → 业务流量仍由 mihomo 代理。
+
+对接期间若要在配置中心大改 `dns.listen`，宜先解除对接再改，避免和快照打架。
+
+### 能力边界（务必先看）
+
+- **TUN 的 `dns-hijack`**：查询进 mihomo **内部** DNS 模块，不一定经过 AGH 监听口。默认对接**不**硬改 hijack；勾选「弱化 TUN dns-hijack」才可能清掉面板注入的 `any:53`，有副作用，一般旁路由/网关请慎用。
+- **仅开系统/浏览器代理、DNS 仍指向运营商**：查询不会进 AGH，日志为空是预期。需 DHCP/设备 DNS 指到面板，或开透明代理并对接。
+- **Android「私人 DNS」/ 系统 DoH**：绕过你下发的普通 DNS，日志与过滤都会漏。
+- **绑定 :53**：P1 **不会**自动 `setcap`。权限不足时用高位端口（如 1053）+ TProxy 劫持，或自行提权；Windows 不承诺透明劫持 :53。
+- 过滤列表与 mihomo `rules` **不会**双向同步；广告拦截以 AGH 列表为主，规则 `REJECT` 仍是另一条路。
+
+更细的透明代理与 DNS 劫持设计见仓库 `docs/AuroraMihomo-Transparent-Proxy.md`（其中有 AdGuard 对接提示）。
+
+---
+
 ## 配置文件与环境变量
 
 配置文件默认 `backend/api/etc/aurora-api.yaml`，容器内是 `docker/aurora-api.docker.yaml`。
@@ -747,6 +811,10 @@ TUN 开了 auto-redirect 之后看到 iptables，是**正常且预期**的——
 
 先排除上一条（本机都没有 Meta 时，谈不上给局域网设备分流）。  
 容器部署最常见的是网络模式问题——桥接网络里的规则只对容器自己生效，必须用 `network_mode: host`。另外查「系统设置 → 透明代理 → 环境检测详情」，它会明确指出缺 capability、缺设备还是缺 host 网络。做网关时还需要正确的客户端网关/DHCP/静态路由，以及按需开启 auto-redirect 或自行维护防火墙转发规则。
+
+**装了 AdGuard，查询日志里没有设备请求？**
+
+先确认 AGH 在跑，且客户端 DNS 真的指到了它（或 TProxy 已「DNS 对接」）。仅开 HTTP/SOCKS 代理、DNS 仍走运营商时，AGH 看不到查询。TUN 开着 `dns-hijack: any:53` 时，本机/进 TUN 的查询可能直接进 mihomo 内部 DNS，绕过 AGH——见[AdGuard Home](#adguard-home)「能力边界」。Android 私人 DNS / DoH 也会绕过。
 
 **忘记管理员密码？**
 
