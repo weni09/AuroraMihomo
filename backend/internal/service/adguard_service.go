@@ -25,6 +25,8 @@ type AdGuardStatusDTO struct {
 	WorkDir   string `json:"workDir"`
 	WebAddr   string `json:"webAddr"`
 	DNSPort   int    `json:"dnsPort"`
+	// ComponentEnabled 产品化组件总开关（默认 false）
+	ComponentEnabled bool `json:"componentEnabled"`
 	// Wiring 为 "off" / "on"；展示层可把 on 渲染成「已对接」
 	Wiring      string `json:"wiring"`
 	WiringLabel string `json:"wiringLabel"` // "未对接" / "已对接"
@@ -79,16 +81,17 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	_ = ctx
 	st := s.mgr.Status()
 	dto := &AdGuardStatusDTO{
-		Installed:   st.Installed,
-		Running:     st.Running,
-		PID:         st.PID,
-		Version:     st.Version,
-		WorkDir:     st.WorkDir,
-		WebAddr:     st.WebAddr,
-		LastError:   st.LastError,
-		EntryPath:   "/adguard/",
-		Wiring:      adguardWiringOff,
-		WiringLabel: "未对接",
+		Installed:        st.Installed,
+		Running:          st.Running,
+		PID:              st.PID,
+		Version:          st.Version,
+		WorkDir:          st.WorkDir,
+		WebAddr:          st.WebAddr,
+		ComponentEnabled: s.ComponentEnabled(),
+		LastError:        st.LastError,
+		EntryPath:        "/adguard/",
+		Wiring:           adguardWiringOff,
+		WiringLabel:      "未对接",
 	}
 	if dto.WorkDir == "" {
 		dto.WorkDir = s.workDir
@@ -326,8 +329,46 @@ func (s *AdGuardService) RestoreWiringOverrideOnBoot() {
 	s.refreshDNSPortOverride()
 }
 
-// ShouldStartAtBoot 读取 enabled_at_boot 且二进制存在。
+// ComponentEnabled 读取组件总开关；缺省或非法值视为 false。
+// 真值：true / 1 / yes（大小写不敏感）。
+func (s *AdGuardService) ComponentEnabled() bool {
+	v := strings.TrimSpace(s.getSetting(settingAdGuardComponent, "false"))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}
+
+// SetComponentEnabled 开关组件。
+//
+// enabled=true：仅写 settings，不自动安装/启动。
+// enabled=false：若 wiring=on 先 WiringRollback（失败则不写 false）；
+// 再 Stop（失败则不写 false）；最后写 component_enabled=false。
+func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) error {
+	if enabled {
+		if s.db == nil {
+			return errors.New("数据库未初始化")
+		}
+		return s.db.SetSetting(settingAdGuardComponent, "true")
+	}
+
+	// 关闭前：若 DNS 已对接，先回滚劫持路径（ExitDNSMode 属 Task 6）
+	if s.getSetting(settingAdGuardWiring, adguardWiringOff) == adguardWiringOn {
+		if err := s.WiringRollback(ctx); err != nil {
+			return fmt.Errorf("关闭组件前解除 DNS 对接失败: %w", err)
+		}
+	}
+	if err := s.Stop(ctx); err != nil {
+		return fmt.Errorf("关闭组件时停止 AdGuard 失败: %w", err)
+	}
+	if s.db == nil {
+		return errors.New("数据库未初始化")
+	}
+	return s.db.SetSetting(settingAdGuardComponent, "false")
+}
+
+// ShouldStartAtBoot 需组件开启、enabled_at_boot 且二进制存在。
 func (s *AdGuardService) ShouldStartAtBoot() bool {
+	if !s.ComponentEnabled() {
+		return false
+	}
 	v := strings.TrimSpace(s.getSetting(settingAdGuardBoot, ""))
 	if v != "1" && !strings.EqualFold(v, "true") && v != "on" {
 		return false
