@@ -18,31 +18,31 @@ type Config struct {
 	RedirPort  int    `yaml:"redir-port,omitempty"`
 	TProxyPort int    `yaml:"tproxy-port,omitempty"`
 
-	AllowLan          bool     `yaml:"allow-lan,omitempty"`
-	BindAddress       string   `yaml:"bind-address,omitempty"`
-	Authentication    []string `yaml:"authentication,omitempty"`
-	SkipAuthPrefixes  []string `yaml:"skip-auth-prefixes,omitempty"`
-	LanAllowedIPs     []string `yaml:"lan-allowed-ips,omitempty"`
-	LanDisallowedIPs  []string `yaml:"lan-disallowed-ips,omitempty"`
-// ipv6 在 mihomo 里默认为 true。必须用指针 + omitempty 区分「显式关闭」
-		// 与「未配置」：普通 bool 的 false 会被 omitempty 丢掉，开箱 base 里写的
-		// ipv6: false 经合并往返后从运行配置中消失，内核仍按默认开启 IPv6。
-		IPv6              *bool    `yaml:"ipv6,omitempty"`
-		LogLevel          string   `yaml:"log-level,omitempty"`
-		FindProcessMode   string   `yaml:"find-process-mode,omitempty"`
-		GlobalClientFP    string   `yaml:"global-client-fingerprint,omitempty"`
-		TCPConcurrent     bool     `yaml:"tcp-concurrent,omitempty"`
-		UnifiedDelay      bool     `yaml:"unified-delay,omitempty"`
-		InterfaceName     string   `yaml:"interface-name,omitempty"`
-		RoutingMark       int      `yaml:"routing-mark,omitempty"`
-		DisableKeepAlive  bool     `yaml:"disable-keep-alive,omitempty"`
-		KeepAliveIdle     int      `yaml:"keep-alive-idle,omitempty"`
-		KeepAliveInterval int      `yaml:"keep-alive-interval,omitempty"`
+	AllowLan         bool     `yaml:"allow-lan,omitempty"`
+	BindAddress      string   `yaml:"bind-address,omitempty"`
+	Authentication   []string `yaml:"authentication,omitempty"`
+	SkipAuthPrefixes []string `yaml:"skip-auth-prefixes,omitempty"`
+	LanAllowedIPs    []string `yaml:"lan-allowed-ips,omitempty"`
+	LanDisallowedIPs []string `yaml:"lan-disallowed-ips,omitempty"`
+	// ipv6 在 mihomo 里默认为 true。必须用指针 + omitempty 区分「显式关闭」
+	// 与「未配置」：普通 bool 的 false 会被 omitempty 丢掉，开箱 base 里写的
+	// ipv6: false 经合并往返后从运行配置中消失，内核仍按默认开启 IPv6。
+	IPv6              *bool  `yaml:"ipv6,omitempty"`
+	LogLevel          string `yaml:"log-level,omitempty"`
+	FindProcessMode   string `yaml:"find-process-mode,omitempty"`
+	GlobalClientFP    string `yaml:"global-client-fingerprint,omitempty"`
+	TCPConcurrent     bool   `yaml:"tcp-concurrent,omitempty"`
+	UnifiedDelay      bool   `yaml:"unified-delay,omitempty"`
+	InterfaceName     string `yaml:"interface-name,omitempty"`
+	RoutingMark       int    `yaml:"routing-mark,omitempty"`
+	DisableKeepAlive  bool   `yaml:"disable-keep-alive,omitempty"`
+	KeepAliveIdle     int    `yaml:"keep-alive-idle,omitempty"`
+	KeepAliveInterval int    `yaml:"keep-alive-interval,omitempty"`
 
-		// geodata-mode 官方默认 false；同样用指针保留「显式 false」落盘，
-		// 与 IPv6 同一类问题（bool + omitempty 会把显式关闭吞掉）。
-		GeodataMode       *bool             `yaml:"geodata-mode,omitempty"`
-		GeodataLoader     string            `yaml:"geodata-loader,omitempty"`
+	// geodata-mode 官方默认 false；同样用指针保留「显式 false」落盘，
+	// 与 IPv6 同一类问题（bool + omitempty 会把显式关闭吞掉）。
+	GeodataMode       *bool             `yaml:"geodata-mode,omitempty"`
+	GeodataLoader     string            `yaml:"geodata-loader,omitempty"`
 	GeositeMatcher    string            `yaml:"geosite-matcher,omitempty"`
 	GeoAutoUpdate     bool              `yaml:"geo-auto-update,omitempty"`
 	GeoUpdateInterval int               `yaml:"geo-update-interval,omitempty"`
