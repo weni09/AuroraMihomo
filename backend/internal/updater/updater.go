@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
 	"context"
@@ -25,13 +26,17 @@ import (
 )
 
 type Config struct {
-	DataDir            string
-	MihomoBinaryPath   string
-	ZashboardDir       string
-	AutoUpdateEnabled  bool
-	AutoUpdateCron     string
-	MihomoRepo         string
-	ZashboardRepo      string
+	DataDir          string
+	MihomoBinaryPath string
+	ZashboardDir     string
+	// AdGuardBinaryPath 为空时默认 DataDir/bin/adguardFileName()
+	AdGuardBinaryPath string
+	AutoUpdateEnabled bool
+	AutoUpdateCron    string
+	MihomoRepo        string
+	ZashboardRepo     string
+	// AdGuardRepo 为空时默认 AdguardTeam/AdGuardHome
+	AdGuardRepo        string
 	GitHubAPI          string
 	HTTPTimeoutSeconds int
 	// CDNProviders 为 GitHub Release 资产的下载源（内核与面板都以 Release 分发）
@@ -62,9 +67,8 @@ type RuntimeSettings struct {
 }
 
 type Manager struct {
-	// updateMu 串行化 UpdateMihomo / UpdateZashboard。
-	// 二者会覆盖同一个二进制文件与面板目录，并发执行会写出
-	// 内容交错的坏二进制、并互相删掉唯一的备份。
+	// updateMu 串行化 UpdateMihomo / UpdateZashboard / UpdateAdGuard。
+	// 会覆盖二进制与面板目录，并发执行会写出内容交错的坏文件、并互相删掉备份。
 	updateMu sync.Mutex
 
 	cfg    Config
@@ -117,6 +121,12 @@ func New(cfg Config) *Manager {
 	if cfg.ZashboardRepo == "" {
 		cfg.ZashboardRepo = "Zephyruso/zashboard"
 	}
+	if cfg.AdGuardRepo == "" {
+		cfg.AdGuardRepo = "AdguardTeam/AdGuardHome"
+	}
+	if cfg.AdGuardBinaryPath == "" {
+		cfg.AdGuardBinaryPath = filepath.Join(cfg.DataDir, "bin", adguardFileName())
+	}
 	if cfg.GitHubAPI == "" {
 		cfg.GitHubAPI = "https://api.github.com"
 	}
@@ -161,6 +171,12 @@ func (m *Manager) MihomoBinaryPath() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg.MihomoBinaryPath
+}
+
+func (m *Manager) AdGuardBinaryPath() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg.AdGuardBinaryPath
 }
 
 func (m *Manager) ZashboardDir() string {
@@ -327,7 +343,7 @@ func (m *Manager) DefaultCDNProviders() []string {
 	return append([]string{}, DefaultCDNProviders...)
 }
 
-// ComponentCheck 描述一个组件（mihomo / zashboard）的本地就绪状态与远端最新版本对比结果。
+// ComponentCheck 描述一个组件（mihomo / zashboard / AdGuardHome）的本地就绪状态与远端最新版本对比结果。
 type ComponentCheck struct {
 	Present       bool   `json:"present"`       // 本地是否已就绪
 	LocalVersion  string `json:"localVersion"`  // 本地已安装版本（未知时为空串）
@@ -336,11 +352,13 @@ type ComponentCheck struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// CheckLatest 查询 mihomo / zashboard 在 GitHub 上的最新 release，
+// CheckLatest 查询 mihomo / zashboard / AdGuardHome 在 GitHub 上的最新 release，
 // 与本地已记录的版本比对，得出是否需要更新。
-// localVersion 为空串时（如从未成功探测过 mihomo 版本）只能判断"是否存在"，
+// localVersion 为空串时（如从未成功探测过版本）只能判断"是否存在"，
 // 无法判断"是否需要更新"。
-func (m *Manager) CheckLatest(ctx context.Context, mihomoLocalVersion string) (mihomo, zashboard ComponentCheck) {
+//
+// AdGuard 为可选组件，不在 EnsureComponents 里自动下载，但检查更新时一并返回状态。
+func (m *Manager) CheckLatest(ctx context.Context, mihomoLocalVersion, adguardLocalVersion string) (mihomo, zashboard, adguard ComponentCheck) {
 	mihomo.Present = fileExists(m.MihomoBinaryPath())
 	mihomo.LocalVersion = mihomoLocalVersion
 	if rel, err := m.latestRelease(ctx, m.repoMihomo()); err != nil {
@@ -362,7 +380,17 @@ func (m *Manager) CheckLatest(ctx context.Context, mihomoLocalVersion string) (m
 	}
 	zashboard.UpdateNeeded = !zashboard.Present ||
 		(zashboard.LatestVersion != "" && zashboard.LocalVersion != "" && !versionMatches(zashboard.LocalVersion, zashboard.LatestVersion))
-	return mihomo, zashboard
+
+	adguard.Present = fileExists(m.AdGuardBinaryPath())
+	adguard.LocalVersion = adguardLocalVersion
+	if rel, err := m.latestRelease(ctx, m.repoAdGuard()); err != nil {
+		adguard.Error = err.Error()
+	} else {
+		adguard.LatestVersion = rel.TagName
+	}
+	adguard.UpdateNeeded = !adguard.Present ||
+		(adguard.LatestVersion != "" && adguard.LocalVersion != "" && !versionMatches(adguard.LocalVersion, adguard.LatestVersion))
+	return mihomo, zashboard, adguard
 }
 
 // versionMatches 判断本地版本字符串（通常形如 "Mihomo Meta v1.19.29 ..."）
@@ -479,6 +507,113 @@ func (m *Manager) UpdateMihomo(ctx context.Context) error {
 	return nil
 }
 
+// UpdateAdGuard 下载并安装最新 AdGuardHome 二进制。
+// 可选组件：仅在显式调用时安装，EnsureComponents 不会自动拉取。
+func (m *Manager) UpdateAdGuard(ctx context.Context) error {
+	m.updateMu.Lock()
+	defer m.updateMu.Unlock()
+
+	rel, err := m.latestRelease(ctx, m.repoAdGuard())
+	if err != nil {
+		return err
+	}
+	assetURL, assetName, assetSize, err := pickAdGuardAsset(rel)
+	if err != nil {
+		return err
+	}
+	m.logger.Infof("downloading AdGuardHome %s (%s)", rel.TagName, assetName)
+
+	tmpDir, err := os.MkdirTemp("", "aurora-adguard-*")
+	if err != nil {
+		return err
+	}
+	// 临时目录清理属于尽力而为，失败也没有补救动作
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	archivePath := filepath.Join(tmpDir, assetName)
+	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize); err != nil {
+		return err
+	}
+
+	extractDir := filepath.Join(tmpDir, "extract")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		return err
+	}
+
+	lowerName := strings.ToLower(assetName)
+	switch {
+	case strings.HasSuffix(lowerName, ".zip"):
+		if err := unzip(archivePath, extractDir); err != nil {
+			return err
+		}
+	case strings.HasSuffix(lowerName, ".tar.gz"), strings.HasSuffix(lowerName, ".tgz"):
+		if err := untarGz(archivePath, extractDir); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported AdGuardHome archive format: %s", assetName)
+	}
+
+	// keyword 小写：findExtractedBinary 会对文件名 ToLower 后再 Contains
+	binPath, err := findExtractedBinary(extractDir, "adguardhome")
+	if err != nil {
+		return err
+	}
+
+	target := m.AdGuardBinaryPath()
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	// 已有文件先备份，便于安装失败或版本回退时手工恢复
+	if fileExists(target) {
+		if err := copyFile(target, target+".bak"); err != nil {
+			m.logger.Errorf("备份旧 AdGuardHome 失败: %v", err)
+		}
+	}
+	if err := copyFile(binPath, target); err != nil {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		_ = os.Chmod(target, 0o755)
+	}
+
+	// 校验：文件可执行且体积非空；再尝试 --version / --help。
+	// 校验失败仍保留已写入的文件（用户可能手工修复权限），但向上返回错误。
+	st, err := os.Stat(target)
+	if err != nil || st.Size() == 0 {
+		return fmt.Errorf("AdGuardHome binary invalid: empty or missing after install")
+	}
+	if err := verifyAdGuardBinary(ctx, target); err != nil {
+		return fmt.Errorf("AdGuardHome binary invalid: %w", err)
+	}
+	m.logger.Infof("AdGuardHome ready: %s (%s)", target, rel.TagName)
+	return nil
+}
+
+// verifyAdGuardBinary 尝试启动二进制确认它能跑。
+// --version 与 --help 任一能跑通即可；有的构建对未知 flag 返回非 0 但仍会打印帮助。
+// 不访问网络。
+func verifyAdGuardBinary(ctx context.Context, path string) error {
+	var lastErr error
+	for _, args := range [][]string{{"--version"}, {"--help"}, {"-h"}} {
+		cmd := exec.CommandContext(ctx, path, args...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		// 部分平台/构建对 --help 返回 exit 1/2 但仍是合法二进制；
+		// 只要进程确实启动过（有输出），就视为通过。
+		if strings.TrimSpace(string(out)) != "" {
+			return nil
+		}
+		lastErr = fmt.Errorf("%v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("binary did not respond to --version/--help")
+}
+
 func (m *Manager) UpdateZashboard(ctx context.Context) error {
 	m.updateMu.Lock()
 	defer m.updateMu.Unlock()
@@ -553,6 +688,12 @@ func (m *Manager) repoZashboard() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg.ZashboardRepo
+}
+
+func (m *Manager) repoAdGuard() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg.AdGuardRepo
 }
 
 func (m *Manager) githubAPI() string {
@@ -873,6 +1014,74 @@ func unzip(src, dest string) error {
 		}
 	}
 	return nil
+}
+
+// untarGz 解压 .tar.gz / .tgz 归档到 dest。
+// 与 unzip 相同，拒绝写出提取目录之外的路径（路径穿越）。
+func untarGz(src, dest string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer func() { _ = zr.Close() }()
+
+	tr := tar.NewReader(zr)
+	cleanDest := filepath.Clean(dest) + string(os.PathSeparator)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// 忽略绝对路径前缀，统一按相对路径处理
+		name := hdr.Name
+		if strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) {
+			name = strings.TrimLeft(name, `/\`)
+		}
+		target := filepath.Join(dest, name)
+		// 防止 ../ 写出 dest 之外（与 unzip 同一策略）
+		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), cleanDest) &&
+			filepath.Clean(target) != filepath.Clean(dest) {
+			return fmt.Errorf("illegal file path in tar: %s", hdr.Name)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			mode := hdr.FileInfo().Mode()
+			if mode == 0 {
+				mode = 0o644
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(out, tr)
+			closeErr := out.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		default:
+			// 跳过链接等特殊类型，官方 AdGuard 包只含目录与普通文件
+			continue
+		}
+	}
 }
 
 // gunzipFile 解压单文件 gzip 流。

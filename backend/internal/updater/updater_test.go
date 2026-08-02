@@ -13,7 +13,7 @@ import (
 
 // newTestManager 构造一个把 GitHubAPI 指向本地 httptest 服务器的 Manager，
 // 避免真实网络请求，用于验证 CheckLatest 的版本比对逻辑。
-func newTestManager(t *testing.T, mihomoTag, zashboardTag string) (*Manager, string) {
+func newTestManager(t *testing.T, mihomoTag, zashboardTag, adguardTag string) (*Manager, string) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -24,6 +24,8 @@ func newTestManager(t *testing.T, mihomoTag, zashboardTag string) (*Manager, str
 			tag = mihomoTag
 		case strings.Contains(r.URL.Path, "zashboard-repo"):
 			tag = zashboardTag
+		case strings.Contains(r.URL.Path, "adguard-repo"):
+			tag = adguardTag
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -44,6 +46,7 @@ func newTestManager(t *testing.T, mihomoTag, zashboardTag string) (*Manager, str
 		DataDir:       dir,
 		MihomoRepo:    "mihomo-repo/x",
 		ZashboardRepo: "zashboard-repo/x",
+		AdGuardRepo:   "adguard-repo/x",
 		GitHubAPI:     srv.URL,
 		// CDN 回退列表若含 github 会绕过 mock 服务器直连真实网络，
 		// 这里只留一个必然失败的探针以外全部清空，官方地址（即 mock server）始终作为兜底存在。
@@ -52,10 +55,38 @@ func newTestManager(t *testing.T, mihomoTag, zashboardTag string) (*Manager, str
 	return m, dir
 }
 
+// AdGuard 二进制默认落在 DataDir/bin/adguardFileName()
+func TestAdGuardBinaryPathDefault(t *testing.T) {
+	dir := t.TempDir()
+	m := New(Config{DataDir: dir})
+	want := filepath.Join(dir, "bin", adguardFileName())
+	if got := m.AdGuardBinaryPath(); got != want {
+		t.Fatalf("AdGuardBinaryPath 默认路径不符\n期望 %q\n实际 %q", want, got)
+	}
+}
+
+// 显式配置应覆盖默认路径
+func TestAdGuardBinaryPathCustom(t *testing.T) {
+	dir := t.TempDir()
+	custom := filepath.Join(dir, "custom", "agh")
+	m := New(Config{DataDir: dir, AdGuardBinaryPath: custom})
+	if got := m.AdGuardBinaryPath(); got != custom {
+		t.Fatalf("应使用自定义路径，实际 %q", got)
+	}
+}
+
+// 未配置时默认仓库为官方 AdguardTeam/AdGuardHome
+func TestAdGuardRepoDefault(t *testing.T) {
+	m := New(Config{DataDir: t.TempDir()})
+	if got := m.repoAdGuard(); got != "AdguardTeam/AdGuardHome" {
+		t.Fatalf("默认 AdGuardRepo 应为 AdguardTeam/AdGuardHome，实际 %q", got)
+	}
+}
+
 // 本地未安装 mihomo 时，Present 应为 false，且应判定为需要更新
 func TestCheckLatestMihomoNotPresent(t *testing.T) {
-	m, _ := newTestManager(t, "v1.2.3", "v9.9.9")
-	mihomo, _ := m.CheckLatest(context.Background(), "")
+	m, _ := newTestManager(t, "v1.2.3", "v9.9.9", "v0.1.0")
+	mihomo, _, _ := m.CheckLatest(context.Background(), "", "")
 	if mihomo.Present {
 		t.Fatal("未安装 mihomo 时 Present 应为 false")
 	}
@@ -69,7 +100,7 @@ func TestCheckLatestMihomoNotPresent(t *testing.T) {
 
 // 本地版本与远端一致时不应判定为需要更新
 func TestCheckLatestMihomoUpToDate(t *testing.T) {
-	m, dir := newTestManager(t, "v1.2.3", "v9.9.9")
+	m, dir := newTestManager(t, "v1.2.3", "v9.9.9", "v0.1.0")
 	binPath := filepath.Join(dir, "bin", mihomoFileName())
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -78,7 +109,7 @@ func TestCheckLatestMihomoUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mihomo, _ := m.CheckLatest(context.Background(), "Mihomo Meta v1.2.3 windows amd64")
+	mihomo, _, _ := m.CheckLatest(context.Background(), "Mihomo Meta v1.2.3 windows amd64", "")
 	if !mihomo.Present {
 		t.Fatal("已写入二进制文件，Present 应为 true")
 	}
@@ -89,7 +120,7 @@ func TestCheckLatestMihomoUpToDate(t *testing.T) {
 
 // 本地版本与远端不一致时应判定为需要更新
 func TestCheckLatestMihomoOutdated(t *testing.T) {
-	m, dir := newTestManager(t, "v2.0.0", "v9.9.9")
+	m, dir := newTestManager(t, "v2.0.0", "v9.9.9", "v0.1.0")
 	binPath := filepath.Join(dir, "bin", mihomoFileName())
 	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -98,7 +129,7 @@ func TestCheckLatestMihomoOutdated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mihomo, _ := m.CheckLatest(context.Background(), "Mihomo Meta v1.2.3 windows amd64")
+	mihomo, _, _ := m.CheckLatest(context.Background(), "Mihomo Meta v1.2.3 windows amd64", "")
 	if !mihomo.UpdateNeeded {
 		t.Fatal("本地版本落后于远端，应判定为需要更新")
 	}
@@ -109,9 +140,9 @@ func TestCheckLatestMihomoOutdated(t *testing.T) {
 
 // zashboard 是纯静态资源，只按目录是否就绪判断，不做版本号比对
 func TestCheckLatestZashboardPresence(t *testing.T) {
-	m, dir := newTestManager(t, "v1.0.0", "v3.4.5")
+	m, dir := newTestManager(t, "v1.0.0", "v3.4.5", "v0.1.0")
 
-	_, zash := m.CheckLatest(context.Background(), "")
+	_, zash, _ := m.CheckLatest(context.Background(), "", "")
 	if zash.Present {
 		t.Fatal("未下载 zashboard 时 Present 应为 false")
 	}
@@ -127,7 +158,7 @@ func TestCheckLatestZashboardPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, zash = m.CheckLatest(context.Background(), "")
+	_, zash, _ = m.CheckLatest(context.Background(), "", "")
 	if !zash.Present {
 		t.Fatal("写入 index.html 后 Present 应为 true")
 	}
@@ -139,6 +170,43 @@ func TestCheckLatestZashboardPresence(t *testing.T) {
 	}
 }
 
+// AdGuard 未安装时 Present=false 且需要更新；安装后按版本比对
+func TestCheckLatestAdGuard(t *testing.T) {
+	m, dir := newTestManager(t, "v1.0.0", "v1.0.0", "v0.107.50")
+
+	_, _, agh := m.CheckLatest(context.Background(), "", "")
+	if agh.Present {
+		t.Fatal("未安装 AdGuard 时 Present 应为 false")
+	}
+	if !agh.UpdateNeeded {
+		t.Fatal("未安装时应判定为需要更新")
+	}
+	if agh.LatestVersion != "v0.107.50" {
+		t.Fatalf("应取回远端最新版本，实际 %q", agh.LatestVersion)
+	}
+
+	binPath := filepath.Join(dir, "bin", adguardFileName())
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, []byte("fake agh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, agh = m.CheckLatest(context.Background(), "", "AdGuard Home, version v0.107.50")
+	if !agh.Present {
+		t.Fatal("已写入二进制，Present 应为 true")
+	}
+	if agh.UpdateNeeded {
+		t.Fatal("本地版本已匹配远端 tag，不应需要更新")
+	}
+
+	_, _, agh = m.CheckLatest(context.Background(), "", "AdGuard Home, version v0.100.0")
+	if !agh.UpdateNeeded {
+		t.Fatal("本地版本落后时应判定为需要更新")
+	}
+}
+
 // GitHub API 不可达时应把错误信息透出，而不是 panic 或吞掉
 func TestCheckLatestAPIFailure(t *testing.T) {
 	dir := t.TempDir()
@@ -146,6 +214,7 @@ func TestCheckLatestAPIFailure(t *testing.T) {
 		DataDir:       dir,
 		MihomoRepo:    "mihomo-repo/x",
 		ZashboardRepo: "zashboard-repo/x",
+		AdGuardRepo:   "adguard-repo/x",
 		GitHubAPI:     "http://127.0.0.1:1/definitely-unreachable",
 		CDNProviders:  []string{},
 		// 该场景会触发完整的 CDN 回退链（8 个候选地址逐一失败），
@@ -153,11 +222,14 @@ func TestCheckLatestAPIFailure(t *testing.T) {
 		HTTPTimeoutSeconds: 2,
 	})
 
-	mihomo, zash := m.CheckLatest(context.Background(), "")
+	mihomo, zash, agh := m.CheckLatest(context.Background(), "", "")
 	if mihomo.Error == "" {
 		t.Fatal("API 不可达时应记录错误信息")
 	}
 	if zash.Error == "" {
+		t.Fatal("API 不可达时应记录错误信息")
+	}
+	if agh.Error == "" {
 		t.Fatal("API 不可达时应记录错误信息")
 	}
 }
