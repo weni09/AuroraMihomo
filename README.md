@@ -526,3 +526,12 @@ http://<地址>/api/v1/file/<token>                # 文件模板直链（不支
 `ghproxy.com` → `mirror.ghproxy.com` → `gh.ddlc.top` → `ghproxy.net` → `gitdl.cn` → `gh.llkk.cc` → `ghp.ci` → `github`（官方兜底）
 
 按顺序尝试，失败自动回退到下一个。可在「系统设置」页调整。
+
+## 鸣谢
+
+本项目的运行与面板能力建立在下列开源项目之上，谨致谢意：
+
+- **[Mihomo](https://github.com/MetaCubeX/mihomo)**（Clash.Meta）— 代理内核，负责规则分流、TUN/TProxy 与出站协议实现
+- **[Zashboard](https://github.com/Zephyruso/zashboard)** — 内嵌控制面板，提供代理组、连接与流量等可视化管理界面
+
+上述项目的许可证、商标与品牌归属其各自作者与社区；本仓库仅为集成与配置管理用途。
