@@ -25,6 +25,10 @@ export interface AdGuardStatus {
   cdnProviders: string[]
   /** 是否参加系统自动更新 */
   autoUpdate: boolean
+  /** AGH 管理员用户名 */
+  username: string
+  /** 是否与 Aurora 管理员密码同步 */
+  passwordSync: boolean
 }
 
 /** 一键对接向导勾选项 */
@@ -63,6 +67,8 @@ const emptyStatus = (): AdGuardStatus => ({
   entryPath: '/adguard/',
   cdnProviders: [],
   autoUpdate: false,
+  username: 'admin',
+  passwordSync: false,
 })
 
 export const useAdGuardStore = defineStore('adguard', {
@@ -95,6 +101,8 @@ export const useAdGuardStore = defineStore('adguard', {
           dnsMode: Number.isFinite(dnsMode) && dnsMode >= 0 && dnsMode <= 2 ? dnsMode : 0,
           cdnProviders: Array.isArray(res.data?.cdnProviders) ? res.data.cdnProviders : [],
           autoUpdate: res.data?.autoUpdate === true,
+          username: res.data?.username?.trim() || 'admin',
+          passwordSync: res.data?.passwordSync === true,
         }
       } catch (error) {
         console.error('Failed to fetch AdGuard status', error)
@@ -234,6 +242,43 @@ export const useAdGuardStore = defineStore('adguard', {
       try {
         const res = await api.put<Result>('/adguard/cdn', { providers })
         const text = res.data?.message || '升级链接已保存'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /**
+     * 设置 AGH 管理员账号。password 必填；syncWithAurora 可选写入同步开关。
+     * 不在前端/库中存明文密码。
+     */
+    async setCredentials(payload: {
+      username?: string
+      password: string
+      syncWithAurora?: boolean
+    }) {
+      this.actionLoading = true
+      try {
+        const body: {
+          username?: string
+          password: string
+          syncWithAurora?: boolean
+        } = { password: payload.password }
+        const u = payload.username?.trim()
+        if (u) body.username = u
+        if (payload.syncWithAurora !== undefined) {
+          body.syncWithAurora = payload.syncWithAurora
+        }
+        const res = await api.put<Result>('/adguard/credentials', body)
+        const text = res.data?.message || 'AdGuard 账号已更新'
         if (res.data?.success === false) {
           useNotifyStore().error(text)
         } else {

@@ -120,3 +120,71 @@ func TestSetCDNProviders_EmptyClears(t *testing.T) {
 		t.Fatalf("应回落全局 CDN, got %v", eff)
 	}
 }
+
+func TestSetCredentials_WritesYamlAndUsername(t *testing.T) {
+	svc, _, workDir := newAdGuardSettingsTestSvc(t)
+	ctx := context.Background()
+	if err := svc.SetCredentials(ctx, "aghuser", "test-pass-123"); err != nil {
+		t.Fatalf("SetCredentials: %v", err)
+	}
+	name, err := adguard.ReadUsername(workDir)
+	if err != nil || name != "aghuser" {
+		t.Fatalf("yaml username=%q err=%v", name, err)
+	}
+	if v, _ := svc.db.GetSetting(settingAdGuardUsername); v != "aghuser" {
+		t.Fatalf("setting username=%q", v)
+	}
+	st, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Username != "aghuser" {
+		t.Fatalf("Status.Username=%q", st.Username)
+	}
+}
+
+func TestSyncPasswordFromAurora_DisabledNoOp(t *testing.T) {
+	svc, _, workDir := newAdGuardSettingsTestSvc(t)
+	ctx := context.Background()
+	// 先写入一个已知账号
+	if err := svc.SetCredentials(ctx, "keepme", "original-pass"); err != nil {
+		t.Fatal(err)
+	}
+	// sync 默认关闭
+	if svc.PasswordSyncEnabled() {
+		t.Fatal("默认应关闭 sync")
+	}
+	if err := svc.SyncPasswordFromAurora(ctx, "aurora-new-pass"); err != nil {
+		t.Fatalf("sync off 应为 no-op nil: %v", err)
+	}
+	// yaml 用户名未变；密码仍能用 original（通过重新读 hash 不便，至少 users 仍是 keepme）
+	name, _ := adguard.ReadUsername(workDir)
+	if name != "keepme" {
+		t.Fatalf("no-op 后用户名被改: %q", name)
+	}
+}
+
+func TestSyncPasswordFromAurora_EnabledWrites(t *testing.T) {
+	svc, _, workDir := newAdGuardSettingsTestSvc(t)
+	ctx := context.Background()
+	if err := svc.SetPasswordSync(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.SetSetting(settingAdGuardUsername, "synced"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SyncPasswordFromAurora(ctx, "aurora-synced-pass"); err != nil {
+		t.Fatalf("SyncPasswordFromAurora: %v", err)
+	}
+	name, err := adguard.ReadUsername(workDir)
+	if err != nil || name != "synced" {
+		t.Fatalf("username=%q err=%v", name, err)
+	}
+	if !svc.PasswordSyncEnabled() {
+		t.Fatal("sync 应仍为 true")
+	}
+	st, _ := svc.Status(ctx)
+	if !st.PasswordSync || st.Username != "synced" {
+		t.Fatalf("Status sync=%v user=%q", st.PasswordSync, st.Username)
+	}
+}

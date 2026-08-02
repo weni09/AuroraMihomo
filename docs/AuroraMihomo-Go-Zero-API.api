@@ -657,6 +657,15 @@ type AdGuardStatusResp {
 	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
 	CdnProviders     []string `json:"cdnProviders,optional"`
 	AutoUpdate       bool     `json:"autoUpdate"`
+	Username         string   `json:"username,optional"`
+	PasswordSync     bool     `json:"passwordSync"`
+}
+
+// AdGuardCredentialsReq 设置 AGH 管理员账号；不落库明文密码。
+type AdGuardCredentialsReq {
+	Username       string `json:"username,optional"`
+	Password       string `json:"password"`
+	SyncWithAurora *bool  `json:"syncWithAurora,optional"`
 }
 
 // AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
@@ -788,6 +797,9 @@ service aurora-api {
 
 	@handler adGuardSetCDN
 	put /api/v1/adguard/cdn (AdGuardCDNReq) returns (Result)
+
+	@handler adGuardSetCredentials
+	put /api/v1/adguard/credentials (AdGuardCredentialsReq) returns (Result)
 
 	@handler adGuardWiring
 	get /api/v1/adguard/wiring returns (AdGuardWiringResp)

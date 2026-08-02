@@ -28,6 +28,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/credentials",
+				Handler: protected.AdGuardSetCredentialsHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/dns-mode",
 				Handler: protected.AdGuardSetDNSModeHandler(serverCtx),
 			},

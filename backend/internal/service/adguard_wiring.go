@@ -18,6 +18,8 @@ const (
 	settingAdGuardDNSMode      = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
 	settingAdGuardCDNProviders = "adguard.cdn_providers"       // JSON 字符串数组
 	settingAdGuardAutoUpdate   = "adguard.auto_update"         // "true" / "false"
+	settingAdGuardSyncPassword = "adguard.sync_password"       // "true" / "false"
+	settingAdGuardUsername     = "adguard.username"            // AGH 管理员用户名（明文可存）
 )
 
 const (

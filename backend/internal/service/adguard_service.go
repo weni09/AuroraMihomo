@@ -37,11 +37,15 @@ type AdGuardStatusDTO struct {
 	EntryPath string `json:"entryPath"`
 	// Snapshot 仅 wiring=on 时附带，便于 UI 展示可回滚内容
 	Snapshot *WiringPlan `json:"snapshot,omitempty"`
-	// CdnProviders AdGuard 升级专用镜像列表（空则用全局 CDN）
-	CdnProviders []string `json:"cdnProviders,omitempty"`
-	// AutoUpdate 是否参加系统自动更新 cron
-	AutoUpdate bool `json:"autoUpdate"`
-}
+		// CdnProviders AdGuard 升级专用镜像列表（空则用全局 CDN）
+		CdnProviders []string `json:"cdnProviders,omitempty"`
+		// AutoUpdate 是否参加系统自动更新 cron
+		AutoUpdate bool `json:"autoUpdate"`
+		// Username AGH 管理员用户名（settings 优先，否则 yaml）
+		Username string `json:"username,omitempty"`
+		// PasswordSync 是否与 Aurora 管理员密码保持同步
+		PasswordSync bool `json:"passwordSync"`
+	}
 
 // AdGuardService 编排 AdGuard 安装/启停与 DNS 一键对接。
 //
@@ -111,9 +115,11 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	} else if dto.WebAddr == "" {
 		dto.WebAddr = s.webAddr
 	}
-	dto.CdnProviders = s.CDNProviders()
-	dto.AutoUpdate = s.AutoUpdateEnabled()
-	// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
+		dto.CdnProviders = s.CDNProviders()
+		dto.AutoUpdate = s.AutoUpdateEnabled()
+		dto.PasswordSync = s.PasswordSyncEnabled()
+		dto.Username = s.AdminUsername()
+		// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
 	if v := s.getSetting(settingAdGuardVersion, ""); v != "" && dto.Version == "" {
 		dto.Version = v
 	}
@@ -438,15 +444,15 @@ func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
 
 // knownAdGuardSettingKeys 是卸载时要清除的已知键（含尚未落地的产品化键）。
 // component_enabled 由 Uninstall 最后单独写 false，不在此清空为空串。
-var knownAdGuardSettingKeys = []string{
-	settingAdGuardBoot,
-	settingAdGuardWebAddr,
-	settingAdGuardDNSPort,
-	settingAdGuardVersion,
-	settingAdGuardWiring,
-	settingAdGuardSnapshot,
-	"adguard.sync_password",
-		"adguard.username",
+	var knownAdGuardSettingKeys = []string{
+		settingAdGuardBoot,
+		settingAdGuardWebAddr,
+		settingAdGuardDNSPort,
+		settingAdGuardVersion,
+		settingAdGuardWiring,
+		settingAdGuardSnapshot,
+		settingAdGuardSyncPassword,
+		settingAdGuardUsername,
 		settingAdGuardDNSMode,
 		settingAdGuardAutoUpdate,
 		settingAdGuardCDNProviders,

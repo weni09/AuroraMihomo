@@ -8,12 +8,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Play, Power, RefreshCw, Download } from 'lucide-vue-next'
 
 /**
- * AdGuard 设置弹窗：运行控制、Web 端口、版本更新、DNS 模式、升级链接。
- * 账号密码区留给 T8；出网策略只读展示系统设置。
+ * AdGuard 设置弹窗：账号、运行控制、Web 端口、版本更新、DNS 模式、升级链接。
+ * 出网策略只读展示系统设置。
  */
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [boolean] }>()
@@ -24,6 +25,9 @@ const settings = useSettingsStore()
 const webPortInput = ref('3000')
 const cdnText = ref('')
 const dnsModeValue = ref('0')
+const usernameInput = ref('admin')
+const passwordInput = ref('')
+const syncWithAurora = ref(false)
 
 const busy = computed(() => store.isLoading || store.actionLoading)
 const running = computed(() => store.status.running)
@@ -46,6 +50,10 @@ function syncFromStore() {
   webPortInput.value = parsePortFromAddr(store.status.webAddr)
   cdnText.value = (store.status.cdnProviders || []).join('\n')
   dnsModeValue.value = String(store.status.dnsMode ?? 0)
+  usernameInput.value = store.status.username || 'admin'
+  syncWithAurora.value = store.status.passwordSync === true
+  // 密码不回填
+  passwordInput.value = ''
 }
 
 watch(
@@ -61,7 +69,7 @@ watch(
 
 
 watch(
-  () => [store.status.webAddr, store.status.dnsMode, store.status.cdnProviders],
+  () => [store.status.webAddr, store.status.dnsMode, store.status.cdnProviders, store.status.username, store.status.passwordSync],
   () => {
     if (props.open) syncFromStore()
   },
@@ -88,6 +96,17 @@ async function saveCdn() {
   await store.setCdnProviders(providers)
 }
 
+async function saveCredentials() {
+  const password = passwordInput.value
+  if (!password) return
+  await store.setCredentials({
+    username: usernameInput.value.trim() || 'admin',
+    password,
+    syncWithAurora: syncWithAurora.value,
+  })
+  passwordInput.value = ''
+}
+
 async function onDnsModeChange(v: unknown) {
   if (v === null || v === undefined) return
   const mode = Number(v)
@@ -107,6 +126,48 @@ async function onDnsModeChange(v: unknown) {
     @close="close"
   >
     <div class="space-y-6 text-sm" data-testid="adguard-settings-dialog-body">
+      <!-- 账号 -->
+      <section class="space-y-3" data-testid="adguard-settings-account">
+        <h3 class="text-sm font-semibold text-fg">账号</h3>
+        <p class="text-xs text-fg-subtle">
+          写入 AdGuard Home 管理员账号（bcrypt 哈希进 yaml，不在面板库存明文）。
+          勾选同步后，在系统设置修改 Aurora 管理员密码时会一并更新 AGH。
+        </p>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label for="agh-username">用户名</Label>
+            <Input
+              id="agh-username"
+              v-model="usernameInput"
+              autocomplete="username"
+              class="font-mono"
+              :disabled="busy"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label for="agh-password">密码</Label>
+            <Input
+              id="agh-password"
+              v-model="passwordInput"
+              type="password"
+              autocomplete="new-password"
+              placeholder="输入新密码后保存"
+              :disabled="busy"
+            />
+          </div>
+        </div>
+        <label class="flex items-start gap-2 cursor-pointer">
+          <Checkbox v-model="syncWithAurora" class="mt-0.5" :disabled="busy" />
+          <span class="text-sm text-fg">
+            与 Aurora 管理员密码保持同步
+            <span class="block text-xs text-fg-subtle">开启后改 Aurora 密码会尝试更新 AGH</span>
+          </span>
+        </label>
+        <Button size="sm" :disabled="busy || !passwordInput" @click="saveCredentials">
+          保存账号
+        </Button>
+      </section>
+
       <!-- 运行状态 -->
       <section class="space-y-3" data-testid="adguard-settings-runtime">
         <h3 class="text-sm font-semibold text-fg">运行状态</h3>

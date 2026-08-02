@@ -94,7 +94,13 @@ describe('useAdGuardStore component controls', () => {
   it('setDnsMode 调用 PUT /adguard/dns-mode', async () => {
     mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
     mockedApi.get.mockResolvedValue({
-      data: { componentEnabled: true, installed: true, running: true, dnsMode: 1, entryPath: '/adguard/' },
+      data: {
+        componentEnabled: true,
+        installed: true,
+        running: true,
+        dnsMode: 1,
+        entryPath: '/adguard/',
+      },
     })
     const store = useAdGuardStore()
     await store.setDnsMode(1)
@@ -116,5 +122,44 @@ describe('useAdGuardStore component controls', () => {
     const store = useAdGuardStore()
     await store.setCdnProviders(['https://a.example/'])
     expect(mockedApi.put).toHaveBeenCalledWith('/adguard/cdn', { providers: ['https://a.example/'] })
+  })
+
+  it('setCredentials 调用 PUT /adguard/credentials', async () => {
+    mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: {
+        componentEnabled: true,
+        username: 'admin',
+        passwordSync: true,
+        entryPath: '/adguard/',
+      },
+    })
+    const store = useAdGuardStore()
+    await store.setCredentials({
+      username: 'admin',
+      password: 'new-secret',
+      syncWithAurora: true,
+    })
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/credentials', {
+      username: 'admin',
+      password: 'new-secret',
+      syncWithAurora: true,
+    })
+    expect(store.status.passwordSync).toBe(true)
+  })
+
+  it('fetchStatus 映射 username / passwordSync', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        componentEnabled: true,
+        username: 'agh',
+        passwordSync: true,
+        entryPath: '/adguard/',
+      },
+    })
+    const store = useAdGuardStore()
+    await store.fetchStatus()
+    expect(store.status.username).toBe('agh')
+    expect(store.status.passwordSync).toBe(true)
   })
 })

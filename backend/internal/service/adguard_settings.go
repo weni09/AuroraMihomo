@@ -10,6 +10,74 @@ import (
 	"auroramihomo/backend/internal/adguard"
 )
 
+// PasswordSyncEnabled 是否在 Aurora 改密后自动同步到 AGH。
+func (s *AdGuardService) PasswordSyncEnabled() bool {
+	v := strings.TrimSpace(s.getSetting(settingAdGuardSyncPassword, ""))
+	return v == "1" || strings.EqualFold(v, "true") || v == "on"
+}
+
+// SetPasswordSync 写入 adguard.sync_password。
+func (s *AdGuardService) SetPasswordSync(ctx context.Context, enabled bool) error {
+	_ = ctx
+	if s.db == nil {
+		return errors.New("数据库未初始化")
+	}
+	val := "false"
+	if enabled {
+		val = "true"
+	}
+	return s.db.SetSetting(settingAdGuardSyncPassword, val)
+}
+
+// AdminUsername 返回 settings 中的 AGH 用户名；空则尝试读 yaml；再空则 "admin"。
+func (s *AdGuardService) AdminUsername() string {
+	if u := strings.TrimSpace(s.getSetting(settingAdGuardUsername, "")); u != "" {
+		return u
+	}
+	if name, err := adguard.ReadUsername(s.workDir); err == nil && strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	return "admin"
+}
+
+// SetCredentials 写入 AGH yaml 管理员口令（bcrypt），并持久化用户名。
+// 不在 SQLite 存密码明文。若进程在跑则 Restart 使 users 生效。
+func (s *AdGuardService) SetCredentials(ctx context.Context, username, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = "admin"
+	}
+	if password == "" {
+		return errors.New("密码不能为空")
+	}
+	if err := adguard.SetUserPassword(s.workDir, username, password); err != nil {
+		return err
+	}
+	if s.db != nil {
+		if err := s.db.SetSetting(settingAdGuardUsername, username); err != nil {
+			return fmt.Errorf("保存用户名失败: %w", err)
+		}
+	}
+	if s.mgr != nil && s.mgr.Status().Running {
+		if err := s.Restart(ctx); err != nil {
+			return fmt.Errorf("账号已写入，但重启失败（新口令需重启后生效）: %w", err)
+		}
+	}
+	return nil
+}
+
+// SyncPasswordFromAurora 在 sync 开启时，用 Aurora 新明文口令更新 AGH。
+// sync 关闭则 no-op（返回 nil）。用户名取 settings 或默认 admin。
+func (s *AdGuardService) SyncPasswordFromAurora(ctx context.Context, plainPassword string) error {
+	if !s.PasswordSyncEnabled() {
+		return nil
+	}
+	if strings.TrimSpace(plainPassword) == "" {
+		return errors.New("同步密码为空")
+	}
+	return s.SetCredentials(ctx, s.AdminUsername(), plainPassword)
+}
+
 // SetWebPort 校验端口、写 AGH yaml（强制 127.0.0.1）、落库 web_addr；
 // 若进程在跑则 Restart 使新端口生效。
 func (s *AdGuardService) SetWebPort(ctx context.Context, port int) error {

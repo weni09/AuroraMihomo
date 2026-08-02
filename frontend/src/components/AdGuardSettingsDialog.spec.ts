@@ -74,6 +74,7 @@ describe('AdGuardSettingsDialog', () => {
     await nextTick()
 
     expect(body().find('[data-testid="adguard-settings-dialog-body"]').exists()).toBe(true)
+    expect(body().find('[data-testid="adguard-settings-account"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-runtime"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-webport"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-version"]').exists()).toBe(true)
@@ -81,6 +82,7 @@ describe('AdGuardSettingsDialog', () => {
     expect(body().text()).toContain('运行中')
     expect(body().text()).toContain('v0.107.50')
     expect(body().text()).toContain('未托管')
+    expect(body().text()).toContain('与 Aurora 管理员密码保持同步')
     expect(body().find('[data-testid="adguard-egress-note"]').text()).toContain(
       '下载出网遵循系统设置',
     )
