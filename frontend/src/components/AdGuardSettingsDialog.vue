@@ -48,7 +48,7 @@ function parsePortFromAddr(addr: string): string {
 function syncFromStore() {
   webPortInput.value = parsePortFromAddr(store.status.webAddr)
   const dp = store.status.dnsPort
-  dnsPortDraft.value = dp && dp > 0 && dp !== 53 ? String(dp) : '5353'
+  dnsPortDraft.value = dp && dp > 0 ? String(dp) : '5353'
   cdnText.value = (store.status.cdnProviders || []).join('\n')
   usernameInput.value = store.status.username || 'admin'
   syncWithAurora.value = store.status.passwordSync === true
