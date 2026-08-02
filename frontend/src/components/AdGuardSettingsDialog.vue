@@ -253,15 +253,20 @@ async function onDnsPortBlur() {
           </Button>
         </div>
         <div class="space-y-1.5">
-          <Label for="agh-cdn">升级链接（可选，按序回落；空则用系统全局 CDN）</Label>
+          <Label for="agh-cdn">升级链接（按序回落；支持变量）</Label>
           <Textarea
             id="agh-cdn"
             v-model="cdnText"
-            rows="3"
+            rows="4"
             class="font-mono text-xs"
-            placeholder="每行一个镜像前缀，例如&#10;https://ghproxy.example/"
+            placeholder="https://static.adguard.com/adguardhome/beta/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://github.com/AdguardTeam/AdGuardHome/releases/download/${latest_ver}/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://static.adguard.com/adguardhome/release/AdGuardHome_${GOOS}_${Arch}.tar.gz"
             :disabled="busy"
           />
+          <p class="text-[11px] text-fg-subtle leading-relaxed">
+            变量：<code class="font-mono">${Arch}</code>（amd64/arm64…）、
+            <code class="font-mono">${latest_ver}</code>（GitHub 最新 tag）、
+            <code class="font-mono">${GOOS}</code>。留空则使用上述默认三源。下载出网仍遵循系统设置。
+          </p>
           <Button size="sm" variant="secondary" :disabled="busy" @click="saveCdn">
             保存升级链接
           </Button>

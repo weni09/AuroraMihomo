@@ -206,8 +206,8 @@ func (m *Manager) CDNProviders() []string {
 	return append([]string{}, m.cfg.CDNProviders...)
 }
 
-// SetAdGuardCDNProviders 设置 AdGuard 专用下载镜像（按序回落）。
-// 传 nil 或空切片清除覆盖，后续回落到全局 CDNProviders。
+// SetAdGuardCDNProviders 设置 AdGuard 专用下载 URL 模板列表（按序回落）。
+// 支持 ${Arch}、${latest_ver}、${GOOS} 等变量；传空则回落默认模板。
 func (m *Manager) SetAdGuardCDNProviders(providers []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -215,18 +215,29 @@ func (m *Manager) SetAdGuardCDNProviders(providers []string) {
 		m.adguardCDN = nil
 		return
 	}
-	m.adguardCDN = normalizeCDNList(providers)
+	m.adguardCDN = normalizeAdGuardURLTemplates(providers)
 }
 
-// EffectiveCDNProviders 返回 AdGuard 下载应使用的 CDN 列表：
-// 专用列表非空则用之，否则用全局 CDNProviders。
+// EffectiveCDNProviders 保留给仍走 GitHub CDN 包装的路径；
+// AdGuard 请用 AdGuardDownloadTemplates。
 func (m *Manager) EffectiveCDNProviders() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.adguardCDN) > 0 {
+		// 若用户填的是完整 http(s) 模板，不再当 ghproxy token 用
+		return append([]string{}, m.adguardCDN...)
+	}
+	return append([]string{}, m.cfg.CDNProviders...)
+}
+
+// AdGuardDownloadTemplates 返回 AdGuard 升级用的 URL 模板（已清洗；空则默认三源）。
+func (m *Manager) AdGuardDownloadTemplates() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if len(m.adguardCDN) > 0 {
 		return append([]string{}, m.adguardCDN...)
 	}
-	return append([]string{}, m.cfg.CDNProviders...)
+	return append([]string{}, DefaultAdGuardDownloadTemplates...)
 }
 
 // UseMihomoProxy 是否优先经由本地 mihomo 代理出网
@@ -535,6 +546,9 @@ func (m *Manager) UpdateMihomo(ctx context.Context) error {
 
 // UpdateAdGuard 下载并安装最新 AdGuardHome 二进制。
 // 可选组件：仅在显式调用时安装，EnsureComponents 不会自动拉取。
+//
+// 下载顺序：用户/默认 URL 模板（展开 ${Arch}/${latest_ver}/…）按序尝试；
+// 全部失败再回落 GitHub Release 资产 + 全局 CDN 包装（兼容旧逻辑）。
 func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 	m.updateMu.Lock()
 	defer m.updateMu.Unlock()
@@ -543,22 +557,54 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	assetURL, assetName, assetSize, err := pickAdGuardAsset(rel)
-	if err != nil {
-		return err
-	}
-	m.logger.Infof("downloading AdGuardHome %s (%s)", rel.TagName, assetName)
+	latestVer := strings.TrimSpace(rel.TagName)
+	m.logger.Infof("AdGuardHome latest tag=%s", latestVer)
 
 	tmpDir, err := os.MkdirTemp("", "aurora-adguard-*")
 	if err != nil {
 		return err
 	}
-	// 临时目录清理属于尽力而为，失败也没有补救动作
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	archivePath := filepath.Join(tmpDir, assetName)
-	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize); err != nil {
-		return err
+	templates := m.AdGuardDownloadTemplates()
+	urls := buildAdGuardDownloadURLs(templates, latestVer)
+	var lastDownloadErr error
+	var archivePath, assetName string
+
+	for i, u := range urls {
+		name := archiveNameFromURL(u)
+		dest := filepath.Join(tmpDir, fmt.Sprintf("%d-%s", i, name))
+		m.logger.Infof("trying AdGuard download [%d/%d]: %s", i+1, len(urls), u)
+		if err := m.downloadAdGuardURL(ctx, u, dest); err != nil {
+			lastDownloadErr = err
+			m.logger.Errorf("AdGuard download failed via %s: %v", u, err)
+			_ = os.Remove(dest)
+			continue
+		}
+		archivePath = dest
+		assetName = name
+		break
+	}
+
+	// 模板源全失败：回落官方 Release 资产选择 + CDN
+	if archivePath == "" {
+		assetURL, name, assetSize, err := pickAdGuardAsset(rel)
+		if err != nil {
+			if lastDownloadErr != nil {
+				return fmt.Errorf("AdGuard 模板源均失败（末次: %v）；Release 资产选择失败: %w", lastDownloadErr, err)
+			}
+			return err
+		}
+		m.logger.Infof("falling back to GitHub release asset %s", name)
+		dest := filepath.Join(tmpDir, name)
+		if err := m.downloadWithCDN(ctx, assetURL, dest, assetSize); err != nil {
+			if lastDownloadErr != nil {
+				return fmt.Errorf("AdGuard 模板源均失败（末次: %v）；CDN 回落失败: %w", lastDownloadErr, err)
+			}
+			return err
+		}
+		archivePath = dest
+		assetName = name
 	}
 
 	extractDir := filepath.Join(tmpDir, "extract")
@@ -567,6 +613,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 	}
 
 	lowerName := strings.ToLower(assetName)
+	// 部分 URL 文件名无扩展名时，根据 Content 已落盘文件魔数很难；按后缀与 tar/zip 尝试
 	switch {
 	case strings.HasSuffix(lowerName, ".zip"):
 		if err := unzip(archivePath, extractDir); err != nil {
@@ -577,10 +624,14 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 			return err
 		}
 	default:
-		return fmt.Errorf("unsupported AdGuardHome archive format: %s", assetName)
+		// 先试 tar.gz 再 zip
+		if err := untarGz(archivePath, extractDir); err != nil {
+			if err2 := unzip(archivePath, extractDir); err2 != nil {
+				return fmt.Errorf("unsupported AdGuardHome archive %s: tar=%v zip=%v", assetName, err, err2)
+			}
+		}
 	}
 
-	// keyword 小写：findExtractedBinary 会对文件名 ToLower 后再 Contains
 	binPath, err := findExtractedBinary(extractDir, "adguardhome")
 	if err != nil {
 		return err
@@ -590,7 +641,6 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	// 已有文件先备份，便于安装失败或版本回退时手工恢复
 	if fileExists(target) {
 		if err := copyFile(target, target+".bak"); err != nil {
 			m.logger.Errorf("备份旧 AdGuardHome 失败: %v", err)
@@ -603,8 +653,6 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 		_ = os.Chmod(target, 0o755)
 	}
 
-	// 校验：文件可执行且体积非空；再尝试 --version / --help。
-	// 校验失败仍保留已写入的文件（用户可能手工修复权限），但向上返回错误。
 	st, err := os.Stat(target)
 	if err != nil || st.Size() == 0 {
 		return fmt.Errorf("AdGuardHome binary invalid: empty or missing after install")
@@ -612,7 +660,35 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 	if err := verifyAdGuardBinary(ctx, target); err != nil {
 		return fmt.Errorf("AdGuardHome binary invalid: %w", err)
 	}
-	m.logger.Infof("AdGuardHome ready: %s (%s)", target, rel.TagName)
+	m.logger.Infof("AdGuardHome ready: %s (%s)", target, latestVer)
+	return nil
+}
+
+// downloadAdGuardURL 下载单个完整 URL（不走 GitHub CDN 包装）。
+// 体积未知时不做 expectedSize 校验；经 mihomo 代理优先（与其它下载一致）。
+func (m *Manager) downloadAdGuardURL(ctx context.Context, rawURL, dest string) error {
+	if client, proxy := m.httpClient(); proxy != "" {
+		m.logger.Infof("尝试经 mihomo 代理(%s)下载: %s", proxy, rawURL)
+		if err := m.downloadFile(ctx, rawURL, dest, client); err == nil {
+			st, err := os.Stat(dest)
+			if err == nil && st.Size() >= 1024 {
+				m.logger.Infof("download success via mihomo 代理 %s (%d bytes)", proxy, st.Size())
+				return nil
+			}
+			_ = os.Remove(dest)
+		} else {
+			m.logger.Errorf("经 mihomo 代理下载失败，改直连: %v", err)
+		}
+	}
+	if err := m.downloadFile(ctx, rawURL, dest, m.client); err != nil {
+		return err
+	}
+	st, err := os.Stat(dest)
+	if err != nil || st.Size() < 1024 {
+		_ = os.Remove(dest)
+		return fmt.Errorf("invalid file size after download")
+	}
+	m.logger.Infof("download success via direct (%d bytes)", st.Size())
 	return nil
 }
 
