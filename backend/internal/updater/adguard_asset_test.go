@@ -10,9 +10,13 @@ func TestPickAdGuardAsset_CurrentPlatform(t *testing.T) {
 	rel := &githubRelease{
 		TagName: "v0.107.61",
 		Assets: []githubAsset{
-			{Name: "AdGuardHome_linux_amd64.tar.gz", BrowserDownloadURL: "https://example/linux.tgz", Size: 10},
-			{Name: "AdGuardHome_windows_amd64.zip", BrowserDownloadURL: "https://example/win.zip", Size: 11},
-			{Name: "AdGuardHome_darwin_arm64.tar.gz", BrowserDownloadURL: "https://example/mac.tgz", Size: 12},
+			{Name: "AdGuardHome_windows_amd64.zip", BrowserDownloadURL: "https://example/win-amd64.zip", Size: 11},
+			{Name: "AdGuardHome_windows_arm64.zip", BrowserDownloadURL: "https://example/win-arm64.zip", Size: 12},
+			{Name: "AdGuardHome_linux_amd64.tar.gz", BrowserDownloadURL: "https://example/linux-amd64.tgz", Size: 10},
+			{Name: "AdGuardHome_linux_arm64.tar.gz", BrowserDownloadURL: "https://example/linux-arm64.tgz", Size: 13},
+			{Name: "AdGuardHome_linux_armv7.tar.gz", BrowserDownloadURL: "https://example/linux-armv7.tgz", Size: 14},
+			{Name: "AdGuardHome_darwin_amd64.tar.gz", BrowserDownloadURL: "https://example/mac-amd64.tgz", Size: 15},
+			{Name: "AdGuardHome_darwin_arm64.tar.gz", BrowserDownloadURL: "https://example/mac-arm64.tgz", Size: 16},
 			{Name: "AdGuardHome_linux_amd64.deb", BrowserDownloadURL: "https://example/deb", Size: 9},
 		},
 	}
@@ -29,18 +33,20 @@ func TestPickAdGuardAsset_CurrentPlatform(t *testing.T) {
 	if !strings.Contains(lower, "adguardhome") {
 		t.Fatalf("name=%s", name)
 	}
-	if runtime.GOOS == "windows" && !strings.HasSuffix(lower, ".zip") {
-		t.Fatalf("windows 期望 zip, got %s", name)
-	}
-	if runtime.GOOS != "windows" && !strings.Contains(lower, ".tar.gz") && !strings.HasSuffix(lower, ".gz") {
-		// 官方多为 .tar.gz
-		t.Logf("got archive %s (ok if tar.gz)", name)
+	if runtime.GOOS == "windows" {
+		if !strings.HasSuffix(lower, ".zip") {
+			t.Fatalf("windows 期望 zip, got %s", name)
+		}
+	} else {
+		if !strings.HasSuffix(lower, ".tar.gz") && !strings.HasSuffix(lower, ".tgz") {
+			t.Fatalf("非 windows 期望 .tar.gz/.tgz, got %s", name)
+		}
 	}
 }
 
-func TestPickAdGuardAsset_Unsupported(t *testing.T) {
+func TestPickAdGuardAsset_NoMatch(t *testing.T) {
 	rel := &githubRelease{TagName: "v1", Assets: nil}
-	// 通过临时把逻辑写成对空 assets 返回 error 即可；本测只断言无匹配时有 error
+	// 无资产时 pick 应返回 error
 	_, _, _, err := pickAdGuardAsset(rel)
 	if err == nil {
 		t.Fatal("无资产应 error")
