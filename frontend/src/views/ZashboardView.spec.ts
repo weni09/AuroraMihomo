@@ -13,16 +13,16 @@ import { clearPageChrome, usePageChrome } from '../composables/usePageChrome'
 const mockedApi = vi.mocked(api, true)
 
 /**
- * 小屏不再叠页面大标题条：对接信息与「新标签页」注入 App 顶栏；
- * 本页仅在 lg+ 保留无标题工具条。用 page chrome 状态 + class 契约断言。
+ * 移动端：页面 header 隐藏，对接信息与「新标签页」注入 App 顶栏。
+ * 桌面（lg+）：完整页面 header（标题 + 两按钮）保持原样。
  */
-describe('ZashboardView 移动端 header / page chrome', () => {
+describe('ZashboardView 移动端 / 桌面 header', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearPageChrome()
   })
 
-  it('成功加载时写入 page chrome，且页面级 header 仅桌面显示、无大标题', async () => {
+  it('成功加载时写入 page chrome，且桌面 header 仍含标题与两按钮', async () => {
     mockedApi.get.mockResolvedValue({
       data: {
         available: true,
@@ -41,11 +41,11 @@ describe('ZashboardView 移动端 header / page chrome', () => {
     expect(action.value?.disabled).toBe(false)
 
     const header = wrapper.get('[data-testid="zashboard-page-header"]')
+    // 小屏隐藏、仅 lg 显示完整条
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
-    // 页面级不再放 h1，标题由 App 顶栏承担
-    expect(wrapper.find('h1').exists()).toBe(false)
+    expect(wrapper.get('h1').text()).toBe('Zashboard')
+    expect(wrapper.text()).toContain('重新加载')
     expect(wrapper.text()).toContain('在新标签页打开')
-    expect(wrapper.text()).not.toContain('重新加载')
     expect(wrapper.find('iframe').exists()).toBe(true)
 
     wrapper.unmount()
@@ -53,7 +53,7 @@ describe('ZashboardView 移动端 header / page chrome', () => {
     expect(action.value).toBeNull()
   })
 
-  it('入口不可用时错误说明仍完整展示，且清空对接副标题', async () => {
+  it('入口不可用时错误说明仍完整展示', async () => {
     mockedApi.get.mockResolvedValue({
       data: {
         available: false,
@@ -70,7 +70,6 @@ describe('ZashboardView 移动端 header / page chrome', () => {
 
     const { subtitle, action } = usePageChrome()
     expect(subtitle.value).toBe('')
-    // 外开不可用，但仍挂「新标签页」入口（disabled），避免顶栏布局跳动
     expect(action.value?.label).toBe('新标签页')
     expect(action.value?.disabled).toBe(true)
 

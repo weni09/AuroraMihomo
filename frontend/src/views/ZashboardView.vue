@@ -126,25 +126,24 @@ onBeforeUnmount(clearPageChrome)
        外壳已不再锁一屏高度，这里改用 h-dvh 自持，而不是依赖父级传下来的
        h-full。iframe 内部有自己的滚动，不影响本页用浏览器滚动条。 -->
   <main class="h-dvh flex flex-col min-h-0">
-    <!-- 桌面没有 App 移动顶栏：仅在 lg+ 留一条无标题工具条（对接信息 + 外开）。
-         小屏标题/副标题/「新标签页」都在 App 顶栏，这里不再重复占高。 -->
+    <!-- 仅桌面（lg+）保留完整页面 header：标题 + 对接信息 + 重新加载/新标签页。
+         小屏改由 App 顶栏承载标题/副标题/「新标签页」，这里 hidden 避免叠两层。 -->
     <div
       data-testid="zashboard-page-header"
-      class="hidden lg:flex flex-nowrap items-center justify-between gap-3 px-6 py-2 border-b bg-surface shrink-0"
+      class="hidden lg:flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b bg-surface shrink-0"
     >
-      <p v-if="entryHost" class="text-xs text-fg-subtle truncate min-w-0">
-        已对接内核 {{ entryHost }}:{{ entryPort }}
-      </p>
-      <span v-else class="text-xs text-fg-subtle">Zashboard</span>
-      <Button
-        variant="secondary"
-        size="sm"
-        class="shrink-0"
-        :disabled="!frameSrc"
-        @click="openExternally"
-      >
-        在新标签页打开
-      </Button>
+      <div>
+        <h1 class="text-xl font-bold">Zashboard</h1>
+        <p v-if="entryHost" class="text-xs text-fg-subtle">
+          已对接内核 {{ entryHost }}:{{ entryPort }}
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <Button size="sm" @click="load">重新加载</Button>
+        <Button variant="secondary" size="sm" :disabled="!frameSrc" @click="openExternally">
+          在新标签页打开
+        </Button>
+      </div>
     </div>
 
     <p v-if="loading" class="p-4 sm:p-6 text-sm text-fg-muted">正在获取面板入口…</p>
