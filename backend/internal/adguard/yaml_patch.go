@@ -11,14 +11,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	aghConfigFile  = "AdGuardHome.yaml"
-	defaultDNSPort = 1053
-	// defaultWebPort 与面板默认反代上游 127.0.0.1:3000 对齐；
-	// AGH 官方默认 80，但嵌入场景用 3000 避免与宿主机其它 Web 冲突。
-	defaultWebPort = 3000
-	localhostBind  = "127.0.0.1"
-)
+	const (
+		aghConfigFile = "AdGuardHome.yaml"
+		// defaultDNSPort 是 AGH 自身监听端口。勿用 1053：与 mihomo 默认 dns.listen 冲突，
+		// 真机表现为 starting dns server: bind address already in use 后进程退出。
+		defaultDNSPort = 5353
+		// defaultWebPort 与面板默认反代上游 127.0.0.1:3000 对齐。
+		defaultWebPort = 3000
+		localhostBind  = "127.0.0.1"
+		// defaultMihomoUpstream 嵌入场景下 AGH 默认把解析转给本机 mihomo DNS。
+		defaultMihomoUpstream = "127.0.0.1:1053"
+	)
 
 // configPath 返回 work-dir 下的 AdGuardHome.yaml 路径。
 func configPath(workDir string) string {
@@ -127,7 +130,7 @@ func asStringList(v any) []string {
 	}
 }
 
-// ReadDNSPort 读取 dns.port；文件或键缺失时默认 1053。
+// ReadDNSPort 读取 dns.port；文件或键缺失时默认 defaultDNSPort(5353)。
 func ReadDNSPort(workDir string) (int, error) {
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {

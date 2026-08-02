@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -92,9 +93,8 @@ func (m *Manager) startLocked() error {
 	alive := m.isProcessAliveLocked()
 	m.mu.RUnlock()
 	if alive {
-		err := errors.New("adguard is already running")
-		m.setLastErr(err.Error())
-		return err
+		// 已在跑：对调用方是幂等成功语义更友好，不污染 lastErr
+		return nil
 	}
 
 	if m.cfg.BinaryPath == "" {
@@ -114,15 +114,59 @@ func (m *Manager) startLocked() error {
 			m.setLastErr(msg)
 			return fmt.Errorf("create work dir failed: %w", err)
 		}
-		// 启动前强制 Web/DNS 绑定回环，避免 AGH 默认 0.0.0.0 暴露。
-		// 失败不阻断启动（yaml 损坏时仍应尽量拉起），但记入 lastErr 便于排查。
-		if err := EnsureBindLocalhost(m.cfg.WorkDir); err != nil {
+	}
+
+	// 绝对路径：openrc 下 cwd 虽是 /opt/auroramihomo，但相对 --work-dir 在
+	// 其它启动方式下会找不到配置，AGH 日志会报 first time launched / 找不到文件。
+	binPath, err := filepath.Abs(m.cfg.BinaryPath)
+	if err != nil {
+		binPath = m.cfg.BinaryPath
+	}
+	workDir := m.cfg.WorkDir
+	if workDir != "" {
+		if abs, err := filepath.Abs(workDir); err == nil {
+			workDir = abs
+		}
+	}
+	webAddr := strings.TrimSpace(m.cfg.WebAddr)
+	if webAddr == "" {
+		webAddr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
+	}
+	webAddr = strings.TrimPrefix(strings.TrimPrefix(webAddr, "http://"), "https://")
+
+	// 启动前写入完整引导配置，跳过官方 install.html 向导。
+	if workDir != "" {
+		dnsPort := defaultDNSPort
+		if p, err := ReadDNSPort(workDir); err == nil && p > 0 {
+			dnsPort = p
+		}
+		if err := EnsureBootstrapConfig(workDir, webAddr, dnsPort, "admin", ""); err != nil {
+			m.setLastErr("bootstrap config: " + err.Error())
+			// 不直接 return：仍尝试启动，便于看 AGH 自身日志
+		} else if err := EnsureBindLocalhost(workDir); err != nil {
 			m.setLastErr("ensure bind localhost: " + err.Error())
 		}
 	}
 
+	cfgFile := ""
+	if workDir != "" {
+		cfgFile = filepath.Join(workDir, aghConfigFile)
+	}
+	args := []string{}
+	if workDir != "" {
+		args = append(args, "--work-dir", workDir)
+	}
+	if cfgFile != "" {
+		args = append(args, "--config", cfgFile)
+	}
+	args = append(args, "--web-addr", webAddr, "--no-check-update")
+
 	//nolint:noctx // 常驻进程不应绑定请求级 context
-	cmd := exec.Command(m.cfg.BinaryPath, "--work-dir", m.cfg.WorkDir)
+	cmd := exec.Command(binPath, args...)
+	// 工作目录固定到 work-dir，避免相对 data/ 路径歧义
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	if err := cmd.Start(); err != nil {
 		msg := fmt.Sprintf("failed to start adguard: %v", err)
 		m.setLastErr(msg)

@@ -290,6 +290,9 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// AdGuard Home：可选子进程。默认不下载；仅用户安装后才会 Installed。
 	// work-dir 与二进制分开放：yaml/统计在 data/adguardhome，可执行文件在 data/bin。
 	aghWorkDir := filepath.Join(dataDir, "adguardhome")
+	if abs, err := filepath.Abs(aghWorkDir); err == nil {
+		aghWorkDir = abs
+	}
 	aghWebAddr := "127.0.0.1:3000"
 	if v, err := db.GetSetting("adguard.web_addr"); err == nil && strings.TrimSpace(v) != "" {
 		aghWebAddr = strings.TrimSpace(v)

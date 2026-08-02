@@ -54,8 +54,8 @@ func TestReadDNSPort_MissingYaml(t *testing.T) {
 	if err != nil {
 		t.Fatalf("缺失 yaml 应返回默认值而非错误: %v", err)
 	}
-	if port != 1053 {
-		t.Fatalf("default port want 1053 got %d", port)
+	if port != 5353 {
+		t.Fatalf("default port want 5353 got %d", port)
 	}
 }
 
@@ -63,8 +63,8 @@ func TestReadDNSPort_MissingPortKey(t *testing.T) {
 	dir := t.TempDir()
 	writeAGHYaml(t, dir, "dns:\n  bootstrap_dns:\n    - 1.1.1.1\n")
 	port, err := ReadDNSPort(dir)
-	if err != nil || port != 1053 {
-		t.Fatalf("无 port 键应默认 1053, port=%d err=%v", port, err)
+	if err != nil || port != 5353 {
+		t.Fatalf("无 port 键应默认 5353, port=%d err=%v", port, err)
 	}
 }
 

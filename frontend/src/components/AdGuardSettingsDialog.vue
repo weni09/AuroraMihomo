@@ -23,7 +23,7 @@ const store = useAdGuardStore()
 const settings = useSettingsStore()
 
 const webPortInput = ref('3000')
-const dnsPortDraft = ref('1053')
+const dnsPortDraft = ref('5353')
 const cdnText = ref('')
 const dnsModeValue = ref('0')
 const usernameInput = ref('admin')
@@ -50,7 +50,7 @@ function parsePortFromAddr(addr: string): string {
 function syncFromStore() {
   webPortInput.value = parsePortFromAddr(store.status.webAddr)
   const dp = store.status.dnsPort
-  dnsPortDraft.value = dp && dp > 0 && dp !== 53 ? String(dp) : '1053'
+  dnsPortDraft.value = dp && dp > 0 && dp !== 53 ? String(dp) : '5353'
   cdnText.value = (store.status.cdnProviders || []).join('\n')
   dnsModeValue.value = String(store.status.dnsMode ?? 0)
   usernameInput.value = store.status.username || 'admin'
@@ -311,7 +311,7 @@ async function onDnsModeChange(v: unknown) {
             <span>
               <span class="font-medium text-fg">重定向 53→AdGuard</span>
               <span class="block text-xs text-fg-subtle">
-                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 1053，可在下方设置）；系统把发往 53 的查询转到该口。
+                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 5353，可在下方设置）；系统把发往 53 的查询转到该口。
                 已开 TProxy 时走透明代理规则；未开 TProxy 时在 Linux 上下发独立 nft 重定向（须 AdGuard 已在目标端口监听）。
               </span>
             </span>

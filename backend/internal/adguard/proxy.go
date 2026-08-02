@@ -1,7 +1,10 @@
 package adguard
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -12,6 +15,7 @@ import (
 )
 
 const sessionCookieName = "aurora_session"
+const adguardURLPrefix = "/adguard"
 
 // AuthorizeRequest 校验 AdGuard 反代请求：优先 aurora_session cookie，
 // 其次 Authorization Bearer。JWT 校验方式与 aurora.verifyWSToken 一致（HMAC）。
@@ -41,7 +45,6 @@ func AuthorizeRequest(r *http.Request, secret string) bool {
 }
 
 // NewProxyHandler 返回挂在 /adguard 下的同源反代。
-// webAddrResolver 每次请求解析上游；为空时回退 Status().WebAddr，再默认 127.0.0.1:3000。
 func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !AuthorizeRequest(r, jwtSecret) {
@@ -71,14 +74,12 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() stri
 			http.Error(w, "invalid upstream", http.StatusBadGateway)
 			return
 		}
-		// 安全边界：反代上游必须是回环，禁止被配置成外网地址当跳板。
 		if !isLoopbackHost(target.Hostname()) {
 			http.Error(w, "upstream must be loopback", http.StatusBadGateway)
 			return
 		}
 
 		proxy := httputil.NewSingleHostReverseProxy(target)
-		// 流式/WebSocket：禁用缓冲刷新间隔
 		proxy.FlushInterval = -1
 		proxy.Director = func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
@@ -105,6 +106,7 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() stri
 			if host := r.Host; host != "" {
 				req.Header.Set("X-Forwarded-Host", host)
 			}
+			req.Header.Set("X-Forwarded-Prefix", adguardURLPrefix)
 		}
 		proxy.ModifyResponse = modifyAdguardResponse
 		proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
@@ -114,7 +116,6 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() stri
 	})
 }
 
-// isLoopbackHost 判断 host 是否仅回环（127.0.0.0/8、::1、localhost）。
 func isLoopbackHost(host string) bool {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -149,7 +150,6 @@ func stripAdguardPrefix(path string) string {
 }
 
 func modifyAdguardResponse(resp *http.Response) error {
-	// 上游若写 DENY，会阻止管理端同源 iframe 内嵌；统一为 SAMEORIGIN。
 	if xfo := resp.Header.Get("X-Frame-Options"); xfo != "" {
 		u := strings.ToUpper(strings.TrimSpace(xfo))
 		if u == "DENY" || u == "SAMEORIGIN" {
@@ -159,21 +159,123 @@ func modifyAdguardResponse(resp *http.Response) error {
 		resp.Header.Set("X-Frame-Options", "SAMEORIGIN")
 	}
 
+	if cookies := resp.Header.Values("Set-Cookie"); len(cookies) > 0 {
+		resp.Header.Del("Set-Cookie")
+		for _, c := range cookies {
+			resp.Header.Add("Set-Cookie", rewriteSetCookiePath(c))
+		}
+	}
+
 	if loc := resp.Header.Get("Location"); loc != "" {
 		if fixed := rewriteLocationUnderAdguard(loc); fixed != loc {
 			resp.Header.Set("Location", fixed)
 		}
 	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !shouldRewriteAdguardBody(ct) || resp.Body == nil {
+		return nil
+	}
+	return rewriteAdguardResponseBody(resp)
+}
+
+func shouldRewriteAdguardBody(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/html") ||
+		strings.Contains(ct, "javascript") ||
+		strings.Contains(ct, "ecmascript") ||
+		strings.Contains(ct, "application/json") ||
+		strings.Contains(ct, "text/css")
+}
+
+func rewriteAdguardResponseBody(resp *http.Response) error {
+	var reader io.Reader = resp.Body
+	enc := strings.ToLower(resp.Header.Get("Content-Encoding"))
+	switch enc {
+	case "gzip":
+		gr, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil
+		}
+		reader = gr
+	case "br", "deflate", "zstd":
+		return nil
+	}
+
+	body, err := io.ReadAll(reader)
+	_ = resp.Body.Close()
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(nil))
+		return nil
+	}
+
+	rewritten := rewriteAdguardAbsolutePaths(body)
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(rewritten)))
+	resp.Header.Del("Content-Encoding")
 	return nil
 }
 
-// rewriteLocationUnderAdguard 把指向站点根路径的绝对路径 Location 改写到 /adguard 前缀下。
+// rewriteAdguardAbsolutePaths 把 AGH 前端写死的根路径改到 /adguard 下。
+func rewriteAdguardAbsolutePaths(body []byte) []byte {
+	s := string(body)
+	const mark = "\x00AGHPREFIX\x00"
+	s = strings.ReplaceAll(s, adguardURLPrefix+"/", mark)
+	replacements := [][2]string{
+		{`"/control/`, `"` + adguardURLPrefix + `/control/`},
+		{`'/control/`, `'` + adguardURLPrefix + `/control/`},
+		{`"/control"`, `"` + adguardURLPrefix + `/control"`},
+		{`'/control'`, `'` + adguardURLPrefix + `/control'`},
+		{`"/assets/`, `"` + adguardURLPrefix + `/assets/`},
+		{`'/assets/`, `'` + adguardURLPrefix + `/assets/`},
+		{`"/login.`, `"` + adguardURLPrefix + `/login.`},
+		{`'/login.`, `'` + adguardURLPrefix + `/login.`},
+		{`"/login.html`, `"` + adguardURLPrefix + `/login.html`},
+		{`"/install.`, `"` + adguardURLPrefix + `/install.`},
+		{`'/install.`, `'` + adguardURLPrefix + `/install.`},
+		{`"/install.html`, `"` + adguardURLPrefix + `/install.html`},
+		{`href="/`, `href="` + adguardURLPrefix + `/`},
+		{`src="/`, `src="` + adguardURLPrefix + `/`},
+		{`action="/`, `action="` + adguardURLPrefix + `/`},
+		{`url(/`, `url(` + adguardURLPrefix + `/`},
+		{`url("/`, `url("` + adguardURLPrefix + `/`},
+	}
+	for _, pair := range replacements {
+		s = strings.ReplaceAll(s, pair[0], pair[1])
+	}
+	s = strings.ReplaceAll(s, mark, adguardURLPrefix+"/")
+	s = strings.ReplaceAll(s, adguardURLPrefix+adguardURLPrefix, adguardURLPrefix)
+	return []byte(s)
+}
+
 func rewriteLocationUnderAdguard(loc string) string {
-	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "/adguard") {
+	if strings.HasPrefix(loc, adguardURLPrefix) {
+		return loc
+	}
+	if strings.HasPrefix(loc, "/") {
 		if loc == "/" {
-			return "/adguard/"
+			return adguardURLPrefix + "/"
 		}
-		return "/adguard" + loc
+		return adguardURLPrefix + loc
 	}
 	return loc
+}
+
+func rewriteSetCookiePath(c string) string {
+	lower := strings.ToLower(c)
+	if strings.Contains(lower, "path=") {
+		parts := strings.Split(c, ";")
+		for i, p := range parts {
+			pt := strings.TrimSpace(p)
+			if len(pt) >= 5 && strings.EqualFold(pt[:5], "path=") {
+				val := strings.TrimSpace(pt[5:])
+				if val == "/" || val == "" {
+					parts[i] = " Path=" + adguardURLPrefix
+				}
+			}
+		}
+		return strings.Join(parts, ";")
+	}
+	return c + "; Path=" + adguardURLPrefix
 }
