@@ -100,7 +100,12 @@ onMounted(load)
        外壳已不再锁一屏高度，这里改用 h-dvh 自持，而不是依赖父级传下来的
        h-full。iframe 内部有自己的滚动，不影响本页用浏览器滚动条。 -->
   <main class="h-dvh flex flex-col min-h-0">
-    <div class="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b bg-surface shrink-0">
+    <!-- 小屏与 App 顶栏（菜单+标题）叠两层会挤掉 iframe 高度；
+         ≥lg 再显示本页标题、对接信息与「重新加载 / 新标签页」。 -->
+    <div
+      data-testid="zashboard-page-header"
+      class="hidden lg:flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b bg-surface shrink-0"
+    >
       <div>
         <h1 class="text-xl font-bold">Zashboard</h1>
         <p v-if="entryHost" class="text-xs text-fg-subtle">
