@@ -33,18 +33,20 @@ export interface UpdateSettings {
 
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
-    // 检查更新、更新 Mihomo、更新 Zashboard 是三个独立动作，各自可能耗时数秒到数十秒，
-    // 曾经共用一个 updating 标志：点其中一个，三个按钮都会显示「处理中」，
-    // 用户分不清到底是哪个操作在跑。现在拆成三个独立标志，互不影响。
+    // 检查更新与各组件更新是独立动作，各自可能耗时数秒到数十秒，
+    // 曾经共用一个 updating 标志：点其中一个，所有按钮都会显示「处理中」，
+    // 用户分不清到底是哪个操作在跑。现在拆成独立标志，互不影响。
     checkingUpdate: false,
     updatingMihomo: false,
     updatingZashboard: false,
+    updatingAdGuard: false,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
   getters: {
-    // 三者中任一进行中都算「有更新相关操作在跑」，用于需要整体禁用的场景
-    updating: (s) => s.checkingUpdate || s.updatingMihomo || s.updatingZashboard,
+    // 任一进行中都算「有更新相关操作在跑」，用于需要整体禁用的场景
+    updating: (s) =>
+      s.checkingUpdate || s.updatingMihomo || s.updatingZashboard || s.updatingAdGuard,
   },
   actions: {
     async fetch() {
@@ -118,6 +120,27 @@ export const useSettingsStore = defineStore('settings', {
         useNotifyStore().error(e?.response?.data?.message || e?.message || '更新失败')
       } finally {
         this.updatingZashboard = false
+      }
+    },
+    // AdGuard 为可选组件；更新会停机换二进制，若原先在跑会再拉起
+    async updateAdGuard() {
+      if (this.updatingAdGuard) return
+      this.updatingAdGuard = true
+      try {
+        const res = await api.post('/update/adguard')
+        const data = res.data as { success?: boolean; message?: string } | undefined
+        const text = data?.message || 'AdGuard Home 已更新'
+        if (data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetch()
+      } catch (e: unknown) {
+        const err = e as { response?: { data?: { message?: string } }; message?: string }
+        useNotifyStore().error(err?.response?.data?.message || err?.message || '更新失败')
+      } finally {
+        this.updatingAdGuard = false
       }
     },
   },

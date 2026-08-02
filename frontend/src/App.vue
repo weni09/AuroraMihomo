@@ -15,6 +15,7 @@ import {
   ScrollText,
   Settings,
   Gauge,
+  Shield,
   BookOpen,
   LogOut,
   ChevronsLeft,
@@ -53,6 +54,7 @@ const navItems = [
   { to: '/logs', label: '运行日志', icon: ScrollText },
   { to: '/settings', label: '系统设置', icon: Settings },
   { to: '/zashboard', label: 'Zashboard', icon: Gauge },
+  { to: '/adguard', label: 'AdGuard', icon: Shield },
   { to: '/docs', label: '使用文档', icon: BookOpen },
 ]
 

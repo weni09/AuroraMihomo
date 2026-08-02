@@ -180,6 +180,11 @@ const confirmUpdateMihomo = () => {
 const confirmUpdateZashboard = () => {
   if (confirm('将下载并替换面板静态资源，确定继续？')) store.updateZashboard()
 }
+const confirmUpdateAdGuard = () => {
+  if (confirm('将下载并替换 AdGuard Home 二进制（若正在运行会先停后启），确定继续？')) {
+    store.updateAdGuard()
+  }
+}
 
 // ---- 透明代理 ----
 
@@ -582,6 +587,9 @@ const navOpen = ref(false)
             </Button>
             <Button variant="outline" :disabled="store.updating" @click="confirmUpdateZashboard()">
               {{ store.updatingZashboard ? '处理中…' : '更新 Zashboard' }}
+            </Button>
+            <Button variant="outline" :disabled="store.updating" @click="confirmUpdateAdGuard()">
+              {{ store.updatingAdGuard ? '处理中…' : '更新 AdGuard Home' }}
             </Button>
           </div>
         </section>
