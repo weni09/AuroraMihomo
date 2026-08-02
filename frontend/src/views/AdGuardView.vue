@@ -22,6 +22,7 @@ const wiringOpts = reactive<WiringOptions>({
 
 const entryPath = computed(() => store.status.entryPath || '/adguard/')
 const busy = computed(() => store.isLoading || store.actionLoading)
+const componentEnabled = computed(() => store.status.componentEnabled)
 
 function openExternally() {
   window.open(entryPath.value, '_blank', 'noopener,noreferrer')
@@ -73,6 +74,7 @@ onBeforeUnmount(clearPageChrome)
   <main class="h-dvh flex flex-col min-h-0">
     <!-- 仅桌面（lg+）完整顶栏；小屏由 App 顶栏承载标题/副标题/新标签页 -->
     <div
+      v-if="componentEnabled"
       data-testid="adguard-page-header"
       class="hidden lg:flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b bg-surface shrink-0"
     >
@@ -148,6 +150,7 @@ onBeforeUnmount(clearPageChrome)
 
     <!-- 窄屏操作条：顶栏已有标题，这里只放动作按钮 -->
     <div
+      v-if="componentEnabled"
       data-testid="adguard-mobile-actions"
       class="lg:hidden flex flex-wrap gap-2 px-4 py-2 border-b bg-surface shrink-0"
     >
@@ -191,6 +194,25 @@ onBeforeUnmount(clearPageChrome)
     <p v-if="store.isLoading && !store.status.installed && !store.status.running" class="p-4 sm:p-6 text-sm text-fg-muted">
       正在获取 AdGuard 状态…
     </p>
+
+    <!-- 组件未启用：引导去系统设置（直达 /adguard 时仍可看到） -->
+    <div
+      v-else-if="!componentEnabled"
+      class="flex-1 min-h-0 flex items-center justify-center p-4 sm:p-6"
+      data-testid="adguard-component-disabled"
+    >
+      <Card class="max-w-lg w-full">
+        <CardHeader>
+          <CardTitle>AdGuard Home 未启用</CardTitle>
+          <CardDescription>
+            请在系统设置中启用 AdGuard Home 组件
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button as="a" href="/settings#components">前往系统设置</Button>
+        </CardContent>
+      </Card>
+    </div>
 
     <!-- 未安装：主 CTA -->
     <div v-else-if="!store.status.installed" class="flex-1 min-h-0 flex items-center justify-center p-4 sm:p-6">

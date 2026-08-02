@@ -15,6 +15,8 @@ const mockedApi = vi.mocked(api, true)
 
 function statusPayload(partial: Record<string, unknown> = {}) {
   return {
+    // 既有用例覆盖「已启用组件」路径；默认 true 避免未设字段时落到关组件引导
+    componentEnabled: true,
     installed: false,
     running: false,
     pid: 0,
@@ -47,6 +49,23 @@ describe('AdGuardView', () => {
     expect(wrapper.text()).toContain('GPL-3.0')
     expect(wrapper.find('[data-testid="adguard-iframe"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="adguard-start-prompt"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('组件未启用时提示前往系统设置，不展示安装/iframe', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: statusPayload({ componentEnabled: false, installed: true, running: true }),
+    })
+
+    const wrapper = mount(AdGuardView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="adguard-component-disabled"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('请在系统设置中启用 AdGuard Home 组件')
+    expect(wrapper.find('a[href="/settings#components"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adguard-install-cta"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="adguard-iframe"]').exists()).toBe(false)
 
     wrapper.unmount()
   })

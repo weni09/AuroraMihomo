@@ -4,6 +4,7 @@ import AppLogo from './components/AppLogo.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useMihomoStore } from './stores/mihomo'
+import { useAdGuardStore } from './stores/adguard'
 import {
   Menu,
   X,
@@ -31,13 +32,28 @@ import api from './api'
 const route = useRoute()
 const router = useRouter()
 const mihomoStore = useMihomoStore()
+const adguardStore = useAdGuardStore()
 const isLogin = computed(() => route.name === 'login')
 // 页面可选地往移动端顶栏挂副标题/动作（如 Zashboard 的对接信息与「新标签页」）
 const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
 
 onMounted(() => {
   mihomoStore.fetchStatus()
+  // 已登录时拉取 AdGuard 组件开关，用于条件侧栏；未登录会 401，跳过
+  if (localStorage.getItem('aurora_token')) {
+    void adguardStore.fetchStatus()
+  }
 })
+
+// 登录成功后路由离开 login 页时补拉一次（App 可能在登录页就已 mount）
+watch(
+  () => route.name,
+  (name, prev) => {
+    if (prev === 'login' && name !== 'login' && localStorage.getItem('aurora_token')) {
+      void adguardStore.fetchStatus()
+    }
+  },
+)
 
 // 侧边栏折叠。只作用于 lg 以上的桌面布局：窄屏侧边栏是覆盖式抽屉，
 // 收起后一点宽度都不占，再做一个图标条没有意义。
@@ -46,7 +62,8 @@ const { collapsed, toggle: toggleCollapsed } = useSidebar()
 // 导航项集中成数组：原先九段 RouterLink 手写重复，active-class 出现了
 // 三种不一致的写法（部分项漏了 text-white font-medium），逐项维护易漂移。
 // prefix 用于 Sub-Store 这类含子路由的项，需要按前缀而非精确路径判断高亮。
-const navItems = [
+// AdGuard 仅在组件开启时出现（默认关）。
+const allNavItems = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
   { to: '/mihomo', label: '内核管理', icon: Cpu },
   { to: '/substore', label: 'Sub-Store 管理', prefix: '/substore', icon: Layers3 },
@@ -55,9 +72,13 @@ const navItems = [
   { to: '/logs', label: '运行日志', icon: ScrollText },
   { to: '/settings', label: '系统设置', icon: Settings },
   { to: '/zashboard', label: 'Zashboard', icon: Gauge },
-  { to: '/adguard', label: 'AdGuard', icon: Shield },
+  { to: '/adguard', label: 'AdGuard', icon: Shield, requireAdGuard: true },
   { to: '/docs', label: '使用文档', icon: BookOpen },
-]
+] as const
+
+const navItems = computed(() =>
+  allNavItems.filter((item) => !('requireAdGuard' in item && item.requireAdGuard) || adguardStore.status.componentEnabled),
+)
 
 const isActive = (item: { to: string; prefix?: string }) =>
   item.prefix ? route.path.startsWith(item.prefix) : route.path === item.to

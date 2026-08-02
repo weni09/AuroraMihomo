@@ -4,6 +4,8 @@ import { useNotifyStore } from './notify'
 
 /** AdGuard Home 运行与对接状态（与后端 AdGuardStatusResp 对齐） */
 export interface AdGuardStatus {
+  /** 组件开关：关则隐藏侧栏并停进程，文件保留 */
+  componentEnabled: boolean
   installed: boolean
   running: boolean
   pid: number
@@ -41,6 +43,7 @@ interface Result {
 }
 
 const emptyStatus = (): AdGuardStatus => ({
+  componentEnabled: false,
   installed: false,
   running: false,
   pid: 0,
@@ -63,6 +66,7 @@ export const useAdGuardStore = defineStore('adguard', {
     preview: null as WiringPreview | null,
   }),
   getters: {
+    componentEnabled: (s) => s.status.componentEnabled,
     installed: (s) => s.status.installed,
     running: (s) => s.status.running,
     wiringOn: (s) => s.status.wiring === 'on',
@@ -75,6 +79,8 @@ export const useAdGuardStore = defineStore('adguard', {
         this.status = {
           ...emptyStatus(),
           ...res.data,
+          // 显式归一：缺省/非法值按关闭处理，避免侧栏误显示
+          componentEnabled: res.data?.componentEnabled === true,
           entryPath: res.data?.entryPath || '/adguard/',
         }
       } catch (error) {
@@ -106,6 +112,32 @@ export const useAdGuardStore = defineStore('adguard', {
       } finally {
         this.actionLoading = false
       }
+    },
+
+    /** 组件级开关：PUT /adguard/component；关时后端停进程，前端靠 status 隐藏侧栏 */
+    async setComponent(enabled: boolean) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/component', { enabled })
+        const text =
+          res.data?.message || (enabled ? 'AdGuard Home 组件已启用' : 'AdGuard Home 组件已关闭')
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /** 彻底卸载：POST /adguard/uninstall，须 confirm=true */
+    async uninstall(confirm: boolean) {
+      await this.runAction('/adguard/uninstall', 'AdGuard Home 已彻底卸载', { confirm })
     },
 
     async install() {
