@@ -24,11 +24,14 @@ import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { useSidebar } from './composables/useSidebar'
+import { usePageChrome } from './composables/usePageChrome'
 
 const route = useRoute()
 const router = useRouter()
 const mihomoStore = useMihomoStore()
 const isLogin = computed(() => route.name === 'login')
+// 页面可选地往移动端顶栏挂副标题/动作（如 Zashboard 的对接信息与「新标签页」）
+const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
 
 onMounted(() => {
   mihomoStore.fetchStatus()
@@ -312,14 +315,14 @@ const logout = () => {
            取代此前靠整体锁一屏来「保证顶栏总是看得见」的做法。 -->
       <header
         v-if="!isLogin"
-        class="safe-pt sticky top-0 z-20 shrink-0 flex items-center gap-3 border-b border-line bg-surface px-4 py-2.5 lg:hidden"
+        class="safe-pt sticky top-0 z-20 shrink-0 flex items-center gap-2 sm:gap-3 border-b border-line bg-surface px-3 sm:px-4 py-2 lg:hidden"
       >
         <Button
           ref="menuButton"
           type="button"
           variant="ghost"
           size="icon-sm"
-          class="tap-target text-fg-muted hover:bg-elevated hover:text-fg"
+          class="tap-target text-fg-muted hover:bg-elevated hover:text-fg shrink-0"
           aria-label="打开导航菜单"
           aria-controls="app-sidebar"
           :aria-expanded="drawerOpen"
@@ -327,8 +330,29 @@ const logout = () => {
         >
           <Menu class="!h-5 !w-5" aria-hidden="true" />
         </Button>
-        <span class="font-semibold truncate">{{ pageTitle }}</span>
-        <div class="ml-auto shrink-0">
+        <!-- 标题 + 可选副标题（如 Zashboard 对接 host:port）叠在同一列，
+             比再开一条页面级 header 更省垂直空间。 -->
+        <div class="min-w-0 flex-1">
+          <div class="font-semibold truncate leading-tight">{{ pageTitle }}</div>
+          <div
+            v-if="pageSubtitle"
+            class="text-[11px] text-fg-subtle truncate leading-tight mt-0.5"
+          >
+            {{ pageSubtitle }}
+          </div>
+        </div>
+        <div class="ml-auto shrink-0 flex items-center gap-1.5">
+          <Button
+            v-if="pageAction"
+            type="button"
+            variant="secondary"
+            size="sm"
+            class="h-8 px-2.5 text-xs"
+            :disabled="pageAction.disabled"
+            @click="pageAction.onClick"
+          >
+            {{ pageAction.label }}
+          </Button>
           <ThemeToggle />
         </div>
       </header>

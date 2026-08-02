@@ -8,20 +8,21 @@ vi.mock('../api', () => ({
 
 import api from '../api'
 import ZashboardView from './ZashboardView.vue'
+import { clearPageChrome, usePageChrome } from '../composables/usePageChrome'
 
 const mockedApi = vi.mocked(api, true)
 
 /**
- * 页面级 header 在小屏仍要保留标题与操作（尤其「新标签页」），
- * 但须压成单行矮条，避免与 App 顶栏叠两层大块挤掉 iframe。
- * 契约用 class 断言（happy-dom 不跑媒体查询布局）。
+ * 小屏不再叠页面大标题条：对接信息与「新标签页」注入 App 顶栏；
+ * 本页仅在 lg+ 保留无标题工具条。用 page chrome 状态 + class 契约断言。
  */
-describe('ZashboardView 移动端 header', () => {
+describe('ZashboardView 移动端 header / page chrome', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    clearPageChrome()
   })
 
-  it('成功加载时 header 始终可见且为单行紧凑布局，并保留操作文案', async () => {
+  it('成功加载时写入 page chrome，且页面级 header 仅桌面显示、无大标题', async () => {
     mockedApi.get.mockResolvedValue({
       data: {
         available: true,
@@ -34,22 +35,25 @@ describe('ZashboardView 移动端 header', () => {
     const wrapper = mount(ZashboardView)
     await flushPromises()
 
-    const header = wrapper.get('[data-testid="zashboard-page-header"]')
-    const cls = header.classes()
-    // 始终展示（不再 hidden），小屏强制 nowrap 单行 + 更矮 py
-    expect(cls).toEqual(expect.arrayContaining(['flex', 'flex-nowrap', 'py-1.5']))
-    expect(cls).not.toContain('hidden')
+    const { subtitle, action } = usePageChrome()
+    expect(subtitle.value).toBe('已对接内核 127.0.0.1:9090')
+    expect(action.value?.label).toBe('新标签页')
+    expect(action.value?.disabled).toBe(false)
 
-    expect(wrapper.get('h1').text()).toBe('Zashboard')
-    expect(wrapper.text()).toContain('重新加载')
-    // 模板里桌面全文与小屏短文案都在 DOM（用 sm: 显隐），断言两者之一即可
-    expect(wrapper.text()).toMatch(/新标签页|在新标签页打开/)
+    const header = wrapper.get('[data-testid="zashboard-page-header"]')
+    expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
+    // 页面级不再放 h1，标题由 App 顶栏承担
+    expect(wrapper.find('h1').exists()).toBe(false)
+    expect(wrapper.text()).toContain('在新标签页打开')
+    expect(wrapper.text()).not.toContain('重新加载')
     expect(wrapper.find('iframe').exists()).toBe(true)
 
     wrapper.unmount()
+    expect(subtitle.value).toBe('')
+    expect(action.value).toBeNull()
   })
 
-  it('入口不可用时错误说明仍完整展示', async () => {
+  it('入口不可用时错误说明仍完整展示，且清空对接副标题', async () => {
     mockedApi.get.mockResolvedValue({
       data: {
         available: false,
@@ -63,8 +67,12 @@ describe('ZashboardView 移动端 header', () => {
     expect(wrapper.text()).toContain('面板暂时无法打开')
     expect(wrapper.text()).toContain('内核未启用外部控制接口')
     expect(wrapper.find('iframe').exists()).toBe(false)
-    // 错误态下操作仍在，方便重试
-    expect(wrapper.text()).toContain('重新加载')
+
+    const { subtitle, action } = usePageChrome()
+    expect(subtitle.value).toBe('')
+    // 外开不可用，但仍挂「新标签页」入口（disabled），避免顶栏布局跳动
+    expect(action.value?.label).toBe('新标签页')
+    expect(action.value?.disabled).toBe(true)
 
     wrapper.unmount()
   })

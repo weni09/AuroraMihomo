@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import api from '../api'
 import { Button } from '@/components/ui/button'
+import { clearPageChrome, setPageChrome } from '../composables/usePageChrome'
 
 // 内嵌 zashboard。
 //
@@ -64,6 +65,22 @@ function syncZashboardBackend(host: string, port: string, secret: string) {
   }
 }
 
+/** 把对接信息与「新标签页」交给 App 移动端顶栏，避免本页再叠一条 header。 */
+function syncPageChrome() {
+  const hostLine =
+    entryHost.value && entryPort.value
+      ? `已对接内核 ${entryHost.value}:${entryPort.value}`
+      : ''
+  setPageChrome({
+    subtitle: hostLine,
+    action: {
+      label: '新标签页',
+      disabled: !frameSrc.value,
+      onClick: openExternally,
+    },
+  })
+}
+
 async function load() {
   loading.value = true
   errorMsg.value = ''
@@ -72,6 +89,8 @@ async function load() {
     if (!res.data?.available) {
       errorMsg.value = res.data?.message || '内核未启用外部控制接口（external-controller），面板无法连接。'
       frameSrc.value = ''
+      entryHost.value = ''
+      entryPort.value = ''
       return
     }
     entryHost.value = res.data.host || ''
@@ -79,11 +98,15 @@ async function load() {
     const secret = new URL(res.data.url, window.location.origin).searchParams.get('secret') || ''
     syncZashboardBackend(entryHost.value, entryPort.value, secret)
     frameSrc.value = res.data.url
-  } catch (e: any) {
-    errorMsg.value = e?.response?.data?.message || e?.message || '获取面板入口失败'
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { message?: string } }; message?: string }
+    errorMsg.value = err?.response?.data?.message || err?.message || '获取面板入口失败'
     frameSrc.value = ''
+    entryHost.value = ''
+    entryPort.value = ''
   } finally {
     loading.value = false
+    syncPageChrome()
   }
 }
 
@@ -92,7 +115,10 @@ function openExternally() {
   if (frameSrc.value) window.open(frameSrc.value, '_blank', 'noopener,noreferrer')
 }
 
+watch([frameSrc, entryHost, entryPort], syncPageChrome)
+
 onMounted(load)
+onBeforeUnmount(clearPageChrome)
 </script>
 
 <template>
@@ -100,33 +126,25 @@ onMounted(load)
        外壳已不再锁一屏高度，这里改用 h-dvh 自持，而不是依赖父级传下来的
        h-full。iframe 内部有自己的滚动，不影响本页用浏览器滚动条。 -->
   <main class="h-dvh flex flex-col min-h-0">
-    <!-- 小屏要保留「重新加载 / 新标签页」，但不能再占两行大标题区挤掉 iframe：
-         强制单行 + 更矮内边距；对接副标题仅桌面显示。 -->
+    <!-- 桌面没有 App 移动顶栏：仅在 lg+ 留一条无标题工具条（对接信息 + 外开）。
+         小屏标题/副标题/「新标签页」都在 App 顶栏，这里不再重复占高。 -->
     <div
       data-testid="zashboard-page-header"
-      class="flex flex-nowrap items-center justify-between gap-2 px-3 py-1.5 sm:px-4 sm:py-2 lg:gap-3 lg:px-6 lg:py-3 border-b bg-surface shrink-0"
+      class="hidden lg:flex flex-nowrap items-center justify-between gap-3 px-6 py-2 border-b bg-surface shrink-0"
     >
-      <div class="min-w-0">
-        <h1 class="text-base sm:text-lg lg:text-xl font-bold truncate">Zashboard</h1>
-        <p v-if="entryHost" class="hidden lg:block text-xs text-fg-subtle">
-          已对接内核 {{ entryHost }}:{{ entryPort }}
-        </p>
-      </div>
-      <div class="flex flex-nowrap items-center gap-1.5 sm:gap-2 shrink-0">
-        <Button size="sm" class="h-8 px-2.5 text-xs sm:text-sm sm:px-3" @click="load">
-          重新加载
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          class="h-8 px-2.5 text-xs sm:text-sm sm:px-3"
-          :disabled="!frameSrc"
-          @click="openExternally"
-        >
-          <span class="sm:hidden">新标签页</span>
-          <span class="hidden sm:inline">在新标签页打开</span>
-        </Button>
-      </div>
+      <p v-if="entryHost" class="text-xs text-fg-subtle truncate min-w-0">
+        已对接内核 {{ entryHost }}:{{ entryPort }}
+      </p>
+      <span v-else class="text-xs text-fg-subtle">Zashboard</span>
+      <Button
+        variant="secondary"
+        size="sm"
+        class="shrink-0"
+        :disabled="!frameSrc"
+        @click="openExternally"
+      >
+        在新标签页打开
+      </Button>
     </div>
 
     <p v-if="loading" class="p-4 sm:p-6 text-sm text-fg-muted">正在获取面板入口…</p>
