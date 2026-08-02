@@ -56,3 +56,6 @@ coverage.*
 # Local env
 .env
 .env.*
+
+# git worktrees (local isolated checkouts)
+.worktrees/
