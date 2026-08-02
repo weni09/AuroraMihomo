@@ -417,3 +417,34 @@ func ensureBaseTUNGatewayDefaults(src string) (string, bool, error) {
 	}
 	return out, true, nil
 }
+
+// readDNSHijackFromBaseYAML 读取 base 中 tun.dns-hijack 列表；缺失返回 nil。
+func readDNSHijackFromBaseYAML(src string) []string {
+	var root map[string]interface{}
+	if err := yaml.Unmarshal([]byte(src), &root); err != nil {
+		return nil
+	}
+	tun, _ := root["tun"].(map[string]interface{})
+	if tun == nil {
+		return nil
+	}
+	raw, ok := tun["dns-hijack"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, x := range v {
+			s := strings.TrimSpace(fmt.Sprint(x))
+			if s != "" && s != "<nil>" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return append([]string(nil), v...)
+	default:
+		return nil
+	}
+}

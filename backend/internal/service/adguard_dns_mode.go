@@ -105,11 +105,11 @@ func (s *AdGuardService) enterDNSMode0(ctx context.Context) error {
 }
 
 func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
-	// 先退出模式 2 / wiring，避免劫持与 bind53 叠加
+	// 先退出模式 2 / 旧 wiring，避免劫持与 bind53 叠加
 	if s.getSetting(settingAdGuardWiring, adguardWiringOff) == adguardWiringOn ||
 		strings.TrimSpace(s.getSetting(settingAdGuardSnapshot, "")) != "" {
 		if err := s.WiringRollback(ctx); err != nil {
-			return fmt.Errorf("切换到 53 端口前解除对接失败: %w", err)
+			return fmt.Errorf("切换到入口模式前解除对接失败: %w", err)
 		}
 	}
 
@@ -119,19 +119,98 @@ func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
 			"在系统上让路（例如禁用/停止占用进程）后重试")
 	}
 
+	// —— 入口模式（不是防火墙把 AGH 转到 1053）——
+	// AdGuard 听 53；放行查询由 AGH「上游 DNS」转发到 mihomo 高位端口（如 1053）。
+	// 同时清空 tun.dns-hijack，避免 TUN 把 53 抢进 mihomo 内部。
+
+	cur, err := s.collectDNSState()
+	if err != nil {
+		return err
+	}
+
+	plan := WiringPlan{
+		Actions:              make([]string, 0, 6),
+		AGHDNSPort:           53,
+		OriginalDNSPort:      cur.MihomoDNSPort,
+		OriginalMihomoListen: cur.MihomoDNSListen,
+		OriginalUpstream:     append([]string(nil), cur.OriginalUpstream...),
+		WiringOn:             true,
+		DidBind53:            true,
+	}
+
+	// 1) mihomo 必须提供高位 DNS 口给 AGH 当上游
+	mihomoPort := cur.MihomoDNSPort
+	mihomoListen := cur.MihomoDNSListen
+	if mihomoPort <= 0 {
+		mihomoPort = parseListenPort(mihomoListen)
+	}
+	if mihomoPort <= 0 || mihomoPort == 53 {
+		// 未配置或误占 53：落到 127.0.0.1:1053
+		plan.DidResolveConflict = true
+		plan.MihomoDNSListen = "127.0.0.1:1053"
+		plan.Actions = append(plan.Actions, "确保 mihomo dns.listen = 127.0.0.1:1053（供 AdGuard 上游）")
+		mihomoPort = 1053
+	} else {
+		plan.Actions = append(plan.Actions, fmt.Sprintf("mihomo DNS 上游目标 :%d", mihomoPort))
+	}
+
+	// 2) AGH 上游 → 127.0.0.1:mihomoPort（配置级「转发」，非 nft 重定向）
+	plan.DidPatchUpstream = true
+	plan.Actions = append(plan.Actions,
+		fmt.Sprintf("AdGuard 上游 DNS → 127.0.0.1:%d（mihomo；入口仍为 :53）", mihomoPort))
+
+	// 3) 清空 tun.dns-hijack，否则 TUN 下查询进 mihomo 内部、AGH 当不了入口
+	if s.cfgSvc != nil {
+		if raw, err := s.cfgSvc.GetBaseConfig(); err == nil {
+			hijack := readDNSHijackFromBaseYAML(raw)
+			if len(hijack) > 0 {
+				plan.DidWeakenTUN = true
+				plan.OriginalDNSHijack = hijack
+				plan.Actions = append(plan.Actions,
+					"清空 tun.dns-hijack（避免 TUN 抢走 53，保证客户端 DNS 先到 AdGuard）")
+			}
+		}
+	}
+
+	plan.Actions = append([]string{
+		"AdGuard 监听 :53（客户端入口 DNS，完整日志与拦截）",
+	}, plan.Actions...)
+
+	snap, err := marshalWiringSnapshot(plan)
+	if err != nil {
+		return err
+	}
+	if err := s.db.SetSetting(settingAdGuardSnapshot, snap); err != nil {
+		return fmt.Errorf("写入入口模式快照失败: %w", err)
+	}
+
+	// 执行：mihomo listen → AGH upstream → 清 hijack
+	if err := s.applyWiringPlan(ctx, plan, cur); err != nil {
+		_ = s.rollbackWiringPlan(ctx, plan)
+		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
+		_ = s.db.SetSetting(settingAdGuardWiring, adguardWiringOff)
+		return err
+	}
+
+	// AGH 绑 53（在 upstream 补丁之后，避免中途端口错乱）
 	if err := adguard.SetDNSPort(s.workDir, 53); err != nil {
+		_ = s.rollbackWiringPlan(ctx, plan)
+		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
 		return fmt.Errorf("写入 AdGuard dns.port=53 失败: %w", err)
 	}
 	_ = s.db.SetSetting(settingAdGuardDNSPort, "53")
 
+	if err := s.db.SetSetting(settingAdGuardWiring, adguardWiringOn); err != nil {
+		_ = s.rollbackWiringPlan(ctx, plan)
+		return err
+	}
 	if err := s.db.SetSetting(settingAdGuardDNSMode, "1"); err != nil {
 		return fmt.Errorf("写入 dns_mode 失败: %w", err)
 	}
 
-	// 运行中需重启以应用新端口
 	if s.mgr != nil && s.mgr.Status().Running {
 		if err := s.Restart(ctx); err != nil {
-			return fmt.Errorf("已写入 dns.port=53，但重启 AdGuard 失败: %w", err)
+			return fmt.Errorf("入口模式已写入，但重启 AdGuard 失败: %w", err)
 		}
 	}
 	return nil

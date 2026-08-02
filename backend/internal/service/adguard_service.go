@@ -598,7 +598,7 @@ func (s *AdGuardService) applyWiringPlan(ctx context.Context, plan WiringPlan, c
 		}
 	}
 
-	// D. TUN dns-hijack 弱化：清空 base 里 tun.dns-hijack
+	// D. TUN dns-hijack 弱化：清空 base 里 tun.dns-hijack（先快照原文）
 	if plan.DidWeakenTUN {
 		if s.cfgSvc == nil {
 			return errors.New("ConfigService 未注入，无法弱化 TUN dns-hijack")
@@ -606,6 +606,9 @@ func (s *AdGuardService) applyWiringPlan(ctx context.Context, plan WiringPlan, c
 		raw, err := s.cfgSvc.GetBaseConfig()
 		if err != nil {
 			return err
+		}
+		if len(plan.OriginalDNSHijack) == 0 {
+			plan.OriginalDNSHijack = readDNSHijackFromBaseYAML(raw)
 		}
 		patched, err := patchBaseYAML(raw, "tun.dns-hijack", nil)
 		if err != nil {
@@ -616,6 +619,9 @@ func (s *AdGuardService) applyWiringPlan(ctx context.Context, plan WiringPlan, c
 		}
 		if _, err := s.cfgSvc.ApplyLocalOnly(ctx); err != nil {
 			return fmt.Errorf("应用 dns-hijack 变更失败: %w", err)
+		}
+		if snap, err := marshalWiringSnapshot(plan); err == nil {
+			_ = s.db.SetSetting(settingAdGuardSnapshot, snap)
 		}
 	}
 
@@ -649,11 +655,29 @@ func (s *AdGuardService) rollbackWiringPlan(ctx context.Context, plan WiringPlan
 			}
 		}
 	}
-	// DidWeakenTUN：P1 不自动恢复原 dns-hijack 列表（快照未存原文）；
-	// 只记日志，避免用空列表覆盖用户事后手改。
-	if plan.DidWeakenTUN {
-		s.logger.Infof("wiring 回滚：曾弱化 TUN dns-hijack，请按需在配置中心手动恢复")
+	// 恢复 tun.dns-hijack（若快照里保存了原文，含空列表表示本来就是空）
+	if plan.DidWeakenTUN && s.cfgSvc != nil {
+		raw, err := s.cfgSvc.GetBaseConfig()
+		if err != nil {
+			errs = append(errs, "读 base 以恢复 dns-hijack: "+err.Error())
+		} else {
+			var val interface{}
+			if len(plan.OriginalDNSHijack) > 0 {
+				val = plan.OriginalDNSHijack
+			} else {
+				val = nil
+			}
+			patched, err := patchBaseYAML(raw, "tun.dns-hijack", val)
+			if err != nil {
+				errs = append(errs, "恢复 dns-hijack 补丁: "+err.Error())
+			} else if err := s.cfgSvc.UpdateBaseConfig(patched); err != nil {
+				errs = append(errs, "写回 dns-hijack: "+err.Error())
+			} else if _, err := s.cfgSvc.ApplyLocalOnly(ctx); err != nil {
+				errs = append(errs, "应用 dns-hijack 回滚: "+err.Error())
+			}
+		}
 	}
+	// DidBind53：退出模式 1 时不在此恢复 AGH 端口（由 enterDNSMode0/其它模式重写）
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))

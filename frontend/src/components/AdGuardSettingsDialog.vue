@@ -297,8 +297,13 @@ async function onDnsModeChange(v: unknown) {
           <label class="flex items-start gap-3 cursor-pointer">
             <RadioGroupItem value="1" class="mt-0.5" />
             <span>
-              <span class="font-medium text-fg">使用 53 端口</span>
-              <span class="block text-xs text-fg-subtle">AGH 直接监听 :53；需端口空闲与权限</span>
+              <span class="font-medium text-fg">使用 53 端口（入口 DNS）</span>
+              <span class="block text-xs text-fg-subtle">
+                AdGuard 直接监听 <strong>:53</strong>，客户端 DNS 指到本机即可完整日志与拦截。
+                面板会把 AdGuard <strong>上游</strong>指到 mihomo 高位端口（如 1053），并尽量清空
+                <code class="text-[11px]">tun.dns-hijack</code>，避免 TUN 抢走 53。
+                这不是把 53「防火墙重定向」到 1053，而是 AGH 解析时再去问 mihomo。
+              </span>
             </span>
           </label>
           <label class="flex items-start gap-3 cursor-pointer">
@@ -306,8 +311,8 @@ async function onDnsModeChange(v: unknown) {
             <span>
               <span class="font-medium text-fg">重定向 53→AdGuard</span>
               <span class="block text-xs text-fg-subtle">
-                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 1053，可在下方设置）；系统把 53 转到该口。
-                已开 TProxy 时走透明代理规则；未开 TProxy 时在 Linux 上下发独立 nft 重定向（须先启动 AdGuard）。
+                AdGuard 监听<strong>高位 DNS 端口</strong>（默认 1053，可在下方设置）；系统把发往 53 的查询转到该口。
+                已开 TProxy 时走透明代理规则；未开 TProxy 时在 Linux 上下发独立 nft 重定向（须 AdGuard 已在目标端口监听）。
               </span>
             </span>
           </label>

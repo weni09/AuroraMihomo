@@ -62,17 +62,21 @@ type WiringPlan struct {
 	MihomoDNSListen      string   `json:"mihomoDnsListen,omitempty"` // 变更后目标
 	OriginalDNSPort      int      `json:"originalDNSPort"`
 	OriginalMihomoListen string   `json:"originalMihomoListen,omitempty"`
-	OriginalUpstream     []string `json:"originalUpstream,omitempty"`
-	WiringOn             bool     `json:"wiringOn"`
+		OriginalUpstream     []string `json:"originalUpstream,omitempty"`
+		// OriginalDNSHijack 清空 tun.dns-hijack 前的原文，供回滚恢复
+		OriginalDNSHijack []string `json:"originalDNSHijack,omitempty"`
+		WiringOn             bool     `json:"wiringOn"`
 
-	// 下列标志记录「计划里选中了哪些动作」，apply/rollback 按标志执行，
-	// 避免仅靠中文 Actions 文案做分支。
+		// 下列标志记录「计划里选中了哪些动作」，apply/rollback 按标志执行，
+		// 避免仅靠中文 Actions 文案做分支。
 		DidRedirect        bool `json:"didRedirect,omitempty"`
 		DidResolveConflict bool `json:"didResolveConflict,omitempty"`
 		DidPatchUpstream   bool `json:"didPatchUpstream,omitempty"`
 		DidWeakenTUN       bool `json:"didWeakenTUN,omitempty"`
 		// DidDNSOnlyRedirect：未开 TProxy 时用 aurora_agh_dns 表做 53→AGH 端口
 		DidDNSOnlyRedirect bool `json:"didDNSOnlyRedirect,omitempty"`
+		// DidBind53：模式 1，AGH 直接监听 53（入口 DNS）
+		DidBind53 bool `json:"didBind53,omitempty"`
 	}
 
 // buildWiringPlan 根据选项与当前 DNS 状态生成变更清单（纯函数，无 IO）。
