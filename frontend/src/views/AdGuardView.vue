@@ -8,7 +8,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox'
 import ModalDialog from '../components/ModalDialog.vue'
 import AdGuardSettingsDialog from '../components/AdGuardSettingsDialog.vue'
-import { ExternalLink, Play, Power, RefreshCw, Download, Settings2, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { ExternalLink, Play, Power, RefreshCw, Download, Settings2 } from 'lucide-vue-next'
+import type { PageChromeAction } from '../composables/usePageChrome'
 import api from '../api'
 
 const store = useAdGuardStore()
@@ -71,28 +72,59 @@ async function refreshIframe() {
 }
 
 function syncPageChrome() {
-  const canUse = store.status.installed && store.status.running
-  let subtitle = store.status.wiringLabel || (running.value ? '运行中' : '已停止')
+  // 副标题：对接文案 / 期望运行 / 错误；运行态用 badge 表达，避免再占一行页面工具条
+  let subtitle = store.status.wiringLabel || ''
   if (!running.value && desiredRunning.value) {
     subtitle = '期望运行 · 面板将自启或启动中'
   }
   if (store.status.lastError && !running.value) {
     subtitle = store.status.lastError
   }
-  // 移动端顶栏只留「刷新」：启停/设置在本页可展开工具条，避免双层按钮堆叠
+
+  const badge =
+    store.status.installed
+      ? {
+          label: running.value ? '运行中' : '已停止',
+          tone: (running.value ? 'ok' : 'warn') as 'ok' | 'warn',
+        }
+      : null
+
+  // 已安装：设置 + 工具展开进 App 顶栏；运行中再加刷新
+  const actions: PageChromeAction[] = []
+  if (store.status.installed) {
+    if (running.value) {
+      actions.push({
+        label: '刷新',
+        ariaLabel: '刷新面板',
+        icon: 'refresh',
+        disabled: false,
+        onClick: () => {
+          void refreshIframe()
+        },
+      })
+    }
+    actions.push({
+      label: '设置',
+      ariaLabel: 'AdGuard 设置',
+      icon: 'settings',
+      disabled: busy.value,
+      onClick: openSettings,
+    })
+    actions.push({
+      label: mobileToolbarOpen.value ? '收起' : '工具',
+      ariaLabel: mobileToolbarOpen.value ? '收起工具' : '展开工具',
+      icon: mobileToolbarOpen.value ? 'tools-open' : 'tools',
+      disabled: false,
+      onClick: () => {
+        mobileToolbarOpen.value = !mobileToolbarOpen.value
+      },
+    })
+  }
+
   setPageChrome({
     subtitle,
-    actions: canUse
-      ? [
-          {
-            label: '刷新',
-            disabled: false,
-            onClick: () => {
-              void refreshIframe()
-            },
-          },
-        ]
-      : [],
+    badge,
+    actions,
   })
 }
 
@@ -124,6 +156,9 @@ watch(
     store.status.entryPath,
     store.status.desiredRunning,
     store.status.lastError,
+    store.isLoading,
+    store.actionLoading,
+    mobileToolbarOpen.value,
   ],
   syncPageChrome,
 )
@@ -220,59 +255,15 @@ onBeforeUnmount(clearPageChrome)
       </div>
     </div>
 
-    <!-- 窄屏：默认收起为单行状态条，展开后才露出启停/更新（刷新只在 App 顶栏，避免重复） -->
+    <!-- 窄屏：状态/设置/工具开关已在 App 顶栏；展开后才露出启停/更新，默认不占高 -->
     <div
-      v-if="componentEnabled && installed"
+      v-if="componentEnabled && installed && mobileToolbarOpen"
       data-testid="adguard-mobile-actions"
       class="lg:hidden border-b bg-surface shrink-0"
     >
-      <div class="flex items-center gap-2 px-3 py-1.5 min-h-10">
-        <Badge :variant="running ? 'ok' : 'warn'" class="shrink-0">
-          {{ running ? '运行中' : '已停止' }}
-        </Badge>
-        <Badge
-          v-if="!running && desiredRunning"
-          variant="info"
-          class="shrink-0 text-[10px]"
-        >
-          期望运行
-        </Badge>
-        <span
-          v-if="store.status.wiringLabel"
-          class="text-[11px] text-fg-subtle truncate min-w-0 flex-1"
-        >
-          {{ store.status.wiringLabel }}
-        </span>
-        <span v-else class="flex-1 min-w-0" />
-        <Button
-          size="sm"
-          variant="ghost"
-          class="h-8 px-2 shrink-0"
-          :disabled="busy"
-          data-testid="adguard-settings-btn-mobile"
-          aria-label="AdGuard 设置"
-          @click="openSettings"
-        >
-          <Settings2 class="h-4 w-4" aria-hidden="true" />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          class="h-8 px-2 shrink-0"
-          data-testid="adguard-mobile-toolbar-toggle"
-          :aria-expanded="mobileToolbarOpen"
-          :aria-label="mobileToolbarOpen ? '收起工具' : '展开工具'"
-          @click="mobileToolbarOpen = !mobileToolbarOpen"
-        >
-          <ChevronUp v-if="mobileToolbarOpen" class="h-4 w-4" aria-hidden="true" />
-          <ChevronDown v-else class="h-4 w-4" aria-hidden="true" />
-          <span class="text-xs ml-0.5">{{ mobileToolbarOpen ? '收起' : '工具' }}</span>
-        </Button>
-      </div>
       <div
-        v-if="mobileToolbarOpen"
         data-testid="adguard-mobile-toolbar-panel"
-        class="flex flex-wrap gap-2 px-3 pb-2 pt-0.5 border-t border-line/60"
+        class="flex flex-wrap gap-2 px-3 py-2"
       >
         <Button size="sm" variant="outline" class="h-8" :disabled="busy" @click="store.update()">
           更新

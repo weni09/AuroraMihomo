@@ -21,6 +21,10 @@ import {
   LogOut,
   ChevronsLeft,
   ChevronsRight,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-vue-next'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { Button } from '@/components/ui/button'
@@ -41,7 +45,42 @@ const isZashboard = computed(() => route.name === 'zashboard')
 const isAdGuard = computed(() => route.name === 'adguard')
 const isEmbedFrame = computed(() => isZashboard.value || isAdGuard.value)
 // 页面可选地往移动端顶栏挂副标题/动作（如 Zashboard 的对接信息与「新标签页」）
-const { subtitle: pageSubtitle, action: pageAction, actions: pageActions } = usePageChrome()
+const {
+  subtitle: pageSubtitle,
+  badge: pageBadge,
+  action: pageAction,
+  actions: pageActions,
+} = usePageChrome()
+
+const pageBadgeClass = computed(() => {
+  switch (pageBadge.value?.tone) {
+    case 'ok':
+      return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+    case 'warn':
+      return 'bg-amber-500/15 text-amber-800 dark:text-amber-300'
+    case 'info':
+      return 'bg-sky-500/15 text-sky-800 dark:text-sky-300'
+    default:
+      return 'bg-elevated text-fg-muted'
+  }
+})
+
+function pageActionIcon(name: string | undefined) {
+  switch (name) {
+    case 'settings':
+      return Settings2
+    case 'tools':
+      return ChevronDown
+    case 'tools-open':
+      return ChevronUp
+    case 'refresh':
+      return RefreshCw
+    case 'external':
+      return ExternalLink
+    default:
+      return null
+  }
+}
 
 onMounted(() => {
   // /system/status、/adguard/status 需 JWT；登录页无 token 时请求只会 401 刷控制台。
@@ -382,7 +421,17 @@ const logout = async () => {
         <!-- 标题 + 可选副标题（如 Zashboard 对接 host:port）叠在同一列，
              比再开一条页面级 header 更省垂直空间。 -->
         <div class="min-w-0 flex-1">
-          <div class="font-semibold truncate leading-tight">{{ pageTitle }}</div>
+          <div class="flex items-center gap-1.5 min-w-0">
+            <div class="font-semibold truncate leading-tight">{{ pageTitle }}</div>
+            <!-- 页内状态点（如 AdGuard 运行中）挂在标题旁，省掉整条页面工具条 -->
+            <span
+              v-if="pageBadge"
+              class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium leading-none"
+              :class="pageBadgeClass"
+            >
+              {{ pageBadge.label }}
+            </span>
+          </div>
           <div
             v-if="pageSubtitle"
             class="text-[11px] text-fg-subtle truncate leading-tight mt-0.5"
@@ -390,19 +439,27 @@ const logout = async () => {
             {{ pageSubtitle }}
           </div>
         </div>
-        <div class="ml-auto shrink-0 flex items-center gap-1.5">
+        <div class="ml-auto shrink-0 flex items-center gap-1">
           <template v-if="pageActions.length">
             <Button
               v-for="(act, i) in pageActions"
               :key="i"
               type="button"
-              :variant="i === 0 ? 'secondary' : 'outline'"
-              size="sm"
-              class="h-8 px-2.5 text-xs"
+              :variant="act.icon ? 'ghost' : i === 0 ? 'secondary' : 'outline'"
+              :size="act.icon ? 'icon-sm' : 'sm'"
+              class="shrink-0"
+              :class="act.icon ? 'h-8 w-8 tap-target' : 'h-8 px-2.5 text-xs'"
               :disabled="act.disabled"
+              :aria-label="act.ariaLabel || act.label"
               @click="act.onClick"
             >
-              {{ act.label }}
+              <component
+                :is="pageActionIcon(act.icon)"
+                v-if="act.icon && pageActionIcon(act.icon)"
+                class="!h-4 !w-4"
+                aria-hidden="true"
+              />
+              <span v-else>{{ act.label }}</span>
             </Button>
           </template>
           <Button

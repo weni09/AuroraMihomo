@@ -120,28 +120,30 @@ describe('AdGuardView', () => {
     expect(iframe.attributes('src')).toBe('/adguard-ui/')
     expect(iframe.attributes('title')).toBe('AdGuard Home')
 
-    const { subtitle, action, actions } = usePageChrome()
+    const { subtitle, badge, action, actions } = usePageChrome()
     expect(subtitle.value).toBe('已对接')
-    // 移动端 App 顶栏只挂刷新，避免与页内工具条重复
-    expect(actions.value.map((a) => a.label)).toEqual(['刷新'])
+    // 运行态进 badge；设置/工具/刷新进 App 顶栏，页内不再常驻移动状态条
+    expect(badge.value).toEqual({ label: '运行中', tone: 'ok' })
+    expect(actions.value.map((a) => a.label)).toEqual(['刷新', '设置', '工具'])
+    expect(actions.value.map((a) => a.icon)).toEqual(['refresh', 'settings', 'tools'])
     expect(action.value?.label).toBe('刷新')
     expect(wrapper.find('[data-testid="adguard-refresh-btn"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="adguard-refresh-btn-mobile"]').exists()).toBe(false)
     expect(mockedApi.post).toHaveBeenCalledWith('/auth/session')
 
     const header = wrapper.get('[data-testid="adguard-page-header"]')
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
     expect(wrapper.find('[data-testid="adguard-settings-btn"]').exists()).toBe(true)
 
-    // 移动端工具条默认收起
-    const mobile = wrapper.get('[data-testid="adguard-mobile-actions"]')
-    expect(mobile.text()).toContain('运行中')
-    expect(wrapper.find('[data-testid="adguard-mobile-toolbar-panel"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="adguard-mobile-toolbar-toggle"]').trigger('click')
+    // 默认不渲染移动工具条（不占高）；点 page chrome「工具」才展开
+    expect(wrapper.find('[data-testid="adguard-mobile-actions"]').exists()).toBe(false)
+    const toolsAct = actions.value.find((a) => a.label === '工具')
+    expect(toolsAct).toBeTruthy()
+    toolsAct!.onClick()
+    await flushPromises()
     expect(wrapper.find('[data-testid="adguard-mobile-toolbar-panel"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="adguard-mobile-toolbar-panel"]').text()).toContain('重启')
 
-    // 点设置打开完整弹窗（Dialog teleport 到 body）
+    // 点桌面设置打开完整弹窗（Dialog teleport 到 body）
     await wrapper.get('[data-testid="adguard-settings-btn"]').trigger('click')
     await flushPromises()
     expect(body().find('[data-testid="adguard-settings-dialog-body"]').exists()).toBe(true)
