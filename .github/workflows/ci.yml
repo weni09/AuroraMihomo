@@ -36,11 +36,7 @@ jobs:
             exit 1
           fi
 
-      - name: 静态检查 (go vet)
-        run: go vet ./backend/...
-
-      # go vet 不检查被丢弃的错误返回值，此前 service/repository 层因此
-      # 长期存在静默吞掉写库失败的代码。errcheck 等检查由 golangci-lint 覆盖。
+      # go vet 已由 golangci-lint 的 govet 覆盖，不再单独跑一遍（曾多占 ~50s）。
       #
       # 用官方安装脚本 + 直接调 CLI，不走 golangci-lint-action：
       # 该 action 把「下载、校验版本、执行」包在一起，任何一环出错都只报
@@ -57,14 +53,24 @@ jobs:
       # v2.11.4 用 go1.26.1 构建，已验证在 1.25 与 1.26 工具链下均为 0 issues。
       # 同理不用 latest：lint 规则集随版本变化，浮动版本会让同一份代码
       # 在不同时间得到不同结论。
+      - name: 缓存 golangci-lint
+        id: cache-golangci
+        uses: actions/cache@v4
+        with:
+          path: ~/golangci-lint-bin
+          key: golangci-lint-v2.11.4-${{ runner.os }}
+
       - name: 安装 golangci-lint
+        if: steps.cache-golangci.outputs.cache-hit != 'true'
         run: |
+          mkdir -p "$HOME/golangci-lint-bin"
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.4
-          "$(go env GOPATH)/bin/golangci-lint" --version
+            | sh -s -- -b "$HOME/golangci-lint-bin" v2.11.4
 
       - name: 静态检查 (golangci-lint)
-        run: "$(go env GOPATH)/bin/golangci-lint run --timeout=5m ./backend/..."
+        run: |
+          "$HOME/golangci-lint-bin/golangci-lint" --version
+          "$HOME/golangci-lint-bin/golangci-lint" run --timeout=5m ./backend/...
 
       - name: 构建
         run: go build -v ./backend/api
@@ -134,26 +140,15 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-  docker:
-    name: 多架构镜像构建验证
-    runs-on: ubuntu-latest
-    needs: [backend, frontend]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 配置 QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: 配置 Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 只构建不推送，确保 Dockerfile 在两种架构下都能编译通过
-      - name: 构建 amd64 / arm64 镜像
-        uses: docker/build-push-action@v6
+      # 供 release.yml 复用，避免门禁已编过前端后发版再 npm run build 一遍。
+      # 可复用 workflow 上传的 artifact 对调用方可见。
+      - uses: actions/upload-artifact@v4
         with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+
+  # 故意不再做「多架构镜像只构建不推送」：
+  # v0.3.x 实测该 job 约 4–5 分钟，且 release 已会 buildx 推送 amd64/arm64，
+  # 门禁阶段再 QEMU 编一遍纯属重复。Dockerfile 变更风险由发版 docker job 兜住；
+  # 若只想验 Dockerfile，可 workflow_dispatch 本 CI 后在本地/单独 job 跑。

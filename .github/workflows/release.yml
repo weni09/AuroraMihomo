@@ -5,7 +5,7 @@ name: Release
 #   git tag v0.2.0
 #   git push origin v0.2.0
 #
-# 流程是 CI 全绿 → 构建五平台二进制 → 创建 Release。
+# 流程是 CI 全绿 → 复用 CI 前端产物 → 构建五平台二进制 → 创建 Release。
 # 也支持手动触发，用于在正式打 tag 前验证产物（此时不会创建 Release）。
 on:
   push:
@@ -22,42 +22,19 @@ permissions:
   packages: write
 
 jobs:
-  # 先跑一遍完整 CI（测试、lint、类型检查、镜像构建验证）。
+  # 先跑一遍完整 CI（测试、lint、类型检查）。
   # 用 workflow_call 复用 ci.yml 而不是复制一份检查步骤：
   # 两份迟早会漂移，而且那时 release 放过的问题正是最不该放过的。
+  #
+  # CI 前端 job 会上传 frontend-dist；本 workflow 直接下载，不再二次 npm build
+  # （旧流程门禁编一次、发版再编一次，白多 ~30–40s + 排队）。
   ci:
     name: 质量门禁
     uses: ./.github/workflows/ci.yml
 
-  frontend:
-    name: 构建前端
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - run: npm ci
-        working-directory: frontend
-
-      # 前端产物与平台无关，构建一次给所有平台复用
-      - run: npm run build
-        working-directory: frontend
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist
-          retention-days: 1
-
   build:
     name: 构建 ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: frontend
+    needs: ci
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
