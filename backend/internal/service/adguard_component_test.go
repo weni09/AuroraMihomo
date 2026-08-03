@@ -321,7 +321,9 @@ func TestStartStop_PersistsDesiredRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 新测服自带可执行的假脚本（#!/bin/sh），在 Linux 上 cmd.Start 会成功。
-	// 本用例要验证「启动失败不写 desired」，故改用不存在的二进制路径。
+	// 验证「启动失败不写 desired」时临时换成不存在的路径；之后恢复，
+	// 以便 ShouldStartAtBoot 仍能看到「已安装」的假二进制。
+	goodMgr := svc.mgr
 	svc.mgr = adguard.NewManager(adguard.Config{
 		BinaryPath: filepath.Join(t.TempDir(), "AdGuardHome-missing"),
 		WorkDir:    svc.workDir,
@@ -333,6 +335,7 @@ func TestStartStop_PersistsDesiredRunning(t *testing.T) {
 	if svc.DesiredRunning() {
 		t.Fatal("Start 失败不应标记 desiredRunning")
 	}
+	svc.mgr = goodMgr
 	// 直接写 boot 模拟用户曾启动
 	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
 		t.Fatal(err)
