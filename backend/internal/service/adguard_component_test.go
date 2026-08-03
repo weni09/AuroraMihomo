@@ -320,7 +320,13 @@ func TestStartStop_PersistsDesiredRunning(t *testing.T) {
 	if err := svc.SetComponentEnabled(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	// 无真实二进制：Start 应失败且不写 desired
+	// 新测服自带可执行的假脚本（#!/bin/sh），在 Linux 上 cmd.Start 会成功。
+	// 本用例要验证「启动失败不写 desired」，故改用不存在的二进制路径。
+	svc.mgr = adguard.NewManager(adguard.Config{
+		BinaryPath: filepath.Join(t.TempDir(), "AdGuardHome-missing"),
+		WorkDir:    svc.workDir,
+		WebAddr:    "127.0.0.1:3000",
+	})
 	if err := svc.Start(ctx); err == nil {
 		t.Fatal("无二进制时应 Start 失败")
 	}
