@@ -591,7 +591,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 		assetURL, name, assetSize, err := pickAdGuardAsset(rel)
 		if err != nil {
 			if lastDownloadErr != nil {
-				return fmt.Errorf("AdGuard 模板源均失败（末次: %v）；Release 资产选择失败: %w", lastDownloadErr, err)
+				return fmt.Errorf("AdGuard 模板源均失败（末次: %w）；Release 资产选择失败: %w", lastDownloadErr, err)
 			}
 			return err
 		}
@@ -599,7 +599,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 		dest := filepath.Join(tmpDir, name)
 		if err := m.downloadWithCDN(ctx, assetURL, dest, assetSize); err != nil {
 			if lastDownloadErr != nil {
-				return fmt.Errorf("AdGuard 模板源均失败（末次: %v）；CDN 回落失败: %w", lastDownloadErr, err)
+				return fmt.Errorf("AdGuard 模板源均失败（末次: %w）；CDN 回落失败: %w", lastDownloadErr, err)
 			}
 			return err
 		}
@@ -627,7 +627,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 		// 先试 tar.gz 再 zip
 		if err := untarGz(archivePath, extractDir); err != nil {
 			if err2 := unzip(archivePath, extractDir); err2 != nil {
-				return fmt.Errorf("unsupported AdGuardHome archive %s: tar=%v zip=%v", assetName, err, err2)
+				return fmt.Errorf("unsupported AdGuardHome archive %s: tar=%w zip=%w", assetName, err, err2)
 			}
 		}
 	}
@@ -708,7 +708,7 @@ func verifyAdGuardBinary(ctx context.Context, path string) error {
 		if strings.TrimSpace(string(out)) != "" {
 			return nil
 		}
-		lastErr = fmt.Errorf("%v (%s)", err, strings.TrimSpace(string(out)))
+		lastErr = fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	if lastErr != nil {
 		return lastErr
@@ -1160,7 +1160,7 @@ func untarGz(src, dest string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}

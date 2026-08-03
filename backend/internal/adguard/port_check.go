@@ -77,8 +77,11 @@ func canBindUDP(port int) bool {
 }
 
 func canBindTCP(port int) bool {
+	lc := net.ListenConfig{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	for _, host := range []string{"0.0.0.0", "127.0.0.1"} {
-		ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		ln, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 		if err != nil {
 			return false
 		}

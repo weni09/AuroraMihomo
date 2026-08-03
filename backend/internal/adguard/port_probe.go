@@ -1,8 +1,10 @@
 package adguard
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"time"
 )
 
 // UDPPortInUse 探测 UDP :port 是否已被占用。
@@ -12,7 +14,10 @@ func UDPPortInUse(port int) bool {
 	if port <= 0 || port > 65535 {
 		return true
 	}
-	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+	lc := net.ListenConfig{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	pc, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return true
 	}
