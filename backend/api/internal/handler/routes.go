@@ -16,26 +16,26 @@ import (
 func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 	server.AddRoutes(
 		[]rest.Route{
-{
-					Method:  http.MethodPut,
-					Path:    "/api/v1/adguard/cdn",
-					Handler: protected.AdGuardSetCDNHandler(serverCtx),
-				},
-				{
-					Method:  http.MethodGet,
-					Path:    "/api/v1/adguard/check-update",
-					Handler: protected.AdGuardCheckUpdateHandler(serverCtx),
-				},
-				{
-					Method:  http.MethodPut,
-					Path:    "/api/v1/adguard/auto-update",
-					Handler: protected.AdGuardSetAutoUpdateHandler(serverCtx),
-				},
-				{
-					Method:  http.MethodPut,
-					Path:    "/api/v1/adguard/component",
-					Handler: protected.AdGuardSetComponentHandler(serverCtx),
-				},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/cdn",
+				Handler: protected.AdGuardSetCDNHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/adguard/check-update",
+				Handler: protected.AdGuardCheckUpdateHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/auto-update",
+				Handler: protected.AdGuardSetAutoUpdateHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/component",
+				Handler: protected.AdGuardSetComponentHandler(serverCtx),
+			},
 			{
 				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/credentials",

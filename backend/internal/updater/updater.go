@@ -83,15 +83,15 @@ type Manager struct {
 	// persistZashboardVersion 把面板版本写入持久层。
 	// 用回调注入而非直接依赖 repository：updater 不应反向依赖数据层。
 	persistZashboardVersion func(version string) error
-// proxyURLFn 返回本地 mihomo 的 HTTP 代理地址（如 http://127.0.0.1:7890）。
-		// 用回调注入而非直接读配置文件：代理端口取决于当前生效的 config.yaml，
-		// 由 ConfigService 负责解析，updater 不该重复一份解析逻辑。
-		// 返回空串表示代理不可用（内核未运行或未开放混合端口）。
-		proxyURLFn func() string
-		// adguardCDN 为 AdGuard 下载专用镜像列表；非空时优先于全局 CDNProviders。
-		// 仅影响 UpdateAdGuard 路径（downloadWithCDN 经 EffectiveCDNProviders）。
-		adguardCDN []string
-	}
+	// proxyURLFn 返回本地 mihomo 的 HTTP 代理地址（如 http://127.0.0.1:7890）。
+	// 用回调注入而非直接读配置文件：代理端口取决于当前生效的 config.yaml，
+	// 由 ConfigService 负责解析，updater 不该重复一份解析逻辑。
+	// 返回空串表示代理不可用（内核未运行或未开放混合端口）。
+	proxyURLFn func() string
+	// adguardCDN 为 AdGuard 下载专用镜像列表；非空时优先于全局 CDNProviders。
+	// 仅影响 UpdateAdGuard 路径（downloadWithCDN 经 EffectiveCDNProviders）。
+	adguardCDN []string
+}
 
 type githubRelease struct {
 	TagName string        `json:"tag_name"`
@@ -1039,7 +1039,7 @@ func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string,
 	}
 
 	// AdGuard 与其它组件共用 downloadWithCDN；专用 CDN 通过 Effective 覆盖。
-		urls := buildCDNURLs(officialURL, m.EffectiveCDNProviders())
+	urls := buildCDNURLs(officialURL, m.EffectiveCDNProviders())
 	for i, u := range urls {
 		m.logger.Infof("trying download source [%d/%d]: %s", i+1, len(urls), u)
 		if err := m.downloadFile(ctx, u, dest, m.client); err != nil {
