@@ -26,9 +26,11 @@ function statusPayload(partial: Record<string, unknown> = {}) {
     dnsMode: 0,
     wiring: 'off',
     wiringLabel: '未对接',
-    entryPath: '/adguard/',
+    entryPath: '/adguard-ui/',
     cdnProviders: [],
     autoUpdate: false,
+    autoUpdateCron: '0 0 4 * * *',
+    username: 'admin',
     ...partial,
   }
 }
@@ -50,8 +52,8 @@ describe('AdGuardSettingsDialog', () => {
           },
         }
       }
-      if (url === '/update/check') {
-        return { data: { success: true, message: '检查完成' } }
+      if (url === '/adguard/check-update') {
+        return { data: { success: true, message: 'AdGuard Home 已是最新' } }
       }
       return { data: {} }
     })
@@ -64,8 +66,7 @@ describe('AdGuardSettingsDialog', () => {
     document.body.innerHTML = ''
   })
 
-  it('打开时渲染运行/端口/版本/DNS 分区与出网说明', async () => {
-    // Dialog 内容 teleport 到 body，须 attachTo 才能在 document 中找到
+  it('打开时渲染账号/运行/端口/版本与自动更新分区', async () => {
     const wrapper = mount(AdGuardSettingsDialog, {
       props: { open: true },
       attachTo: document.body,
@@ -77,12 +78,13 @@ describe('AdGuardSettingsDialog', () => {
     expect(body().find('[data-testid="adguard-settings-account"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-runtime"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-webport"]').exists()).toBe(true)
+    expect(body().find('[data-testid="adguard-settings-dnsport"]').exists()).toBe(true)
     expect(body().find('[data-testid="adguard-settings-version"]').exists()).toBe(true)
-    expect(body().find('[data-testid="adguard-settings-dnsmode"]').exists()).toBe(true)
+    expect(body().find('[data-testid="adguard-auto-update"]').exists()).toBe(true)
     expect(body().text()).toContain('运行中')
     expect(body().text()).toContain('v0.107.50')
-    expect(body().text()).toContain('未托管')
-    expect(body().text()).toContain('与 Aurora 管理员密码保持同步')
+    expect(body().text()).toContain('启用 AdGuard Home 自动更新')
+    expect(body().text()).not.toContain('与 Aurora 管理员密码保持同步')
     expect(body().find('[data-testid="adguard-egress-note"]').text()).toContain(
       '下载出网遵循系统设置',
     )

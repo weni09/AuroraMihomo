@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useAdGuardStore } from '../stores/adguard'
 import { useSettingsStore } from '../stores/settings'
+import { useNotifyStore } from '../stores/notify'
 import ModalDialog from './ModalDialog.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,7 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Play, Power, RefreshCw, Download } from 'lucide-vue-next'
 
 /**
- * AdGuard 设置弹窗：账号、运行控制、Web 端口、DNS 端口、版本更新、升级链接。
+ * AdGuard 设置弹窗：账号、运行控制、端口、版本/自动更新、升级链接。
  * 出网策略只读展示系统设置。
  */
 const props = defineProps<{ open: boolean }>()
@@ -20,13 +21,15 @@ const emit = defineEmits<{ 'update:open': [boolean] }>()
 
 const store = useAdGuardStore()
 const settings = useSettingsStore()
+const notify = useNotifyStore()
 
 const webPortInput = ref('3000')
 const dnsPortDraft = ref('5353')
 const cdnText = ref('')
 const usernameInput = ref('admin')
 const passwordInput = ref('')
-const syncWithAurora = ref(false)
+const autoUpdateEnabled = ref(false)
+const autoUpdateCron = ref('0 0 4 * * *')
 
 const busy = computed(() => store.isLoading || store.actionLoading)
 const running = computed(() => store.status.running)
@@ -51,9 +54,10 @@ function syncFromStore() {
   dnsPortDraft.value = dp && dp > 0 ? String(dp) : '5353'
   cdnText.value = (store.status.cdnProviders || []).join('\n')
   usernameInput.value = store.status.username || 'admin'
-  syncWithAurora.value = store.status.passwordSync === true
   // 密码不回填
   passwordInput.value = ''
+  autoUpdateEnabled.value = store.status.autoUpdate === true
+  autoUpdateCron.value = store.status.autoUpdateCron || '0 0 4 * * *'
 }
 
 watch(
@@ -69,7 +73,7 @@ watch(
 
 
 watch(
-  () => [store.status.webAddr, store.status.dnsPort, store.status.cdnProviders, store.status.username, store.status.passwordSync],
+  () => [store.status.webAddr, store.status.dnsPort, store.status.cdnProviders, store.status.username, store.status.autoUpdate, store.status.autoUpdateCron],
   () => {
     if (props.open) syncFromStore()
   },
@@ -83,6 +87,7 @@ function close() {
 async function saveWebPort() {
   const port = Number(String(webPortInput.value).trim())
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    notify.error('Web 端口须为 1–65535 的整数')
     return
   }
   await store.setWebPort(port)
@@ -99,11 +104,13 @@ async function saveCdn() {
 
 async function saveCredentials() {
   const password = passwordInput.value
-  if (!password) return
+  if (!password) {
+    notify.error('请输入 AdGuard 管理员密码')
+    return
+  }
   await store.setCredentials({
     username: usernameInput.value.trim() || 'admin',
     password,
-    syncWithAurora: syncWithAurora.value,
   })
   passwordInput.value = ''
 }
@@ -111,6 +118,7 @@ async function saveCredentials() {
 async function saveDnsPort() {
   const port = Number(String(dnsPortDraft.value).trim())
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    notify.error('DNS 端口须为 1–65535 的整数')
     return
   }
   // 与当前配置相同则跳过（自身占用也算已成功）
@@ -125,6 +133,21 @@ async function onDnsPortBlur() {
   await saveDnsPort()
 }
 
+async function applyEntryPreset() {
+  if (!confirm('将写入 AdGuard :53 与 mihomo 0.0.0.0:1053 等入口 DNS 方案，并可能重启 AdGuard。确定继续？')) {
+    return
+  }
+  await store.applyEntryDNSPreset()
+  // 端口草稿与状态对齐
+  dnsPortDraft.value = String(store.status.dnsPort || 53)
+}
+
+async function saveAutoUpdate() {
+  await store.setAutoUpdate({
+    enabled: autoUpdateEnabled.value,
+    cron: String(autoUpdateCron.value || '').trim() || '0 0 4 * * *',
+  })
+}
 
 </script>
 
@@ -141,8 +164,7 @@ async function onDnsPortBlur() {
       <section class="space-y-3" data-testid="adguard-settings-account">
         <h3 class="text-sm font-semibold text-fg">账号</h3>
         <p class="text-xs text-fg-subtle">
-          写入 AdGuard Home 管理员账号（bcrypt 哈希进 yaml，不在面板库存明文）。
-          勾选同步后，在系统设置修改 Aurora 管理员密码时会一并更新 AGH。
+          写入 AdGuard Home 管理员账号（yaml 存 bcrypt；面板另以可逆加密保存一份，供重启后面板免密接管）。
         </p>
         <div class="grid gap-3 sm:grid-cols-2">
           <div class="space-y-1.5">
@@ -167,13 +189,6 @@ async function onDnsPortBlur() {
             />
           </div>
         </div>
-        <label class="flex items-start gap-2 cursor-pointer">
-          <Checkbox v-model="syncWithAurora" class="mt-0.5" :disabled="busy" />
-          <span class="text-sm text-fg">
-            与 Aurora 管理员密码保持同步
-            <span class="block text-xs text-fg-subtle">开启后改 Aurora 密码会尝试更新 AGH</span>
-          </span>
-        </label>
         <Button size="sm" :disabled="busy || !passwordInput" @click="saveCredentials">
           保存账号
         </Button>
@@ -265,6 +280,32 @@ async function onDnsPortBlur() {
           <span class="font-mono">{{ store.status.dnsPort || '—' }}</span>
           ；保存后写入配置，若 AdGuard 在跑会重启以应用。
         </p>
+        <div
+          class="rounded border border-line bg-elevated p-3 space-y-2"
+          data-testid="adguard-dns-entry-preset"
+        >
+          <p class="text-xs font-medium text-fg">一键方案 · 入口 DNS（TUN / TProxy 通用）</p>
+          <ul class="text-[11px] text-fg-subtle space-y-0.5 font-mono leading-relaxed">
+            <li>AdGuard 端口 <span class="text-fg">53</span></li>
+            <li>上游 <span class="text-fg">127.0.0.1:1053</span></li>
+            <li>后备 <span class="text-fg">127.0.0.1:1053</span>（仅 mihomo，不用裸 8.8.8.8）</li>
+            <li>Bootstrap <span class="text-fg">223.5.5.5 / 119.29.29.29</span>（国内纯 IP）</li>
+            <li>mihomo <span class="text-fg">dns.enable=true</span>、<span class="text-fg">dns.listen 0.0.0.0:1053</span></li>
+          </ul>
+          <p class="text-[11px] text-fg-subtle">
+            会尽量清空 <code class="font-mono">tun.dns-hijack</code>，避免 TUN 抢走 53；合并时也不再自动补
+            <code class="font-mono">any:53</code>。
+            请确保本机 53 端口空闲（或仅被 AdGuard 占用）。
+          </p>
+          <Button
+            size="sm"
+            :disabled="busy || !store.status.installed"
+            data-testid="adguard-dns-entry-preset-btn"
+            @click="applyEntryPreset"
+          >
+            一键应用入口 DNS
+          </Button>
+        </div>
       </section>
 
 
@@ -284,24 +325,55 @@ async function onDnsPortBlur() {
             立即更新
           </Button>
         </div>
-        <div class="space-y-1.5">
-          <Label for="agh-cdn">升级链接（按序回落；支持变量）</Label>
-          <Textarea
-            id="agh-cdn"
-            v-model="cdnText"
-            rows="4"
-            class="font-mono text-xs"
-            placeholder="https://static.adguard.com/adguardhome/beta/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://github.com/AdguardTeam/AdGuardHome/releases/download/${latest_ver}/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://static.adguard.com/adguardhome/release/AdGuardHome_${GOOS}_${Arch}.tar.gz"
-            :disabled="busy"
-          />
-          <p class="text-[11px] text-fg-subtle leading-relaxed">
-            变量：<code class="font-mono">${Arch}</code>（amd64/arm64…）、
-            <code class="font-mono">${latest_ver}</code>（GitHub 最新 tag）、
-            <code class="font-mono">${GOOS}</code>。留空则使用上述默认三源。下载出网仍遵循系统设置。
-          </p>
-          <Button size="sm" variant="secondary" :disabled="busy" @click="saveCdn">
-            保存升级链接
-          </Button>
+        <div class="space-y-3 rounded border border-line bg-elevated p-3" data-testid="adguard-auto-update">
+          <label class="flex items-start gap-2 cursor-pointer">
+            <Checkbox v-model="autoUpdateEnabled" class="mt-0.5" :disabled="busy" />
+            <span class="text-sm text-fg">
+              启用 AdGuard Home 自动更新
+              <span class="block text-xs text-fg-subtle">独立调度，与系统「组件自动更新」分开；组件关闭时不执行</span>
+            </span>
+          </label>
+          <div class="space-y-1.5">
+            <Label for="agh-auto-cron">时间表达式（Cron）</Label>
+            <Input
+              id="agh-auto-cron"
+              v-model="autoUpdateCron"
+              class="font-mono text-xs w-full"
+              placeholder="0 0 4 * * *"
+              :disabled="busy"
+            />
+            <p class="text-[11px] text-fg-subtle">
+              5 段（分 时 日 月 周）或 6 段（含秒）。默认每天 4 点。
+            </p>
+          </div>
+          <div class="flex justify-end pt-0.5">
+            <Button size="sm" variant="outline" class="min-w-[7.5rem]" :disabled="busy" @click="saveAutoUpdate">
+              保存自动更新
+            </Button>
+          </div>
+        </div>
+        <div class="space-y-3 rounded border border-line bg-elevated p-3" data-testid="adguard-cdn-settings">
+          <div class="space-y-1.5">
+            <Label for="agh-cdn">升级链接（按序回落；支持变量）</Label>
+            <Textarea
+              id="agh-cdn"
+              v-model="cdnText"
+              rows="4"
+              class="font-mono text-xs"
+              placeholder="https://static.adguard.com/adguardhome/beta/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://github.com/AdguardTeam/AdGuardHome/releases/download/${latest_ver}/AdGuardHome_${GOOS}_${Arch}.tar.gz&#10;https://static.adguard.com/adguardhome/release/AdGuardHome_${GOOS}_${Arch}.tar.gz"
+              :disabled="busy"
+            />
+            <p class="text-[11px] text-fg-subtle leading-relaxed">
+              变量：<code class="font-mono">${Arch}</code>（amd64/arm64…）、
+              <code class="font-mono">${latest_ver}</code>（GitHub 最新 tag）、
+              <code class="font-mono">${GOOS}</code>。留空则使用上述默认三源。下载出网仍遵循系统设置。
+            </p>
+          </div>
+          <div class="flex justify-end pt-0.5">
+            <Button size="sm" variant="outline" class="min-w-[7.5rem]" :disabled="busy" @click="saveCdn">
+              保存升级链接
+            </Button>
+          </div>
         </div>
         <p class="text-xs text-fg-subtle rounded border border-line bg-elevated p-2" data-testid="adguard-egress-note">
           下载出网遵循系统设置 → 下载与更新出网

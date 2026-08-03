@@ -123,6 +123,17 @@ func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
 	// AdGuard 听 53；放行查询由 AGH「上游 DNS」转发到 mihomo 高位端口（如 1053）。
 	// 同时清空 tun.dns-hijack，避免 TUN 把 53 抢进 mihomo 内部。
 
+	if s.cfgSvc == nil {
+		return fmt.Errorf("配置服务未初始化，无法准备 mihomo DNS")
+	}
+	// AGH 上游依赖 mihomo DNS 监听；默认 base 是 enable:false
+	if err := s.cfgSvc.SetBaseDNSEnable(true); err != nil {
+		return fmt.Errorf("开启 mihomo dns.enable 失败: %w", err)
+	}
+	if _, err := s.cfgSvc.ApplyLocalOnly(ctx); err != nil {
+		return fmt.Errorf("应用 dns.enable 失败: %w", err)
+	}
+
 	cur, err := s.collectDNSState()
 	if err != nil {
 		return err
@@ -157,23 +168,22 @@ func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
 	// 2) AGH 上游 → 127.0.0.1:mihomoPort（配置级「转发」，非 nft 重定向）
 	plan.DidPatchUpstream = true
 	plan.Actions = append(plan.Actions,
-		fmt.Sprintf("AdGuard 上游 DNS → 127.0.0.1:%d（mihomo；入口仍为 :53）", mihomoPort))
+		fmt.Sprintf("AdGuard 上游/后备 → 127.0.0.1:%d；Bootstrap → 国内纯 IP", mihomoPort))
 
 	// 3) 清空 tun.dns-hijack，否则 TUN 下查询进 mihomo 内部、AGH 当不了入口
-	if s.cfgSvc != nil {
-		if raw, err := s.cfgSvc.GetBaseConfig(); err == nil {
-			hijack := readDNSHijackFromBaseYAML(raw)
-			if len(hijack) > 0 {
-				plan.DidWeakenTUN = true
-				plan.OriginalDNSHijack = hijack
-				plan.Actions = append(plan.Actions,
-					"清空 tun.dns-hijack（避免 TUN 抢走 53，保证客户端 DNS 先到 AdGuard）")
-			}
+	if raw, err := s.cfgSvc.GetBaseConfig(); err == nil {
+		hijack := readDNSHijackFromBaseYAML(raw)
+		if len(hijack) > 0 {
+			plan.DidWeakenTUN = true
+			plan.OriginalDNSHijack = hijack
+			plan.Actions = append(plan.Actions,
+				"清空 tun.dns-hijack（避免 TUN 抢走 53，保证客户端 DNS 先到 AdGuard）")
 		}
 	}
 
 	plan.Actions = append([]string{
 		"AdGuard 监听 :53（客户端入口 DNS，完整日志与拦截）",
+		"确保 mihomo dns.enable=true",
 	}, plan.Actions...)
 
 	snap, err := marshalWiringSnapshot(plan)
@@ -192,11 +202,16 @@ func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
 		return err
 	}
 
-	// AGH 绑 53（在 upstream 补丁之后，避免中途端口错乱）
+	// AGH 绑 53 + 完整 resolvers（不仅 upstream，锁 fallback/bootstrap 防污染）
 	if err := adguard.SetDNSPort(s.workDir, 53); err != nil {
 		_ = s.rollbackWiringPlan(ctx, plan)
 		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
 		return fmt.Errorf("写入 AdGuard dns.port=53 失败: %w", err)
+	}
+	if err := hardenAGHResolversForMihomo(s.workDir, mihomoPort); err != nil {
+		_ = s.rollbackWiringPlan(ctx, plan)
+		_ = s.db.SetSetting(settingAdGuardSnapshot, "")
+		return fmt.Errorf("硬化 AdGuard resolvers 失败: %w", err)
 	}
 	_ = s.db.SetSetting(settingAdGuardDNSPort, "53")
 
@@ -251,7 +266,7 @@ func (s *AdGuardService) enterDNSMode2(ctx context.Context) error {
 	return s.enterDNSMode2WithoutTProxy(ctx, port, cur)
 }
 
-// resolveRedirectDNSPort 模式 2 用的 AGH 监听端口：settings > yaml > 1053；禁止 53。
+// resolveRedirectDNSPort 模式 2 用的 AGH 监听端口：settings > yaml > 5353；禁止 53。
 func (s *AdGuardService) resolveRedirectDNSPort() int {
 	if p := s.getSettingInt(settingAdGuardDNSPort, 0); p > 0 && p != 53 {
 		return p
@@ -259,13 +274,13 @@ func (s *AdGuardService) resolveRedirectDNSPort() int {
 	if p, err := adguard.ReadDNSPort(s.workDir); err == nil && p > 0 && p != 53 {
 		return p
 	}
-	return 5353
+	return adguard.DefaultDNSPort
 }
 
 // ensureAGHListenPort 把 AGH dns.port 写成指定高位端口，运行中则重启使监听生效。
 func (s *AdGuardService) ensureAGHListenPort(ctx context.Context, port int) error {
 	if port <= 0 || port == 53 {
-		return fmt.Errorf("重定向模式要求 AdGuard DNS 使用高位端口（如 1053），不能是 %d", port)
+		return fmt.Errorf("重定向模式要求 AdGuard DNS 使用高位端口（如 %d），不能是 %d", adguard.DefaultDNSPort, port)
 	}
 	if err := adguard.SetDNSPort(s.workDir, port); err != nil {
 		return fmt.Errorf("写入 AdGuard dns.port=%d 失败: %w", port, err)

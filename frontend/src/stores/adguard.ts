@@ -23,12 +23,14 @@ export interface AdGuardStatus {
   entryPath: string
   /** AdGuard 专用升级镜像（空则用全局 CDN） */
   cdnProviders: string[]
-  /** 是否参加系统自动更新 */
+  /** 是否启用 AdGuard 独立自动更新 */
   autoUpdate: boolean
+  /** 自动更新 cron（5/6 段） */
+  autoUpdateCron: string
   /** AGH 管理员用户名 */
   username: string
-  /** 是否与 Aurora 管理员密码同步 */
-  passwordSync: boolean
+  /** 用户期望运行；面板重启后据此自启 */
+  desiredRunning: boolean
 }
 
 /** 一键对接向导勾选项 */
@@ -67,8 +69,9 @@ const emptyStatus = (): AdGuardStatus => ({
   entryPath: '/adguard-ui/',
   cdnProviders: [],
   autoUpdate: false,
+  autoUpdateCron: '0 0 4 * * *',
   username: 'admin',
-  passwordSync: false,
+  desiredRunning: false,
 })
 
 export const useAdGuardStore = defineStore('adguard', {
@@ -101,8 +104,9 @@ export const useAdGuardStore = defineStore('adguard', {
           dnsMode: Number.isFinite(dnsMode) && dnsMode >= 0 && dnsMode <= 2 ? dnsMode : 0,
           cdnProviders: Array.isArray(res.data?.cdnProviders) ? res.data.cdnProviders : [],
           autoUpdate: res.data?.autoUpdate === true,
+          autoUpdateCron: (res.data?.autoUpdateCron || '').trim() || '0 0 4 * * *',
           username: res.data?.username?.trim() || 'admin',
-          passwordSync: res.data?.passwordSync === true,
+          desiredRunning: res.data?.desiredRunning === true,
         }
       } catch (error) {
         console.error('Failed to fetch AdGuard status', error)
@@ -178,11 +182,11 @@ export const useAdGuardStore = defineStore('adguard', {
       await this.runAction('/update/adguard', 'AdGuard Home 已更新')
     },
 
-    /** 检查更新（复用全局 /update/check，含 AdGuard 版本描述） */
+    /** 仅检查 AdGuard Home 版本 */
     async checkUpdate() {
       this.actionLoading = true
       try {
-        const res = await api.get<{ message?: string; success?: boolean }>('/update/check')
+        const res = await api.get<{ message?: string; success?: boolean }>('/adguard/check-update')
         const text = res.data?.message || '检查完成'
         if (res.data?.success === false) {
           useNotifyStore().error(text)
@@ -216,7 +220,7 @@ export const useAdGuardStore = defineStore('adguard', {
       }
     },
 
-    /** DNS 高位监听端口（重定向 53 的目标）；禁止 53 */
+    /** DNS 监听端口（含入口 53 或高位端口如 5353）；后端校验占用 */
     async setDnsPort(port: number) {
       this.actionLoading = true
       try {
@@ -236,7 +240,30 @@ export const useAdGuardStore = defineStore('adguard', {
       }
     },
 
-    /** DNS 服务模式 0/1/2 */
+    /**
+     * 一键入口 DNS 方案（TUN/TProxy 通用）：
+     * AGH :53 + 上游/后备仅 mihomo、Bootstrap 国内纯 IP；mihomo dns.enable + listen 0.0.0.0:1053
+     */
+    async applyEntryDNSPreset() {
+      this.actionLoading = true
+      try {
+        const res = await api.post<Result>('/adguard/dns-entry-preset')
+        const text = res.data?.message || '已应用入口 DNS 方案'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+        /** DNS 服务模式 0/1/2 */
     async setDnsMode(mode: number) {
       this.actionLoading = true
       try {
@@ -277,28 +304,46 @@ export const useAdGuardStore = defineStore('adguard', {
     },
 
     /**
-     * 设置 AGH 管理员账号。password 必填；syncWithAurora 可选写入同步开关。
+     * 设置 AGH 管理员账号。password 必填。
      * 不在前端/库中存明文密码。
      */
     async setCredentials(payload: {
       username?: string
       password: string
-      syncWithAurora?: boolean
     }) {
       this.actionLoading = true
       try {
         const body: {
           username?: string
           password: string
-          syncWithAurora?: boolean
         } = { password: payload.password }
         const u = payload.username?.trim()
         if (u) body.username = u
-        if (payload.syncWithAurora !== undefined) {
-          body.syncWithAurora = payload.syncWithAurora
-        }
         const res = await api.put<Result>('/adguard/credentials', body)
         const text = res.data?.message || 'AdGuard 账号已更新'
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
+    },
+
+    /** 保存 AdGuard 自动更新开关与/或 cron */
+    async setAutoUpdate(payload: { enabled?: boolean; cron?: string }) {
+      this.actionLoading = true
+      try {
+        const body: { enabled?: boolean; cron?: string } = {}
+        if (payload.enabled !== undefined) body.enabled = payload.enabled
+        if (payload.cron !== undefined) body.cron = payload.cron
+        const res = await api.put<Result>('/adguard/auto-update', body)
+        const text = res.data?.message || '自动更新设置已保存'
         if (res.data?.success === false) {
           useNotifyStore().error(text)
         } else {

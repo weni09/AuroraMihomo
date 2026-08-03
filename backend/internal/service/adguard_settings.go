@@ -8,26 +8,8 @@ import (
 	"strings"
 
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/updater"
 )
-
-// PasswordSyncEnabled 是否在 Aurora 改密后自动同步到 AGH。
-func (s *AdGuardService) PasswordSyncEnabled() bool {
-	v := strings.TrimSpace(s.getSetting(settingAdGuardSyncPassword, ""))
-	return v == "1" || strings.EqualFold(v, "true") || v == "on"
-}
-
-// SetPasswordSync 写入 adguard.sync_password。
-func (s *AdGuardService) SetPasswordSync(ctx context.Context, enabled bool) error {
-	_ = ctx
-	if s.db == nil {
-		return errors.New("数据库未初始化")
-	}
-	val := "false"
-	if enabled {
-		val = "true"
-	}
-	return s.db.SetSetting(settingAdGuardSyncPassword, val)
-}
 
 // AdminUsername 返回 settings 中的 AGH 用户名；空则尝试读 yaml；再空则 "admin"。
 func (s *AdGuardService) AdminUsername() string {
@@ -64,18 +46,6 @@ func (s *AdGuardService) SetCredentials(ctx context.Context, username, password 
 		}
 	}
 	return nil
-}
-
-// SyncPasswordFromAurora 在 sync 开启时，用 Aurora 新明文口令更新 AGH。
-// sync 关闭则 no-op（返回 nil）。用户名取 settings 或默认 admin。
-func (s *AdGuardService) SyncPasswordFromAurora(ctx context.Context, plainPassword string) error {
-	if !s.PasswordSyncEnabled() {
-		return nil
-	}
-	if strings.TrimSpace(plainPassword) == "" {
-		return errors.New("同步密码为空")
-	}
-	return s.SetCredentials(ctx, s.AdminUsername(), plainPassword)
 }
 
 // SetWebPort 校验端口、写 AGH yaml（强制 127.0.0.1）、落库 web_addr；
@@ -201,22 +171,73 @@ func (s *AdGuardService) SetCDNProviders(providers []string) error {
 	return nil
 }
 
-// AutoUpdateEnabled 是否参加系统自动更新（与全局 cron 同一套）。
+// AutoUpdateEnabled 是否启用 AdGuard 独立自动更新。
 func (s *AdGuardService) AutoUpdateEnabled() bool {
 	v := strings.TrimSpace(s.getSetting(settingAdGuardAutoUpdate, ""))
 	return v == "1" || strings.EqualFold(v, "true") || v == "on"
 }
 
-// SetAutoUpdate 写入 adguard.auto_update。
-func (s *AdGuardService) SetAutoUpdate(enabled bool) error {
+// AutoUpdateCron 返回 AdGuard 自动更新 cron（已规范化 6 段）；空则默认。
+func (s *AdGuardService) AutoUpdateCron() string {
+	raw := strings.TrimSpace(s.getSetting(settingAdGuardAutoUpdateCron, ""))
+	if raw == "" {
+		return defaultAdGuardAutoUpdateCron
+	}
+	if norm, err := NormalizeCron(raw); err == nil && norm != "" {
+		return norm
+	}
+	return defaultAdGuardAutoUpdateCron
+}
+
+// ShouldRunAutoUpdate 组件启用且开关打开时才真正调度。
+func (s *AdGuardService) ShouldRunAutoUpdate() bool {
+	return s != nil && s.ComponentEnabled() && s.AutoUpdateEnabled()
+}
+
+// SetAutoUpdateSettings 写入开关与/或 cron，并触发调度重装。
+// enabled 为 nil 表示不改开关；cron 空串表示不改表达式。
+func (s *AdGuardService) SetAutoUpdateSettings(enabled *bool, cronExpr string) error {
 	if s.db == nil {
 		return errors.New("数据库未初始化")
 	}
-	val := "false"
-	if enabled {
-		val = "true"
+	if cronExpr = strings.TrimSpace(cronExpr); cronExpr != "" {
+		norm, err := NormalizeCron(cronExpr)
+		if err != nil {
+			return err
+		}
+		if err := s.db.SetSetting(settingAdGuardAutoUpdateCron, norm); err != nil {
+			return fmt.Errorf("保存自动更新 cron 失败: %w", err)
+		}
 	}
-	return s.db.SetSetting(settingAdGuardAutoUpdate, val)
+	if enabled != nil {
+		val := "false"
+		if *enabled {
+			val = "true"
+		}
+		if err := s.db.SetSetting(settingAdGuardAutoUpdate, val); err != nil {
+			return fmt.Errorf("保存自动更新开关失败: %w", err)
+		}
+	}
+	s.reloadSchedule()
+	return nil
+}
+
+// SetAutoUpdate 仅写开关（兼容旧调用），并重装调度。
+func (s *AdGuardService) SetAutoUpdate(enabled bool) error {
+	return s.SetAutoUpdateSettings(&enabled, "")
+}
+
+// CheckUpdateOnly 只检查 AdGuard Home 是否有新版本（不查 mihomo/zashboard）。
+func (s *AdGuardService) CheckUpdateOnly(ctx context.Context) (updater.ComponentCheck, error) {
+	if s.updater == nil {
+		return updater.ComponentCheck{}, errors.New("更新器未初始化")
+	}
+	local := strings.TrimSpace(s.getSetting(settingAdGuardVersion, ""))
+	if local == "" && s.mgr != nil {
+		local = strings.TrimSpace(s.mgr.Status().Version)
+	}
+	_, _, agh := s.updater.CheckLatest(ctx, "", local)
+	return agh, nil
 }
 
 // applyAdGuardCDNToUpdater 把专用列表推给 updater；空列表清除覆盖以回落全局。

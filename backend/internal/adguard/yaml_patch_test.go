@@ -361,3 +361,41 @@ func TestSetWebPort_Invalid(t *testing.T) {
 		t.Fatal("port=70000 应失败")
 	}
 }
+
+func TestPatchDNSResolvers(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "dns:\n  port: 5353\n  upstream_dns:\n    - 1.1.1.1\n")
+	if err := PatchDNSResolvers(dir,
+			[]string{"127.0.0.1:1053"},
+			[]string{"127.0.0.1:1053"},
+			[]string{"223.5.5.5", "119.29.29.29"},
+		); err != nil {
+			t.Fatalf("PatchDNSResolvers: %v", err)
+		}
+		m, _, err := loadConfigMap(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dns := asMap(m["dns"])
+		if got := asStringList(dns["upstream_dns"]); len(got) != 1 || got[0] != "127.0.0.1:1053" {
+			t.Fatalf("upstream=%v", got)
+		}
+		if got := asStringList(dns["fallback_dns"]); len(got) != 1 || got[0] != "127.0.0.1:1053" {
+			t.Fatalf("fallback=%v", got)
+		}
+		if got := asStringList(dns["bootstrap_dns"]); len(got) != 2 {
+			t.Fatalf("bootstrap=%v", got)
+		}
+	// nil 字段不改
+	if err := PatchDNSResolvers(dir, []string{"8.8.8.8"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, _, _ = loadConfigMap(dir)
+	dns = asMap(m["dns"])
+	if got := asStringList(dns["upstream_dns"]); len(got) != 1 || got[0] != "8.8.8.8" {
+		t.Fatalf("upstream after partial=%v", got)
+	}
+	if got := asStringList(dns["fallback_dns"]); len(got) != 1 || got[0] != "127.0.0.1:1053" {
+			t.Fatalf("fallback should keep: %v", got)
+		}
+}

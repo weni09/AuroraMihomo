@@ -8,15 +8,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox'
 import ModalDialog from '../components/ModalDialog.vue'
 import AdGuardSettingsDialog from '../components/AdGuardSettingsDialog.vue'
-import { ExternalLink, Play, Power, RefreshCw, Download, Settings2 } from 'lucide-vue-next'
-
+import { ExternalLink, Play, Power, RefreshCw, Download, Settings2, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import api from '../api'
 
 const store = useAdGuardStore()
 
 const wiringOpen = ref(false)
 const settingsOpen = ref(false)
-// 对接向导默认勾选：与设计 §4 一致（弱化 TUN 默认关）
-// 主路径已降级为次要入口；T6 将用 DNS 模式取代
+/** 递增以强制重载 iframe（刷新按钮 / 会话对齐后） */
+const iframeKey = ref(0)
+/** 会话 cookie 对齐完成前不挂 iframe，避免手机先刷出 unauthorized */
+const sessionReady = ref(false)
+/** 移动端工具条默认收起，把高度留给 iframe；需要启停/更新时再展开 */
+const mobileToolbarOpen = ref(false)
+
 const wiringOpts = reactive<WiringOptions>({
   redirectTProxy: true,
   resolveConflict: true,
@@ -29,6 +34,9 @@ const busy = computed(() => store.isLoading || store.actionLoading)
 const componentEnabled = computed(() => store.status.componentEnabled)
 const installed = computed(() => store.status.installed)
 const running = computed(() => store.status.running)
+const desiredRunning = computed(() => store.status.desiredRunning === true)
+const showIframe = computed(() => running.value && sessionReady.value)
+const sessionFailed = ref(false)
 
 function openExternally() {
   window.open(entryPath.value, '_blank', 'noopener,noreferrer')
@@ -38,16 +46,53 @@ function openSettings() {
   settingsOpen.value = true
 }
 
-/** 把对接状态与「新标签页」交给 App 移动端顶栏，避免本页再叠一条 header。 */
+/**
+ * API 用 localStorage Bearer，/adguard-ui 反代只认 aurora_session cookie。
+ * 手机上常见「已登录面板但 iframe unauthorized」：补一次 Bearer→cookie。
+ */
+async function ensureSessionCookie(): Promise<boolean> {
+  try {
+    await api.post('/auth/session')
+    sessionFailed.value = false
+    sessionReady.value = true
+    return true
+  } catch (e) {
+    console.error('ensure aurora_session failed', e)
+    sessionFailed.value = true
+    // 失败时不挂 iframe，避免闪 unauthorized；用户可点重试
+    sessionReady.value = false
+    return false
+  }
+}
+
+async function refreshIframe() {
+  await ensureSessionCookie()
+  iframeKey.value += 1
+}
+
 function syncPageChrome() {
+  const canUse = store.status.installed && store.status.running
+  let subtitle = store.status.wiringLabel || (running.value ? '运行中' : '已停止')
+  if (!running.value && desiredRunning.value) {
+    subtitle = '期望运行 · 面板将自启或启动中'
+  }
+  if (store.status.lastError && !running.value) {
+    subtitle = store.status.lastError
+  }
+  // 移动端顶栏只留「刷新」：启停/设置在本页可展开工具条，避免双层按钮堆叠
   setPageChrome({
-    subtitle: store.status.wiringLabel || '',
-    action: {
-      label: '新标签页',
-      // 未安装时入口也无意义；运行中才真正能用
-      disabled: !store.status.installed || !store.status.running,
-      onClick: openExternally,
-    },
+    subtitle,
+    actions: canUse
+      ? [
+          {
+            label: '刷新',
+            disabled: false,
+            onClick: () => {
+              void refreshIframe()
+            },
+          },
+        ]
+      : [],
   })
 }
 
@@ -67,21 +112,27 @@ async function rollbackWiring() {
 }
 
 onMounted(async () => {
-  await store.fetchStatus()
+  await Promise.all([store.fetchStatus(), ensureSessionCookie()])
   syncPageChrome()
 })
 
 watch(
-  () => [store.status.wiringLabel, store.status.installed, store.status.running, store.status.entryPath],
+  () => [
+    store.status.wiringLabel,
+    store.status.installed,
+    store.status.running,
+    store.status.entryPath,
+    store.status.desiredRunning,
+    store.status.lastError,
+  ],
   syncPageChrome,
 )
 
 onBeforeUnmount(clearPageChrome)
 </script>
-
 <template>
-  <!-- 对标 Zashboard：iframe 无内在高度，用 h-dvh 自持一屏 -->
-  <main class="h-dvh flex flex-col min-h-0">
+  <!-- 高度由 App 在 adguard 路由上锁 h-dvh 后 flex 分给本页，勿再 h-dvh 叠顶栏 -->
+  <main class="flex-1 h-full min-h-0 flex flex-col">
     <!-- 已安装时显示桌面顶栏；未安装由全页安装引导承载主 CTA -->
     <div
       v-if="componentEnabled && installed"
@@ -95,6 +146,13 @@ onBeforeUnmount(clearPageChrome)
           <Badge :variant="running ? 'ok' : 'warn'">
             {{ running ? '运行中' : '已停止' }}
           </Badge>
+          <Badge
+            v-if="!running && desiredRunning"
+            variant="info"
+            data-testid="adguard-desired-running"
+          >
+            期望运行
+          </Badge>
           <Badge :variant="store.status.wiring === 'on' ? 'info' : 'neutral'">
             {{ store.status.wiringLabel || '未对接' }}
           </Badge>
@@ -103,6 +161,13 @@ onBeforeUnmount(clearPageChrome)
           {{ store.status.version }}
           <span v-if="store.status.webAddr"> · Web {{ store.status.webAddr }}</span>
           <span v-if="store.status.dnsPort"> · DNS :{{ store.status.dnsPort }}</span>
+        </p>
+        <p
+          v-if="store.status.lastError && !running"
+          class="text-xs text-destructive mt-0.5 truncate"
+          data-testid="adguard-header-error"
+        >
+          {{ store.status.lastError }}
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
@@ -129,6 +194,16 @@ onBeforeUnmount(clearPageChrome)
             停止
           </Button>
         </template>
+        <Button
+          size="sm"
+          variant="outline"
+          :disabled="busy || !running"
+          data-testid="adguard-refresh-btn"
+          @click="refreshIframe"
+        >
+          <RefreshCw class="h-4 w-4" aria-hidden="true" />
+          刷新
+        </Button>
         <Button size="sm" variant="secondary" :disabled="busy" data-testid="adguard-settings-btn" @click="openSettings">
           <Settings2 class="h-4 w-4" aria-hidden="true" />
           设置
@@ -145,36 +220,83 @@ onBeforeUnmount(clearPageChrome)
       </div>
     </div>
 
-    <!-- 窄屏操作条：仅已安装时展示启停/设置 -->
+    <!-- 窄屏：默认收起为单行状态条，展开后才露出启停/更新（刷新只在 App 顶栏，避免重复） -->
     <div
       v-if="componentEnabled && installed"
       data-testid="adguard-mobile-actions"
-      class="lg:hidden flex flex-wrap gap-2 px-4 py-2 border-b bg-surface shrink-0"
+      class="lg:hidden border-b bg-surface shrink-0"
     >
-      <Badge variant="ok">已安装</Badge>
-      <Badge :variant="running ? 'ok' : 'warn'">
-        {{ running ? '运行中' : '已停止' }}
-      </Badge>
-      <Badge :variant="store.status.wiring === 'on' ? 'info' : 'neutral'">
-        {{ store.status.wiringLabel || '未对接' }}
-      </Badge>
-      <div class="flex flex-wrap gap-2 w-full mt-1">
-        <Button size="sm" variant="outline" :disabled="busy" @click="store.update()">更新</Button>
+      <div class="flex items-center gap-2 px-3 py-1.5 min-h-10">
+        <Badge :variant="running ? 'ok' : 'warn'" class="shrink-0">
+          {{ running ? '运行中' : '已停止' }}
+        </Badge>
+        <Badge
+          v-if="!running && desiredRunning"
+          variant="info"
+          class="shrink-0 text-[10px]"
+        >
+          期望运行
+        </Badge>
+        <span
+          v-if="store.status.wiringLabel"
+          class="text-[11px] text-fg-subtle truncate min-w-0 flex-1"
+        >
+          {{ store.status.wiringLabel }}
+        </span>
+        <span v-else class="flex-1 min-w-0" />
+        <Button
+          size="sm"
+          variant="ghost"
+          class="h-8 px-2 shrink-0"
+          :disabled="busy"
+          data-testid="adguard-settings-btn-mobile"
+          aria-label="AdGuard 设置"
+          @click="openSettings"
+        >
+          <Settings2 class="h-4 w-4" aria-hidden="true" />
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          class="h-8 px-2 shrink-0"
+          data-testid="adguard-mobile-toolbar-toggle"
+          :aria-expanded="mobileToolbarOpen"
+          :aria-label="mobileToolbarOpen ? '收起工具' : '展开工具'"
+          @click="mobileToolbarOpen = !mobileToolbarOpen"
+        >
+          <ChevronUp v-if="mobileToolbarOpen" class="h-4 w-4" aria-hidden="true" />
+          <ChevronDown v-else class="h-4 w-4" aria-hidden="true" />
+          <span class="text-xs ml-0.5">{{ mobileToolbarOpen ? '收起' : '工具' }}</span>
+        </Button>
+      </div>
+      <div
+        v-if="mobileToolbarOpen"
+        data-testid="adguard-mobile-toolbar-panel"
+        class="flex flex-wrap gap-2 px-3 pb-2 pt-0.5 border-t border-line/60"
+      >
+        <Button size="sm" variant="outline" class="h-8" :disabled="busy" @click="store.update()">
+          更新
+        </Button>
         <Button
           v-if="!running"
           size="sm"
+          class="h-8"
           :disabled="busy"
           @click="store.start()"
         >
           启动
         </Button>
         <template v-else>
-          <Button size="sm" variant="outline" :disabled="busy" @click="store.restart()">重启</Button>
-          <Button size="sm" variant="destructive" :disabled="busy" @click="store.stop()">停止</Button>
+          <Button size="sm" variant="outline" class="h-8" :disabled="busy" @click="store.restart()">
+            重启
+          </Button>
+          <Button size="sm" variant="destructive" class="h-8" :disabled="busy" @click="store.stop()">
+            停止
+          </Button>
+          <Button size="sm" variant="outline" class="h-8" :disabled="busy" @click="openExternally">
+            新标签页
+          </Button>
         </template>
-        <Button size="sm" variant="secondary" :disabled="busy" data-testid="adguard-settings-btn-mobile" @click="openSettings">
-          设置
-        </Button>
       </div>
     </div>
 
@@ -288,13 +410,32 @@ onBeforeUnmount(clearPageChrome)
       </Card>
     </div>
 
-    <!-- 运行中：同源 iframe -->
-    <template v-else>
+    <!-- 运行中但会话尚未对齐：短占位，避免空白或抢先 401 -->
+    <div
+      v-else-if="running && !sessionReady"
+      class="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 p-4 text-sm text-fg-muted"
+      data-testid="adguard-session-pending"
+    >
+      <template v-if="sessionFailed">
+        <p class="text-destructive text-center">会话对齐失败，iframe 暂未加载（避免 unauthorized）</p>
+        <Button size="sm" :disabled="busy" data-testid="adguard-session-retry" @click="refreshIframe">
+          重试对齐会话
+        </Button>
+      </template>
+      <template v-else>
+        正在准备 AdGuard 会话…
+      </template>
+    </div>
+
+    <!-- 运行中：同源 iframe（先对齐 cookie，避免手机 unauthorized） -->
+    <template v-else-if="showIframe">
       <iframe
         data-testid="adguard-iframe"
+        :key="iframeKey"
         :src="entryPath"
-        class="flex-1 min-h-0 w-full border-0"
+        class="flex-1 min-h-0 w-full border-0 bg-surface"
         title="AdGuard Home"
+        referrerpolicy="same-origin"
       ></iframe>
       <!-- 次要：旧 wiring 入口（不占主工具栏） -->
       <div class="hidden lg:block px-4 sm:px-6 py-1 border-t bg-surface shrink-0">

@@ -11,17 +11,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-	const (
-		aghConfigFile = "AdGuardHome.yaml"
-		// defaultDNSPort 是 AGH 自身监听端口。勿用 1053：与 mihomo 默认 dns.listen 冲突，
-		// 真机表现为 starting dns server: bind address already in use 后进程退出。
-		defaultDNSPort = 5353
-		// defaultWebPort 与面板默认反代上游 127.0.0.1:3000 对齐。
-		defaultWebPort = 3000
-		localhostBind  = "127.0.0.1"
-		// defaultMihomoUpstream 嵌入场景下 AGH 默认把解析转给本机 mihomo DNS。
-		defaultMihomoUpstream = "127.0.0.1:1053"
-	)
+const (
+	aghConfigFile = "AdGuardHome.yaml"
+	// DefaultDNSPort 是 AGH 自身默认监听端口（可被 service 层引用）。
+	// 勿用 1053：与 mihomo 默认 dns.listen 冲突，
+	// 真机表现为 starting dns server: bind address already in use 后进程退出。
+	DefaultDNSPort = 5353
+	defaultDNSPort = DefaultDNSPort
+	// defaultWebPort 与面板默认反代上游 127.0.0.1:3000 对齐。
+	defaultWebPort = 3000
+	localhostBind  = "127.0.0.1"
+	// defaultMihomoUpstream 嵌入场景下 AGH 默认把解析转给本机 mihomo DNS。
+	defaultMihomoUpstream = "127.0.0.1:1053"
+)
 
 // configPath 返回 work-dir 下的 AdGuardHome.yaml 路径。
 func configPath(workDir string) string {
@@ -294,4 +296,35 @@ func RestoreUpstreamDNS(workDir string, previous []string) error {
 	}
 	_, err := PatchUpstreamDNS(workDir, previous)
 	return err
+}
+
+// PatchDNSResolvers 一次写入 AGH 上游 / 后备 / Bootstrap 列表。
+// 任一切片为 nil 表示不改该字段；空切片表示清空。
+func PatchDNSResolvers(workDir string, upstream, fallback, bootstrap []string) error {
+	m, _, err := loadConfigMap(workDir)
+	if err != nil {
+		return err
+	}
+	dns := asMap(m["dns"])
+	if dns == nil {
+		dns = map[string]any{}
+	}
+	toAny := func(in []string) []any {
+		out := make([]any, len(in))
+		for i, u := range in {
+			out[i] = u
+		}
+		return out
+	}
+	if upstream != nil {
+		dns["upstream_dns"] = toAny(upstream)
+	}
+	if fallback != nil {
+		dns["fallback_dns"] = toAny(fallback)
+	}
+	if bootstrap != nil {
+		dns["bootstrap_dns"] = toAny(bootstrap)
+	}
+	m["dns"] = dns
+	return saveConfigMap(workDir, m)
 }

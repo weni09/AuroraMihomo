@@ -14,13 +14,15 @@ import (
 // 控制台任务列表里，settings 驱动的调度任务使用稳定 name（前端 TASK_LABELS 映射）。
 // id 用负数与 DB 自增主键区分，避免和真实 tasks 行撞号。
 const (
-	taskNameLogCleanup = "applog_cleanup"
-	taskNameAutoUpdate = "auto_update"
-	taskNameRemotePull = "remote_config_pull"
+	taskNameLogCleanup        = "applog_cleanup"
+	taskNameAutoUpdate        = "auto_update"
+	taskNameRemotePull        = "remote_config_pull"
+	taskNameAdGuardAutoUpdate = "adguard_auto_update"
 
-	taskIDLogCleanup int64 = -1
-	taskIDAutoUpdate int64 = -2
-	taskIDRemotePull int64 = -3
+	taskIDLogCleanup        int64 = -1
+	taskIDAutoUpdate        int64 = -2
+	taskIDRemotePull        int64 = -3
+	taskIDAdGuardAutoUpdate int64 = -4
 )
 
 type ListTasksLogic struct {
@@ -118,6 +120,20 @@ func (l *ListTasksLogic) scheduleTaskItems(fmtTime func(time.Time) string) []typ
 		Status:  statusOf(remote.CronEnabled),
 		Message: "系统设置 · 远程配置拉取",
 	})
+
+	// 4) AdGuard 独立自动更新：仅组件启用时展示
+	if l.svcCtx.AdGuardService != nil && l.svcCtx.AdGuardService.ComponentEnabled() {
+		aghOn := l.svcCtx.AdGuardService.AutoUpdateEnabled()
+		out = append(out, types.TaskItem{
+			Id:      taskIDAdGuardAutoUpdate,
+			Name:    taskNameAdGuardAutoUpdate,
+			Cron:    l.svcCtx.AdGuardService.AutoUpdateCron(),
+			Enabled: aghOn,
+			NextRun: nextOf(scheduler.JobAdGuardAutoUpdate),
+			Status:  statusOf(aghOn),
+			Message: "AdGuard 设置 · 自动更新",
+		})
+	}
 
 	return out
 }

@@ -37,6 +37,7 @@ describe('AdGuardView', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     clearPageChrome()
+    mockedApi.post.mockResolvedValue({ data: { ok: true } })
     document.body.removeAttribute('style')
     document.body.innerHTML = ''
   })
@@ -119,14 +120,26 @@ describe('AdGuardView', () => {
     expect(iframe.attributes('src')).toBe('/adguard-ui/')
     expect(iframe.attributes('title')).toBe('AdGuard Home')
 
-    const { subtitle, action } = usePageChrome()
+    const { subtitle, action, actions } = usePageChrome()
     expect(subtitle.value).toBe('已对接')
-    expect(action.value?.label).toBe('新标签页')
-    expect(action.value?.disabled).toBe(false)
+    // 移动端 App 顶栏只挂刷新，避免与页内工具条重复
+    expect(actions.value.map((a) => a.label)).toEqual(['刷新'])
+    expect(action.value?.label).toBe('刷新')
+    expect(wrapper.find('[data-testid="adguard-refresh-btn"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adguard-refresh-btn-mobile"]').exists()).toBe(false)
+    expect(mockedApi.post).toHaveBeenCalledWith('/auth/session')
 
     const header = wrapper.get('[data-testid="adguard-page-header"]')
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
     expect(wrapper.find('[data-testid="adguard-settings-btn"]').exists()).toBe(true)
+
+    // 移动端工具条默认收起
+    const mobile = wrapper.get('[data-testid="adguard-mobile-actions"]')
+    expect(mobile.text()).toContain('运行中')
+    expect(wrapper.find('[data-testid="adguard-mobile-toolbar-panel"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="adguard-mobile-toolbar-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="adguard-mobile-toolbar-panel"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="adguard-mobile-toolbar-panel"]').text()).toContain('重启')
 
     // 点设置打开完整弹窗（Dialog teleport 到 body）
     await wrapper.get('[data-testid="adguard-settings-btn"]').trigger('click')

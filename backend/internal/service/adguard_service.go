@@ -38,15 +38,18 @@ type AdGuardStatusDTO struct {
 	EntryPath string `json:"entryPath"`
 	// Snapshot 仅 wiring=on 时附带，便于 UI 展示可回滚内容
 	Snapshot *WiringPlan `json:"snapshot,omitempty"`
-		// CdnProviders AdGuard 升级专用镜像列表（空则用全局 CDN）
-		CdnProviders []string `json:"cdnProviders,omitempty"`
-		// AutoUpdate 是否参加系统自动更新 cron
-		AutoUpdate bool `json:"autoUpdate"`
-		// Username AGH 管理员用户名（settings 优先，否则 yaml）
-		Username string `json:"username,omitempty"`
-		// PasswordSync 是否与 Aurora 管理员密码保持同步
-		PasswordSync bool `json:"passwordSync"`
-	}
+	// CdnProviders AdGuard 升级专用镜像列表（空则用全局 CDN）
+	CdnProviders []string `json:"cdnProviders,omitempty"`
+	// AutoUpdate 是否启用 AdGuard 独立自动更新
+	AutoUpdate bool `json:"autoUpdate"`
+	// AutoUpdateCron AdGuard 自动更新表达式（6 段）；空则默认
+	AutoUpdateCron string `json:"autoUpdateCron,omitempty"`
+	// Username AGH 管理员用户名（settings 优先，否则 yaml）
+	Username string `json:"username,omitempty"`
+	// DesiredRunning 用户期望的运行态（enabled_at_boot）。
+	// 面板重启后据此决定是否自启；与实时 Running 可能短暂不一致。
+	DesiredRunning bool `json:"desiredRunning"`
+}
 
 // AdGuardService 编排 AdGuard 安装/启停与 DNS 一键对接。
 //
@@ -69,6 +72,35 @@ type AdGuardService struct {
 	workDir  string
 	webAddr  string
 	logger   logx.Logger
+	// scheduleReload 在自动更新开关/cron 或组件开关变化后重装调度任务。
+	scheduleReload func() error
+	// sso 可选：首次引导随机口令写入永久免密凭据。
+	sso *adguard.SessionBridge
+}
+
+// SetScheduleReloadFunc 由 API 层注入：把 AdGuard 自动更新登记进 Scheduler。
+func (s *AdGuardService) SetScheduleReloadFunc(fn func() error) {
+	if s == nil {
+		return
+	}
+	s.scheduleReload = fn
+}
+
+// SetSSO 注入 SessionBridge，供首次随机口令落库免密接管。
+func (s *AdGuardService) SetSSO(bridge *adguard.SessionBridge) {
+	if s == nil {
+		return
+	}
+	s.sso = bridge
+}
+
+func (s *AdGuardService) reloadSchedule() {
+	if s == nil || s.scheduleReload == nil {
+		return
+	}
+	if err := s.scheduleReload(); err != nil {
+		s.logger.Errorf("重装 AdGuard 自动更新调度失败: %v", err)
+	}
 }
 
 // SetDNSRedirectApplier 注入仅 DNS 重定向能力（与全量 TProxy 表分离）。
@@ -129,11 +161,12 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	} else if dto.WebAddr == "" {
 		dto.WebAddr = s.webAddr
 	}
-		dto.CdnProviders = s.CDNProviders()
-		dto.AutoUpdate = s.AutoUpdateEnabled()
-		dto.PasswordSync = s.PasswordSyncEnabled()
-		dto.Username = s.AdminUsername()
-		// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
+	dto.CdnProviders = s.CDNProviders()
+	dto.AutoUpdate = s.AutoUpdateEnabled()
+	dto.AutoUpdateCron = s.AutoUpdateCron()
+	dto.Username = s.AdminUsername()
+	dto.DesiredRunning = s.DesiredRunning()
+	// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
 	if v := s.getSetting(settingAdGuardVersion, ""); v != "" && dto.Version == "" {
 		dto.Version = v
 	}
@@ -145,7 +178,7 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 		if p := s.getSettingInt(settingAdGuardDNSPort, 0); p > 0 {
 			dnsPort = p
 		} else {
-			dnsPort = 1053
+			dnsPort = adguard.DefaultDNSPort
 		}
 	}
 	dto.DNSPort = dnsPort
@@ -177,6 +210,7 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	_, _, agh := s.updater.CheckLatest(ctx, "", "")
 	if agh.LatestVersion != "" {
 		_ = s.db.SetSetting(settingAdGuardVersion, agh.LatestVersion)
+		s.mgr.SetVersion(agh.LatestVersion)
 	}
 	// 首次安装确保 bind 回环，避免 AGH 默认暴露到局域网
 	if err := adguard.EnsureBindLocalhost(s.workDir); err != nil {
@@ -188,22 +222,64 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	return nil
 }
 
-// Start 拉起 AdGuard 子进程。
+// Start 拉起 AdGuard 子进程，成功后记录「期望运行」以便面板重启后自启。
 func (s *AdGuardService) Start(ctx context.Context) error {
 	if err := adguard.EnsureBindLocalhost(s.workDir); err != nil {
 		s.logger.Errorf("启动前确保 bind_host 失败: %v", err)
 	}
-	return s.mgr.Start(ctx)
+	if err := s.mgr.Start(ctx); err != nil {
+		return err
+	}
+	// 首次完整引导生成的随机口令：落库免密 + 日志提示（明文在 workDir/initial_admin_password.txt）
+	if pass := s.mgr.TakeInitialAdminPassword(); pass != "" {
+		user := s.AdminUsername()
+		if user == "" {
+			user = "admin"
+		}
+		if s.sso != nil {
+			s.sso.SetUsername(user)
+			if err := s.sso.PersistCredentials(user, pass); err != nil {
+				s.logger.Errorf("首次 AGH 口令免密落库失败: %v", err)
+			} else if s.mgr.Status().Running {
+				_ = s.sso.Establish(ctx, "1", user, pass)
+			}
+		}
+		s.logger.Infof("AdGuard 首次管理员口令已生成（用户 %s），见 %s/initial_admin_password.txt", user, s.workDir)
+	}
+	// 仅在真正启动成功（含已在跑幂等）后落库，避免失败仍被当成要自启
+	if err := s.setDesiredRunning(true); err != nil {
+		s.logger.Errorf("记录 AdGuard 期望运行状态失败: %v", err)
+	}
+	return nil
 }
 
-// Stop 停止 AdGuard 子进程。
+// Stop 用户主动停止：停进程并清除「期望运行」，面板重启后不再自启。
 func (s *AdGuardService) Stop(ctx context.Context) error {
+	if err := s.mgr.Stop(ctx); err != nil {
+		return err
+	}
+	if err := s.setDesiredRunning(false); err != nil {
+		s.logger.Errorf("清除 AdGuard 期望运行状态失败: %v", err)
+	}
+	return nil
+}
+
+// StopProcess 仅停止进程，不改期望运行态。
+// 供自动更新、二进制升级等「临时停机再拉起」路径使用——若误走 Stop，
+// 会把 enabled_at_boot 清掉，发版/重启面板后 AdGuard 就不再自启。
+func (s *AdGuardService) StopProcess(ctx context.Context) error {
 	return s.mgr.Stop(ctx)
 }
 
-// Restart 重启 AdGuard 子进程。
+// Restart 重启子进程；成功则保持/写入期望运行为 true。
 func (s *AdGuardService) Restart(ctx context.Context) error {
-	return s.mgr.Restart(ctx)
+	if err := s.mgr.Restart(ctx); err != nil {
+		return err
+	}
+	if err := s.setDesiredRunning(true); err != nil {
+		s.logger.Errorf("记录 AdGuard 期望运行状态失败: %v", err)
+	}
+	return nil
 }
 
 // WiringPreview 生成对接计划（不落库、不改配置）。
@@ -349,7 +425,7 @@ func (s *AdGuardService) refreshDNSPortOverride() {
 		if p, err := adguard.ReadDNSPort(s.workDir); err == nil && p > 0 {
 			return p
 		}
-		return s.getSettingInt(settingAdGuardDNSPort, 1053)
+		return s.getSettingInt(settingAdGuardDNSPort, adguard.DefaultDNSPort)
 	})
 }
 
@@ -382,7 +458,11 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 		if s.db == nil {
 			return errors.New("数据库未初始化")
 		}
-		return s.db.SetSetting(settingAdGuardComponent, "true")
+		if err := s.db.SetSetting(settingAdGuardComponent, "true"); err != nil {
+			return err
+		}
+		s.reloadSchedule()
+		return nil
 	}
 
 	// 关闭前：强制退出 DNS 模式（回滚劫持 + dns_mode=0）
@@ -395,7 +475,11 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 	if s.db == nil {
 		return errors.New("数据库未初始化")
 	}
-	return s.db.SetSetting(settingAdGuardComponent, "false")
+	if err := s.db.SetSetting(settingAdGuardComponent, "false"); err != nil {
+		return err
+	}
+	s.reloadSchedule()
+	return nil
 }
 
 // Uninstall 彻底卸载 AdGuard Home。必须 confirm=true。
@@ -458,19 +542,22 @@ func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
 
 // knownAdGuardSettingKeys 是卸载时要清除的已知键（含尚未落地的产品化键）。
 // component_enabled 由 Uninstall 最后单独写 false，不在此清空为空串。
-	var knownAdGuardSettingKeys = []string{
-		settingAdGuardBoot,
-		settingAdGuardWebAddr,
-		settingAdGuardDNSPort,
-		settingAdGuardVersion,
-		settingAdGuardWiring,
-		settingAdGuardSnapshot,
-		settingAdGuardSyncPassword,
-		settingAdGuardUsername,
-		settingAdGuardDNSMode,
-		settingAdGuardAutoUpdate,
-		settingAdGuardCDNProviders,
-	}
+var knownAdGuardSettingKeys = []string{
+	settingAdGuardBoot,
+	settingAdGuardWebAddr,
+	settingAdGuardDNSPort,
+	settingAdGuardVersion,
+	settingAdGuardWiring,
+	settingAdGuardSnapshot,
+	settingAdGuardUsername,
+	settingAdGuardDNSMode,
+	settingAdGuardAutoUpdate,
+	settingAdGuardAutoUpdateCron,
+	settingAdGuardCDNProviders,
+	settingAdGuardSSOPasswordEnc,
+	// 历史键：密码同步功能已移除，卸载时仍清掉残留
+	"adguard.sync_password",
+}
 
 func (s *AdGuardService) clearAdGuardSettings() error {
 	if s.db == nil {
@@ -505,17 +592,35 @@ func (s *AdGuardService) clearAdGuardSettings() error {
 	return nil
 }
 
-// ShouldStartAtBoot 需组件开启、enabled_at_boot 且二进制存在。
+// ShouldStartAtBoot 需组件开启、用户期望运行（enabled_at_boot）且二进制存在。
+// 发版/面板重启后据此决定是否拉起 AdGuard，与用户上次点「启动/停止」对齐。
 func (s *AdGuardService) ShouldStartAtBoot() bool {
 	if !s.ComponentEnabled() {
 		return false
 	}
-	v := strings.TrimSpace(s.getSetting(settingAdGuardBoot, ""))
-	if v != "1" && !strings.EqualFold(v, "true") && v != "on" {
+	if !s.DesiredRunning() {
 		return false
 	}
 	st := s.mgr.Status()
 	return st.Installed
+}
+
+// DesiredRunning 读取用户期望的运行态（settings: adguard.enabled_at_boot）。
+func (s *AdGuardService) DesiredRunning() bool {
+	v := strings.TrimSpace(s.getSetting(settingAdGuardBoot, ""))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") || v == "yes"
+}
+
+// setDesiredRunning 持久化期望运行态。失败只返回 error，由调用方记日志。
+func (s *AdGuardService) setDesiredRunning(want bool) error {
+	if s.db == nil {
+		return errors.New("数据库未初始化")
+	}
+	val := "false"
+	if want {
+		val = "true"
+	}
+	return s.db.SetSetting(settingAdGuardBoot, val)
 }
 
 func (s *AdGuardService) collectDNSState() (currentDNSState, error) {
@@ -526,7 +631,7 @@ func (s *AdGuardService) collectDNSState() (currentDNSState, error) {
 	}
 	cur.AGHDNSPort = port
 	if cur.AGHDNSPort <= 0 {
-		cur.AGHDNSPort = s.getSettingInt(settingAdGuardDNSPort, 1053)
+		cur.AGHDNSPort = s.getSettingInt(settingAdGuardDNSPort, adguard.DefaultDNSPort)
 	}
 
 	if s.cfgSvc != nil {

@@ -3,6 +3,11 @@
 
 package types
 
+type AdGuardAutoUpdateReq struct {
+	Enabled *bool  `json:"enabled,optional"`
+	Cron    string `json:"cron,optional"`
+}
+
 type AdGuardCDNReq struct {
 	Providers []string `json:"providers,optional"`
 }
@@ -12,9 +17,8 @@ type AdGuardComponentReq struct {
 }
 
 type AdGuardCredentialsReq struct {
-	Username       string `json:"username,optional"`
-	Password       string `json:"password"`
-	SyncWithAurora *bool  `json:"syncWithAurora,optional"`
+	Username string `json:"username,optional"`
+	Password string `json:"password"`
 }
 
 type AdGuardDNSModeReq struct {
@@ -41,8 +45,9 @@ type AdGuardStatusResp struct {
 	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
 	CdnProviders     []string `json:"cdnProviders,optional"`
 	AutoUpdate       bool     `json:"autoUpdate"`
+	AutoUpdateCron   string   `json:"autoUpdateCron,optional"`
 	Username         string   `json:"username,optional"`
-	PasswordSync     bool     `json:"passwordSync"`
+	DesiredRunning   bool     `json:"desiredRunning"`
 }
 
 type AdGuardUninstallReq struct {

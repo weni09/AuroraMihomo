@@ -81,6 +81,7 @@ func TestParseVMessFingerprint(t *testing.T) {
 
 // TestParseShareLinkWithoutFingerprint 确认不凭空造字段：
 // 解析阶段只如实反映原文，补默认值是输出阶段的事（见 substore/fingerprint.go）。
+// 注意：packet-encoding 例外——官方 Sub-Store 在 VLESS URI 解析阶段就写缺省 xudp。
 func TestParseShareLinkWithoutFingerprint(t *testing.T) {
 	nodes, err := ParseShareLinks("vless://u@a.example.com:443?security=tls&sni=a.example.com#N", "t")
 	if err != nil {
@@ -88,5 +89,78 @@ func TestParseShareLinkWithoutFingerprint(t *testing.T) {
 	}
 	if _, ok := nodes[0].Extra["client-fingerprint"]; ok {
 		t.Errorf("原文无 fp 时不应写入该键: %#v", nodes[0].Extra)
+	}
+}
+
+// TestParseVLESSPacketEncoding 对齐官方 Sub-Store：
+// VLESS 分享链缺省 packet-encoding=xudp，并支持 none/packet 显式值。
+func TestParseVLESSPacketEncoding(t *testing.T) {
+	cases := []struct {
+		name string
+		link string
+		want interface{}
+	}{
+		{
+			"缺省为 xudp",
+			"vless://u@a.example.com:443?security=tls&sni=a.example.com&type=tcp#N",
+			"xudp",
+		},
+		{
+			"packetEncoding=xudp",
+			"vless://u@a.example.com:443?security=tls&packetEncoding=xudp#N",
+			"xudp",
+		},
+		{
+			"packetEncoding=packet → packetaddr",
+			"vless://u@a.example.com:443?security=tls&packetEncoding=packet#N",
+			"packetaddr",
+		},
+		{
+			"packetEncoding=none → 空串",
+			"vless://u@a.example.com:443?security=tls&packetEncoding=none#N",
+			"",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			nodes, err := ParseShareLinks(c.link, "t")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(nodes) != 1 {
+				t.Fatalf("期望 1 节点，实际 %d", len(nodes))
+			}
+			got := nodes[0].Extra["packet-encoding"]
+			if got != c.want {
+				t.Errorf("packet-encoding=%#v want %#v; extra=%#v", got, c.want, nodes[0].Extra)
+			}
+			if !nodes[0].UDP {
+				t.Error("官方 VLESS URI 默认 udp=true")
+			}
+		})
+	}
+}
+
+// TestParseClashYAMLPreservesPacketEncoding Clash YAML 原文已有的字段必须保留。
+func TestParseClashYAMLPreservesPacketEncoding(t *testing.T) {
+	raw := []byte(`
+proxies:
+  - name: n1
+    type: vless
+    server: a.example.com
+    port: 443
+    uuid: u1
+    packet-encoding: packetaddr
+    udp: true
+`)
+	nodes, err := ParseClashYAML(raw, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes=%d", len(nodes))
+	}
+	if nodes[0].Extra["packet-encoding"] != "packetaddr" {
+		t.Errorf("应保留 packetaddr，实际 %#v", nodes[0].Extra["packet-encoding"])
 	}
 }

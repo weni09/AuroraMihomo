@@ -31,5 +31,9 @@ func (l *AdGuardUninstallLogic) AdGuardUninstall(req *types.AdGuardUninstallReq)
 	if err := l.svcCtx.AdGuardService.Uninstall(l.ctx, req.Confirm); err != nil {
 		return &types.Result{Success: false, Message: err.Error()}, nil
 	}
+	// 服务层会清 settings 里的密文；这里再清内存桥，避免进程内残留口令/session
+	if l.svcCtx.AdGuardSSO != nil {
+		l.svcCtx.AdGuardSSO.ForgetStoredCredentials()
+	}
 	return &types.Result{Success: true, Message: "AdGuard Home 已卸载"}, nil
 }

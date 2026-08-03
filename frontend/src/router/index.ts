@@ -44,7 +44,7 @@ const router = createRouter({
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '系统设置' } },
     // 内嵌 zashboard（后端把面板静态资源挂在同源的 /ui/）
     { path: '/zashboard', name: 'zashboard', component: ZashboardView, meta: { title: 'Zashboard' } },
-    // 内嵌 AdGuard Home（后端反代同源 /adguard/）
+    // 内嵌 AdGuard Home（SPA /adguard；官方 UI 反代 /adguard-ui/）
     { path: '/adguard', name: 'adguard', component: AdGuardView, meta: { title: 'AdGuard' } },
     // 使用文档随程序内置，离线可用（内容在构建时打进产物）。
     // 本项目其余路由都是静态导入，这里刻意用懒加载：文档页要拉进

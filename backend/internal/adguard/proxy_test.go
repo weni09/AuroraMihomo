@@ -62,7 +62,7 @@ func TestAuthorizeRequest_ValidCookieAndBearer(t *testing.T) {
 
 func TestProxyHandler_NoCookie_401(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil)
+	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil))
@@ -73,7 +73,7 @@ func TestProxyHandler_NoCookie_401(t *testing.T) {
 
 func TestProxyHandler_InvalidCookie_401(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil)
+	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage.token.value"})
@@ -104,7 +104,7 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: host})
 	mgr.testForceRunning = true
 
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host })
+	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host }, nil)
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "http://panel.example/adguard-ui/control/status?x=1", nil)
@@ -141,7 +141,7 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 
 func TestProxyHandler_NotRunning_503(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil)
+	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
@@ -160,8 +160,8 @@ func TestStripAdguardPrefix(t *testing.T) {
 		"/adguard-ui/":        "/",
 		"/adguard-ui/foo":     "/foo",
 		"/adguard-ui/foo/bar": "/foo/bar",
-		"/other":           "/other",
-		"":                 "/",
+		"/other":              "/other",
+		"":                    "/",
 	}
 	for in, want := range cases {
 		if got := stripAdguardPrefix(in); got != want {
@@ -172,11 +172,11 @@ func TestStripAdguardPrefix(t *testing.T) {
 
 func TestRewriteLocationUnderAdguard(t *testing.T) {
 	cases := map[string]string{
-		"/":           "/adguard-ui/",
-		"/login.html": "/adguard-ui/login.html",
-		"/adguard-ui/x":  "/adguard-ui/x",
-		"relative":    "relative",
-		"https://x/y": "https://x/y",
+		"/":             "/adguard-ui/",
+		"/login.html":   "/adguard-ui/login.html",
+		"/adguard-ui/x": "/adguard-ui/x",
+		"relative":      "relative",
+		"https://x/y":   "https://x/y",
 	}
 	for in, want := range cases {
 		if got := rewriteLocationUnderAdguard(in); got != want {
@@ -207,7 +207,7 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "8.8.8.8:53"})
 	mgr.testForceRunning = true
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return "8.8.8.8:53" })
+	h := NewProxyHandler(mgr, testJWTSecret, func() string { return "8.8.8.8:53" }, nil)
 	token := signTestJWT(t, testJWTSecret, time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
@@ -220,5 +220,35 @@ func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "loopback") {
 		t.Fatalf("body = %q, want loopback hint", rec.Body.String())
+	}
+}
+
+func TestRewriteAdguardAbsolutePaths_InjectsBaseAndHistoryPatch(t *testing.T) {
+	in := []byte(`<!doctype html><html><head><title>AdGuard Home</title></head><body><a href="/login.html">x</a></body></html>`)
+	out := string(rewriteAdguardAbsolutePaths(in))
+	if !strings.Contains(out, `<base href="/adguard-ui/">`) {
+		t.Fatalf("missing base: %s", out)
+	}
+	if !strings.Contains(out, "/*agh-subpath-patch*/") {
+		t.Fatalf("missing history patch: %s", out)
+	}
+	if !strings.Contains(out, `href="/adguard-ui/login.html"`) {
+		t.Fatalf("login href not rewritten: %s", out)
+	}
+	// idempotent-ish: running twice should not double-prefix login beyond one level badly
+	out2 := string(rewriteAdguardAbsolutePaths([]byte(out)))
+	if strings.Contains(out2, "/adguard-ui/adguard-ui/") {
+		t.Fatalf("double prefix: %s", out2)
+	}
+}
+
+func TestRewriteAdguardJS_PreservesLoginConstant(t *testing.T) {
+	in := []byte(`var Be=/\/[^/]*$/,Ze="/login.html";baseUrl="control";x="/assets/foo.png"`)
+	out := string(rewriteAdguardJS(in))
+	if !strings.Contains(out, `Ze="/login.html"`) {
+		t.Fatalf("Ze login constant rewritten unexpectedly: %s", out)
+	}
+	if !strings.Contains(out, `"/adguard-ui/assets/foo.png"`) {
+		t.Fatalf("assets path not rewritten: %s", out)
 	}
 }

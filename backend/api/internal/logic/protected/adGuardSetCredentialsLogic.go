@@ -25,7 +25,7 @@ func NewAdGuardSetCredentialsLogic(ctx context.Context, svcCtx *svc.ServiceConte
 	}
 }
 
-// AdGuardSetCredentials 设置 AGH 管理员用户名/密码，可选同步开关。
+// AdGuardSetCredentials 设置 AGH 管理员用户名/密码。
 // 密码只写入 AdGuardHome.yaml（bcrypt），不落库明文。
 func (l *AdGuardSetCredentialsLogic) AdGuardSetCredentials(req *types.AdGuardCredentialsReq) (resp *types.Result, err error) {
 	if l.svcCtx.AdGuardService == nil {
@@ -47,16 +47,25 @@ func (l *AdGuardSetCredentialsLogic) AdGuardSetCredentials(req *types.AdGuardCre
 		return &types.Result{Success: false, Message: err.Error()}, nil
 	}
 
-	msg := fmt.Sprintf("AdGuard 管理员账号已更新（用户 %s）", username)
-	if req.SyncWithAurora != nil {
-		if err := l.svcCtx.AdGuardService.SetPasswordSync(l.ctx, *req.SyncWithAurora); err != nil {
-			return &types.Result{Success: false, Message: "账号已写入，但同步开关保存失败: " + err.Error()}, nil
+	// 供免密永久接管：加密落库 + 换 agh_session
+	if bridge := l.svcCtx.AdGuardSSO; bridge != nil {
+		bridge.SetUsername(username)
+		if pErr := bridge.PersistCredentials(username, req.Password); pErr != nil {
+			l.Errorf("持久化 AGH 凭据失败: %v", pErr)
+			// 账号已写入 yaml，凭据持久化失败仍告知用户
+			return &types.Result{
+				Success: true,
+				Message: fmt.Sprintf("AdGuard 管理员账号已更新（用户 %s），但免密凭据落库失败: %v", username, pErr),
+			}, nil
 		}
-		if *req.SyncWithAurora {
-			msg += "；已开启与 Aurora 密码同步"
-		} else {
-			msg += "；已关闭与 Aurora 密码同步"
+		const userKey = "1"
+		if l.svcCtx.AdGuardManager != nil && l.svcCtx.AdGuardManager.Status().Running {
+			if eErr := bridge.Establish(l.ctx, userKey, username, req.Password); eErr != nil {
+				l.Infof("AdGuard 免密会话建立失败: %v", eErr)
+			}
 		}
 	}
+
+	msg := fmt.Sprintf("AdGuard 管理员账号已更新（用户 %s），免密接管已持久化", username)
 	return &types.Result{Success: true, Message: msg}, nil
 }

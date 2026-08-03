@@ -127,6 +127,31 @@ func (s *ConfigService) tproxyManaged() bool {
 	return s.tproxyManagedProvider()
 }
 
+// adguardOwnsSystemDNS 表示 AdGuard 正作为系统 DNS 入口（绑 :53 或已弱化 TUN hijack）。
+// 合并注入时不得再补 tun.dns-hijack: any:53，否则查询绕过 AGH。
+func (s *ConfigService) adguardOwnsSystemDNS() bool {
+	if s.db == nil {
+		return false
+	}
+	mode, err := s.db.GetSetting(settingAdGuardDNSMode)
+	if err == nil {
+		mode = strings.TrimSpace(mode)
+		if mode == "1" {
+			return true
+		}
+	}
+	// 入口/wiring 快照：DidBind53 或 DidWeakenTUN 说明曾为 AGH 清空 hijack
+	raw, err := s.db.GetSetting(settingAdGuardSnapshot)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return false
+	}
+	plan, err := unmarshalWiringSnapshot(raw)
+	if err != nil {
+		return false
+	}
+	return plan.DidBind53 || plan.DidWeakenTUN
+}
+
 // SetPolicyProvider 注入合并策略来源，未注入时使用引擎默认策略
 func (s *ConfigService) SetPolicyProvider(fn func() domain.MergePolicy) {
 	s.policyProvider = fn
@@ -810,9 +835,10 @@ func (s *ConfigService) MergeAndApplyDetailed(ctx context.Context, opts MergeOpt
 	// routing-mark 会在他的配置里留下一个无用且误导排障的字段。
 	report := netcheck.Detect()
 	injectOpts := netcheck.InjectOptions{
-		TUNStack:      "mixed", // 默认协议栈
-		AutoRedirect:  report.OS == "linux",
-		TProxyManaged: s.tproxyManaged(),
+		TUNStack:             "mixed", // 默认协议栈
+		AutoRedirect:         report.OS == "linux",
+		TProxyManaged:        s.tproxyManaged(),
+		SkipDefaultDNSHijack: s.adguardOwnsSystemDNS(),
 	}
 	if err := netcheck.Inject(result.Config, injectOpts); err != nil {
 		s.logger.Errorf("注入透明代理技术参数失败: %v", err)
@@ -1533,6 +1559,21 @@ func (s *ConfigService) SetBaseDNSListen(listen string) error {
 	patched, err := patchBaseYAML(raw, "dns.listen", listen)
 	if err != nil {
 		return fmt.Errorf("改写 dns.listen 失败: %w", err)
+	}
+	return s.UpdateBaseConfig(patched)
+}
+
+// SetBaseDNSEnable 定点改写 dns.enable 并落库。
+// AdGuard 入口把上游指到 mihomo :1053 时，必须保证内核 DNS 已开启，
+// 否则 AGH→1053 会拒绝/超时。
+func (s *ConfigService) SetBaseDNSEnable(enable bool) error {
+	raw, err := s.loadBaseYAML()
+	if err != nil {
+		return err
+	}
+	patched, err := patchBaseYAML(raw, "dns.enable", enable)
+	if err != nil {
+		return fmt.Errorf("改写 dns.enable 失败: %w", err)
 	}
 	return s.UpdateBaseConfig(patched)
 }

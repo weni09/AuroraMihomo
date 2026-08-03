@@ -49,6 +49,8 @@ type Manager struct {
 
 	// testForceRunning 仅供同包单测模拟 Running，不改变真实进程状态。
 	testForceRunning bool
+	// pendingInitialPass 首次引导生成的管理员明文；TakeInitialAdminPassword 取走后清空。
+	pendingInitialPass string
 }
 
 func NewManager(cfg Config) *Manager {
@@ -140,11 +142,21 @@ func (m *Manager) startLocked() error {
 		if p, err := ReadDNSPort(workDir); err == nil && p > 0 {
 			dnsPort = p
 		}
-		if err := EnsureBootstrapConfig(workDir, webAddr, dnsPort, "admin", ""); err != nil {
+		initPass, err := EnsureBootstrapConfig(workDir, webAddr, dnsPort, "admin", "")
+		if err != nil {
 			m.setLastErr("bootstrap config: " + err.Error())
 			// 不直接 return：仍尝试启动，便于看 AGH 自身日志
-		} else if err := EnsureBindLocalhost(workDir); err != nil {
-			m.setLastErr("ensure bind localhost: " + err.Error())
+		} else {
+			if initPass != "" {
+				m.mu.Lock()
+				m.pendingInitialPass = initPass
+				m.mu.Unlock()
+			}
+			if err := EnsureBindLocalhost(workDir); err != nil {
+				m.setLastErr("ensure bind localhost: " + err.Error())
+			}
+			// 存量 yaml 可能仍含裸 8.8.8.8 bootstrap
+			_ = SanitizePollutionProneDNS(workDir)
 		}
 	}
 
@@ -195,6 +207,33 @@ func (m *Manager) startLocked() error {
 	}(cmd, exited)
 
 	return nil
+}
+
+// TakeInitialAdminPassword 取走首次引导生成的明文口令（一次性）。
+func (m *Manager) TakeInitialAdminPassword() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.pendingInitialPass
+	m.pendingInitialPass = ""
+	return p
+}
+
+// SetVersion 由服务层在 Install 记录 release tag 后同步到进程状态。
+// 不在 Start 时 exec --version：Windows 上对测试用假二进制会锁文件导致 TempDir 清理失败。
+func (m *Manager) SetVersion(v string) {
+	if m == nil {
+		return
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return
+	}
+	m.mu.Lock()
+	m.version = v
+	m.mu.Unlock()
 }
 
 // Stop 先优雅信号再超时强杀；未运行时幂等返回 nil。

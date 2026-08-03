@@ -130,36 +130,51 @@ describe('useAdGuardStore component controls', () => {
       data: {
         componentEnabled: true,
         username: 'admin',
-        passwordSync: true,
-        entryPath: '/adguard-ui/',
+                entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
     await store.setCredentials({
       username: 'admin',
       password: 'new-secret',
-      syncWithAurora: true,
     })
     expect(mockedApi.put).toHaveBeenCalledWith('/adguard/credentials', {
       username: 'admin',
       password: 'new-secret',
-      syncWithAurora: true,
     })
-    expect(store.status.passwordSync).toBe(true)
   })
 
-  it('fetchStatus 映射 username / passwordSync', async () => {
+  it('fetchStatus 映射 username / autoUpdate', async () => {
     mockedApi.get.mockResolvedValue({
       data: {
         componentEnabled: true,
         username: 'agh',
-        passwordSync: true,
+        autoUpdate: true,
+        autoUpdateCron: '0 30 3 * * *',
         entryPath: '/adguard-ui/',
       },
     })
     const store = useAdGuardStore()
     await store.fetchStatus()
     expect(store.status.username).toBe('agh')
-    expect(store.status.passwordSync).toBe(true)
+    expect(store.status.autoUpdate).toBe(true)
+    expect(store.status.autoUpdateCron).toBe('0 30 3 * * *')
+  })
+
+  it('checkUpdate 调用 /adguard/check-update', async () => {
+    mockedApi.get.mockResolvedValue({ data: { success: true, message: 'AdGuard Home 已是最新' } })
+    const store = useAdGuardStore()
+    await store.checkUpdate()
+    expect(mockedApi.get).toHaveBeenCalledWith('/adguard/check-update')
+  })
+
+  it('setAutoUpdate 调用 PUT /adguard/auto-update', async () => {
+    mockedApi.put.mockResolvedValue({ data: { success: true, message: 'ok' } })
+    mockedApi.get.mockResolvedValue({
+      data: { componentEnabled: true, autoUpdate: true, autoUpdateCron: '0 0 5 * * *', entryPath: '/adguard-ui/' },
+    })
+    const store = useAdGuardStore()
+    await store.setAutoUpdate({ enabled: true, cron: '0 0 5 * * *' })
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/auto-update', { enabled: true, cron: '0 0 5 * * *' })
   })
 })

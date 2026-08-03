@@ -143,48 +143,47 @@ func TestSetCredentials_WritesYamlAndUsername(t *testing.T) {
 	}
 }
 
-func TestSyncPasswordFromAurora_DisabledNoOp(t *testing.T) {
-	svc, _, workDir := newAdGuardSettingsTestSvc(t)
-	ctx := context.Background()
-	// 先写入一个已知账号
-	if err := svc.SetCredentials(ctx, "keepme", "original-pass"); err != nil {
+func TestSetAutoUpdateSettings_CronAndToggle(t *testing.T) {
+	svc, _, _ := newAdGuardSettingsTestSvc(t)
+	if svc.AutoUpdateEnabled() {
+		t.Fatal("默认 auto update 应关闭")
+	}
+	if got := svc.AutoUpdateCron(); got != defaultAdGuardAutoUpdateCron {
+		t.Fatalf("默认 cron=%q", got)
+	}
+	on := true
+	if err := svc.SetAutoUpdateSettings(&on, "30 4 * * *"); err != nil {
 		t.Fatal(err)
 	}
-	// sync 默认关闭
-	if svc.PasswordSyncEnabled() {
-		t.Fatal("默认应关闭 sync")
+	if !svc.AutoUpdateEnabled() {
+		t.Fatal("应已开启")
 	}
-	if err := svc.SyncPasswordFromAurora(ctx, "aurora-new-pass"); err != nil {
-		t.Fatalf("sync off 应为 no-op nil: %v", err)
+	if got := svc.AutoUpdateCron(); got != "0 30 4 * * *" {
+		t.Fatalf("cron 规范化=%q", got)
 	}
-	// yaml 用户名未变；密码仍能用 original（通过重新读 hash 不便，至少 users 仍是 keepme）
-	name, _ := adguard.ReadUsername(workDir)
-	if name != "keepme" {
-		t.Fatalf("no-op 后用户名被改: %q", name)
+	// 组件未启用时 ShouldRun=false
+	if svc.ShouldRunAutoUpdate() {
+		t.Fatal("组件未启用时不应调度")
+	}
+	if err := svc.SetComponentEnabled(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.ShouldRunAutoUpdate() {
+		t.Fatal("组件启用且开关开时应调度")
+	}
+	st, err := svc.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.AutoUpdate || st.AutoUpdateCron != "0 30 4 * * *" {
+		t.Fatalf("Status auto=%v cron=%q", st.AutoUpdate, st.AutoUpdateCron)
 	}
 }
 
-func TestSyncPasswordFromAurora_EnabledWrites(t *testing.T) {
-	svc, _, workDir := newAdGuardSettingsTestSvc(t)
-	ctx := context.Background()
-	if err := svc.SetPasswordSync(ctx, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.db.SetSetting(settingAdGuardUsername, "synced"); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.SyncPasswordFromAurora(ctx, "aurora-synced-pass"); err != nil {
-		t.Fatalf("SyncPasswordFromAurora: %v", err)
-	}
-	name, err := adguard.ReadUsername(workDir)
-	if err != nil || name != "synced" {
-		t.Fatalf("username=%q err=%v", name, err)
-	}
-	if !svc.PasswordSyncEnabled() {
-		t.Fatal("sync 应仍为 true")
-	}
-	st, _ := svc.Status(ctx)
-	if !st.PasswordSync || st.Username != "synced" {
-		t.Fatalf("Status sync=%v user=%q", st.PasswordSync, st.Username)
+func TestSetAutoUpdateSettings_InvalidCron(t *testing.T) {
+	svc, _, _ := newAdGuardSettingsTestSvc(t)
+	on := true
+	if err := svc.SetAutoUpdateSettings(&on, "not-a-cron"); err == nil {
+		t.Fatal("非法 cron 应失败")
 	}
 }

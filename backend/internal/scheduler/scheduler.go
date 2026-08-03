@@ -14,9 +14,10 @@ import (
 // 用具名常量而非散落的字符串：这些名字会出现在日志里，
 // 也是 named 表的键，拼错会导致"看似注册成功却换错了任务"。
 const (
-	JobAutoUpdate = "auto-update"
-	JobRemotePull = "remote config pull"
-	JobLogCleanup = "applog cleanup"
+	JobAutoUpdate        = "auto-update"
+	JobRemotePull        = "remote config pull"
+	JobLogCleanup        = "applog cleanup"
+	JobAdGuardAutoUpdate = "adguard auto-update"
 )
 
 // Scheduler wraps robfig/cron for background job execution.
@@ -91,6 +92,12 @@ func (s *Scheduler) SetRemotePullJob(enabled bool, spec string, cmd func()) erro
 // SetLogCleanupJob 替换应用日志归档的清理任务。
 func (s *Scheduler) SetLogCleanupJob(enabled bool, spec string, cmd func()) error {
 	return s.SetJob(JobLogCleanup, enabled, spec, cmd)
+}
+
+// SetAdGuardAutoUpdateJob 替换 AdGuard Home 独立自动更新任务。
+// 与 mihomo/zashboard 的 JobAutoUpdate 分离；组件关闭时应 enabled=false。
+func (s *Scheduler) SetAdGuardAutoUpdateJob(enabled bool, spec string, cmd func()) error {
+	return s.SetJob(JobAdGuardAutoUpdate, enabled, spec, cmd)
 }
 
 // NextRun 返回具名任务下一次计划执行时间。

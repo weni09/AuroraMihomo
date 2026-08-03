@@ -231,6 +231,17 @@ func TestInjectDoesNotOverrideExplicitUserValues(t *testing.T) {
 		}
 	})
 
+	t.Run("SkipDefaultDNSHijack 时空 hijack 不补 any:53", func(t *testing.T) {
+		cfg := &domain.Config{}
+		cfg.TUN.Enable = true
+		if err := Inject(cfg, InjectOptions{SkipDefaultDNSHijack: true}); err != nil {
+			t.Fatalf("注入失败: %v", err)
+		}
+		if len(cfg.TUN.DNSHijack) != 0 {
+			t.Errorf("SkipDefaultDNSHijack 仍注入了 dns-hijack: %v", cfg.TUN.DNSHijack)
+		}
+	})
+
 	// 手工指定出口网卡 + 关掉自动探测是合理组合，不该被清掉
 	t.Run("关掉自动探测时保留 interface-name", func(t *testing.T) {
 		cfg := &domain.Config{}

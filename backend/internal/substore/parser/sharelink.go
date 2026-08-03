@@ -202,6 +202,8 @@ func parseVLESS(u *url.URL, source string) (Node, error) {
 	}
 	n := newNode(name, "vless", h, p, source)
 	n.Extra["uuid"] = u.User.Username()
+	// 官方 Sub-Store VLESS URI 解析默认 udp: true
+	n.UDP = true
 	q := u.Query()
 
 	// Security
@@ -238,6 +240,11 @@ func parseVLESS(u *url.URL, source string) (Node, error) {
 		n.Extra["client-fingerprint"] = fp
 	}
 
+	// packet-encoding：官方 Sub-Store 对 VLESS URI 的缺省是 xudp
+	// （query 里 packetEncoding=none|packet|xudp；缺省/其它 → xudp）。
+	// 漏写会导致 mihomo 侧 UDP over TCP 行为与官方产物不一致。
+	applyVLESSPacketEncoding(&n, q)
+
 	// Network / Transport
 	network := q.Get("type")
 	if network != "" {
@@ -266,6 +273,32 @@ func parseVLESS(u *url.URL, source string) (Node, error) {
 	}
 
 	return n, nil
+}
+
+// applyVLESSPacketEncoding 对齐官方 Sub-Store 的 VLESS URI packetEncoding 语义。
+//
+//	none        → 空串（显式关闭）
+//	packet      → packetaddr
+//	缺省/其它   → xudp
+func applyVLESSPacketEncoding(n *Node, q url.Values) {
+	if n == nil {
+		return
+	}
+	if n.Extra == nil {
+		n.Extra = map[string]interface{}{}
+	}
+	raw := q.Get("packetEncoding")
+	if raw == "" {
+		raw = q.Get("packet-encoding")
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "none":
+		n.Extra["packet-encoding"] = ""
+	case "packet", "packetaddr":
+		n.Extra["packet-encoding"] = "packetaddr"
+	default:
+		n.Extra["packet-encoding"] = "xudp"
+	}
 }
 
 func parseTrojan(u *url.URL, source string) (Node, error) {

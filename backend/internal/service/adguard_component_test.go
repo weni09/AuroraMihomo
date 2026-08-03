@@ -237,8 +237,8 @@ func TestUninstall_RemovesBinaryWorkDirAndSettings(t *testing.T) {
 		settingAdGuardDNSPort:   "1053",
 		settingAdGuardWebAddr:   "127.0.0.1:3000",
 		settingAdGuardWiring:    adguardWiringOff,
-		"adguard.sync_password":  "true",
-		"adguard.custom_flag":    "keep-me-gone",
+		"adguard.sync_password": "true",
+		"adguard.custom_flag":   "keep-me-gone",
 	} {
 		if err := db.SetSetting(k, v); err != nil {
 			t.Fatal(err)
@@ -311,5 +311,67 @@ func TestUninstall_WithWiringRollsBackFirst(t *testing.T) {
 	}
 	if svc.ComponentEnabled() {
 		t.Fatal("卸载后 component 应为 false")
+	}
+}
+
+func TestStartStop_PersistsDesiredRunning(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+	if err := svc.SetComponentEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	// 无真实二进制：Start 应失败且不写 desired
+	if err := svc.Start(ctx); err == nil {
+		t.Fatal("无二进制时应 Start 失败")
+	}
+	if svc.DesiredRunning() {
+		t.Fatal("Start 失败不应标记 desiredRunning")
+	}
+	// 直接写 boot 模拟用户曾启动
+	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.DesiredRunning() || !svc.ShouldStartAtBoot() {
+		t.Fatal("应 desired+boot")
+	}
+	// Stop 幂等成功并清 desired
+	if err := svc.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if svc.DesiredRunning() {
+		t.Fatal("Stop 后 desired 应为 false")
+	}
+	if svc.ShouldStartAtBoot() {
+		t.Fatal("Stop 后不应自启")
+	}
+	st, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.DesiredRunning {
+		t.Fatal("Status.DesiredRunning 应为 false")
+	}
+}
+
+func TestStopProcess_DoesNotClearDesiredRunning(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.DesiredRunning() {
+		t.Fatal("precondition")
+	}
+	if err := svc.StopProcess(ctx); err != nil {
+		t.Fatalf("StopProcess: %v", err)
+	}
+	if !svc.DesiredRunning() {
+		t.Fatal("StopProcess 不应清除 enabled_at_boot")
+	}
+	if err := svc.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if svc.DesiredRunning() {
+		t.Fatal("用户 Stop 应清除 enabled_at_boot")
 	}
 }

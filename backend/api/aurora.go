@@ -94,6 +94,60 @@ func main() {
 		logx.Errorf("load settings failed: %v", err)
 	}
 
+	// AdGuard 独立自动更新：与 mihomo/zashboard 的 JobAutoUpdate 分离。
+	// 组件关闭或开关关闭时 SetAdGuardAutoUpdateJob(enabled=false)。
+	if svcCtx.AdGuardService != nil {
+		applyAdGuardSchedule := func() error {
+			enabled := svcCtx.AdGuardService.ShouldRunAutoUpdate()
+			cronExpr := svcCtx.AdGuardService.AutoUpdateCron()
+			return svcCtx.Scheduler.SetAdGuardAutoUpdateJob(enabled, cronExpr, func() {
+				ctx, cancel := context.WithTimeout(rootCtx, 5*time.Minute)
+				defer cancel()
+				// 以「期望运行」为准：更新途中进程可能已停，不能只看当前 Running
+				wantRunning := svcCtx.AdGuardService.DesiredRunning()
+				wasRunning := false
+				if st, stErr := svcCtx.AdGuardService.Status(ctx); stErr == nil && st != nil {
+					wasRunning = st.Running
+				}
+				if wasRunning {
+					// 勿用 Stop：会清掉 enabled_at_boot，更新失败后面板重启不再自启
+					if err := svcCtx.AdGuardService.StopProcess(ctx); err != nil {
+						logx.Errorf("auto update adguard: stop failed: %v", err)
+					}
+				}
+				if err := svcCtx.AdGuardService.Install(ctx); err != nil {
+					logx.Errorf("auto update adguard failed: %v", err)
+					if rootCtx.Err() == nil {
+						svcCtx.Hub.Publish("task.progress", map[string]any{
+							"name": "adguard_auto_update", "error": err.Error(),
+						})
+					}
+					if (wantRunning || wasRunning) && rootCtx.Err() == nil {
+						_ = svcCtx.AdGuardService.Start(rootCtx)
+					}
+					return
+				}
+				if (wantRunning || wasRunning) && rootCtx.Err() == nil {
+					if err := svcCtx.AdGuardService.Start(rootCtx); err != nil {
+						logx.Errorf("auto update adguard: restart failed: %v", err)
+					}
+				}
+				if rootCtx.Err() != nil {
+					return
+				}
+				_ = svcCtx.Database.MarkTaskRun("adguard_auto_update", "ok", "", time.Time{})
+				svcCtx.Hub.Publish("task.progress", map[string]any{
+					"name": "adguard_auto_update", "percent": 100,
+				})
+			})
+		}
+		svcCtx.AdGuardService.SetScheduleReloadFunc(applyAdGuardSchedule)
+		if err := applyAdGuardSchedule(); err != nil {
+			logx.Errorf("register adguard auto-update scheduler failed: %v", err)
+		}
+		reloadMgr.Register("adguard-auto-update-schedule", applyAdGuardSchedule)
+	}
+
 	if c.Bootstrap.EnsureOnStart {
 		ensureCtx, ensureCancel := context.WithTimeout(rootCtx, 3*time.Minute)
 		err := svcCtx.Updater.EnsureComponents(ensureCtx)
@@ -349,7 +403,7 @@ func main() {
 			return "127.0.0.1:3000"
 		}
 		return addr
-	})
+	}, svcCtx.AdGuardSSO)
 	// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard-ui 反代，其余走静态（含 SPA /adguard）文件（含 SPA 回退）
 	server.StartWithOpts(func(svr *http.Server) {
 		svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy)
@@ -497,8 +551,41 @@ func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handle
 			return
 		}
 
+		// AGH SPA 无 basename 时可能把 iframe 导航到站点根下的 /login.html、/control/*。
+		// 已登录 Aurora 时把这些路径收回反代，避免 iframe 内嵌套整站 Aurora。
+		if adguardHandler != nil && isLeakedAdGuardPath(path) {
+			if c, err := r.Cookie("aurora_session"); err == nil && c != nil && strings.TrimSpace(c.Value) != "" {
+				// 改写到 /adguard-ui 前缀再交给反代
+				r2 := r.Clone(r.Context())
+				if path == "/login.html" || path == "/login" {
+					r2.URL.Path = "/adguard-ui" + path
+				} else {
+					r2.URL.Path = "/adguard-ui" + path
+				}
+				adguardHandler.ServeHTTP(w, r2)
+				return
+			}
+		}
+
 		static.ServeHTTP(w, r)
 	})
+}
+
+// isLeakedAdGuardPath 判断是否为 AGH 前端从子路径逃逸到站点根的典型路径。
+func isLeakedAdGuardPath(path string) bool {
+	switch path {
+	case "/login.html", "/login", "/install.html", "/install.html/":
+		return true
+	}
+	if strings.HasPrefix(path, "/control/") || path == "/control" {
+		return true
+	}
+	// AGH 静态资源（与 Aurora 的 /assets 可能冲突；仅在有 aurora_session 时才拦截）
+	if strings.HasPrefix(path, "/assets/") && (strings.Contains(path, "apple-touch-icon") ||
+		strings.Contains(path, "safari-pinned-tab") || strings.HasSuffix(path, "favicon.png")) {
+		return true
+	}
+	return false
 }
 
 // setSecurityHeaders 设置基础安全响应头。

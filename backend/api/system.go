@@ -98,6 +98,12 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 	authOpt := rest.WithJwt(svcCtx.Config.Auth.AccessSecret)
 
 	server.AddRoutes([]rest.Route{
+		// Bearer → aurora_session：给 /adguard-ui 等只认 cookie 的同源反代对齐会话
+		{
+			Method:  http.MethodPost,
+			Path:    "/api/v1/auth/session",
+			Handler: public.SyncSessionHandler(svcCtx),
+		},
 		{
 			Method: http.MethodPost,
 			Path:   "/api/v1/system/reload",

@@ -78,6 +78,22 @@ func (l *LoginLogic) Login(req *types.LoginReq, r *http.Request) (resp *types.Lo
 	if err != nil {
 		return nil, err
 	}
+
+	// AdGuard 免密：只用持久化 AGH 凭据（设置里「保存账号」写入）预热 session。
+	// 不再用 Aurora 登录密码试登 AGH 并 Persist——口令独立后会污染 CredStore。
+	if bridge := l.svcCtx.AdGuardSSO; bridge != nil {
+		const userKey = "1"
+		_ = bridge.HydrateFromStore()
+		if l.svcCtx.AdGuardService != nil {
+			bridge.SetUsername(l.svcCtx.AdGuardService.AdminUsername())
+		}
+		if l.svcCtx.AdGuardManager != nil && l.svcCtx.AdGuardManager.Status().Running {
+			if c := bridge.SessionCookie(l.ctx, userKey); c == "" {
+				l.Info("AdGuard 免密预热未就绪（可在 AdGuard 设置中保存账号）")
+			}
+		}
+	}
+
 	return &types.LoginResp{Token: tokenStr}, nil
 }
 

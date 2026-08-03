@@ -35,6 +35,10 @@ type InjectOptions struct {
 	// （见 injectTProxyTechnicalParams），所以未托管时不该注入——
 	// 用户在「配置中心」把 tproxy-port 当普通端口设置填上，不构成启用 TProxy。
 	TProxyManaged bool
+	// SkipDefaultDNSHijack 为 true 时，不在 dns-hijack 为空时补 any:53。
+	// AdGuard 入口模式（绑 :53）会主动清空 hijack，若合并再注入 any:53，
+	// 查询会进 mihomo 内部 DNS，AGH 日志空白、入口方案被静默拆掉。
+	SkipDefaultDNSHijack bool
 }
 
 // defaultTUNStack 选 mixed：TCP 走内核栈（开销低），UDP 走 gvisor
@@ -123,7 +127,8 @@ func injectTUNTechnicalParams(cfg *domain.Config, opt InjectOptions) error {
 
 	// DNS 劫持是分流生效的前提：不劫持的话客户端直接问上游 DNS，
 	// 域名类规则拿不到查询。any:53 同时覆盖 UDP 与 TCP。
-	if len(t.DNSHijack) == 0 {
+	// SkipDefaultDNSHijack：AdGuard 作系统 DNS 入口时必须保持空 hijack。
+	if len(t.DNSHijack) == 0 && !opt.SkipDefaultDNSHijack {
 		t.DNSHijack = []string{"any:53"}
 	}
 

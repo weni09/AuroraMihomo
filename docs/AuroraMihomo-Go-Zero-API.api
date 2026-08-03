@@ -655,18 +655,24 @@ type AdGuardStatusResp {
 	EntryPath        string   `json:"entryPath"`
 	ComponentEnabled bool     `json:"componentEnabled"`
 	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
-	CdnProviders     []string `json:"cdnProviders,optional"`
-	AutoUpdate       bool     `json:"autoUpdate"`
-	Username         string   `json:"username,optional"`
-	PasswordSync     bool     `json:"passwordSync"`
-}
+CdnProviders     []string `json:"cdnProviders,optional"`
+		AutoUpdate       bool     `json:"autoUpdate"`
+		AutoUpdateCron   string   `json:"autoUpdateCron,optional"` // 5/6 段 cron；空则默认每天 4 点
+		Username         string   `json:"username,optional"`
+		DesiredRunning   bool     `json:"desiredRunning"` // 用户期望运行；面板重启后据此自启
+	}
 
-// AdGuardCredentialsReq 设置 AGH 管理员账号；不落库明文密码。
-type AdGuardCredentialsReq {
-	Username       string `json:"username,optional"`
-	Password       string `json:"password"`
-	SyncWithAurora *bool  `json:"syncWithAurora,optional"`
-}
+	// AdGuardCredentialsReq 设置 AGH 管理员账号；不落库明文密码。
+	type AdGuardCredentialsReq {
+		Username string `json:"username,optional"`
+		Password string `json:"password"`
+	}
+
+	// AdGuardAutoUpdateReq AdGuard 独立自动更新开关与 cron。
+	type AdGuardAutoUpdateReq {
+		Enabled *bool  `json:"enabled,optional"`
+		Cron    string `json:"cron,optional"`
+	}
 
 // AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
 type AdGuardComponentReq {
@@ -803,8 +809,17 @@ service aurora-api {
 	@handler adGuardSetDNSPort
 	put /api/v1/adguard/dns-port (AdGuardDNSPortReq) returns (Result)
 
+	@handler adGuardApplyEntryDNSPreset
+	post /api/v1/adguard/dns-entry-preset returns (Result)
+
 	@handler adGuardSetCDN
 	put /api/v1/adguard/cdn (AdGuardCDNReq) returns (Result)
+
+	@handler adGuardCheckUpdate
+	get /api/v1/adguard/check-update returns (Result)
+
+	@handler adGuardSetAutoUpdate
+	put /api/v1/adguard/auto-update (AdGuardAutoUpdateReq) returns (Result)
 
 	@handler adGuardSetCredentials
 	put /api/v1/adguard/credentials (AdGuardCredentialsReq) returns (Result)

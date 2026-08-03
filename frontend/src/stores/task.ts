@@ -24,6 +24,7 @@ const TASK_LABELS: Record<string, string> = {
   applog_cleanup: '日志归档清理',
   auto_update: '组件自动更新',
   remote_config_pull: '远程配置拉取',
+  adguard_auto_update: 'AdGuard 自动更新',
 }
 
 export const useTaskStore = defineStore('task', {

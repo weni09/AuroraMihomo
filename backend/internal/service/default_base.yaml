@@ -41,17 +41,19 @@ dns:
   ipv6: false
   enhanced-mode: redir-host
   fake-ip-range: 198.18.0.1/16
-  # 仅用于解析 DoH 域名本身，须为 IP（此处预填 IP 上游，开启 DNS 后即可用）
+  # 解析「上游里的域名」与节点域名：必须是纯 IP。
+  # 禁止在 default/proxy-server-nameserver 填域名 DoH——节点域名与 DoH
+  # 互相等待或 respect-rules 成环时，zashboard 会看到节点成批失败。
   default-nameserver:
     - 223.5.5.5
-    - 1.1.1.1
-    - 8.8.8.8
+    - 119.29.29.29
+  # 默认走国内纯 IP；境外见 nameserver-policy / fallback 注释
   nameserver:
     - 223.5.5.5
     - 119.29.29.29
   fallback:
-    - 1.1.1.1
     - 8.8.8.8
+    - 1.1.1.1
   fallback-filter:
     geoip: true
     geoip-code: CN
@@ -65,7 +67,13 @@ dns:
       - ::1/128
       - 2001::/32
       - 2001:db8::/32
-  # 按域名指定上游，优先于默认 nameserver
+  # 按域名指定上游。开箱无订阅、无统一策略组名，此处只写纯 IP，不写 #组名。
+  # 导入订阅后若 Google 等被污染（AAAA=2001::1），不要把 proxy-server-nameserver
+  # 改成域名 DoH；在「你自己的」境外策略组就绪后，把下面境外项改成：
+  #   - "https://8.8.8.8/dns-query#<你的境外策略组名>"
+  #   - "https://1.1.1.1/dns-query#<你的境外策略组名>"
+  # （多数节点不支持 UDP，裸 8.8.8.8#组 常失败；组名以订阅为准，因人而异。）
+  # respect-rules 默认 false，避免 DNS 再被规则打回 DIRECT 吃污染。
   nameserver-policy:
     "geosite:cn,private,apple":
       - 223.5.5.5
@@ -73,14 +81,16 @@ dns:
     "geosite:google,github,telegram,twitter,facebook,youtube,netflix,openai,spotify":
       - 8.8.8.8
       - 1.1.1.1
+  # 只解析代理节点 server 域名：必须纯 IP 国内 DNS，切勿 DoH
   proxy-server-nameserver:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
+    - 223.5.5.5
+    - 119.29.29.29
   direct-nameserver:
     - 223.5.5.5
     - 119.29.29.29
   use-system-hosts: true
-  respect-rules: true
+  # true 时 DNS 再走分流；配了 IP-CIDR,8.8.8.8,DIRECT 时境外 DNS 易被打回直连污染
+  respect-rules: false
   prefer-h3: false
 
 tun:

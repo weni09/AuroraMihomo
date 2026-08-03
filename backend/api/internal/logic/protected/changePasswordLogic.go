@@ -71,11 +71,15 @@ func (l *ChangePasswordLogic) ChangePassword(req *types.ChangePasswordReq) (*typ
 
 	l.Info("管理员密码已更新")
 	msg := "密码已更新，请使用新密码重新登录"
-	// Aurora 改密成功后，若开启 AGH 同步则写入 AGH yaml（失败不回滚 Aurora 改密）
-	if l.svcCtx.AdGuardService != nil {
-		if err := l.svcCtx.AdGuardService.SyncPasswordFromAurora(l.ctx, newPwd); err != nil {
-			l.Errorf("同步 AdGuard 密码失败: %v", err)
-			msg += "（AdGuard 密码同步失败，请在 AdGuard 设置中手动更新）"
+	// AGH 口令与 Aurora 管理员密码独立：切勿把新 Aurora 密码写进 SSO 内存，
+	// 否则会挡住 CredStore 里真正的 AGH 凭据，导致 /adguard-ui 免密失败。
+	// 只丢掉旧 agh_session；下次反代用持久化 AGH 口令重新 Establish。
+	if bridge := l.svcCtx.AdGuardSSO; bridge != nil {
+		const userKey = "1"
+		bridge.InvalidateSession(userKey)
+		_ = bridge.HydrateFromStore()
+		if l.svcCtx.AdGuardService != nil {
+			bridge.SetUsername(l.svcCtx.AdGuardService.AdminUsername())
 		}
 	}
 	return &types.Result{Success: true, Message: msg}, nil

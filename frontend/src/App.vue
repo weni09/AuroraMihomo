@@ -37,8 +37,11 @@ const isLogin = computed(() => route.name === 'login')
 // 内嵌 iframe 必须吃满「顶栏以下」的剩余高度；若子页再用 h-dvh 会叠在 App 顶栏之下
 // 把整屏顶出可视区，面板底栏被浏览器工具条挡住。
 const isZashboard = computed(() => route.name === 'zashboard')
+// AdGuard 同样内嵌 iframe，需与 Zashboard 一样锁一屏并隐藏顶栏主题三钮
+const isAdGuard = computed(() => route.name === 'adguard')
+const isEmbedFrame = computed(() => isZashboard.value || isAdGuard.value)
 // 页面可选地往移动端顶栏挂副标题/动作（如 Zashboard 的对接信息与「新标签页」）
-const { subtitle: pageSubtitle, action: pageAction } = usePageChrome()
+const { subtitle: pageSubtitle, action: pageAction, actions: pageActions } = usePageChrome()
 
 onMounted(() => {
   // /system/status、/adguard/status 需 JWT；登录页无 token 时请求只会 401 刷控制台。
@@ -354,7 +357,7 @@ const logout = async () => {
          仅 Zashboard 锁一屏：子页 iframe 要 flex 分走「顶栏以下」剩余高度。 -->
     <div
       class="flex-1 min-w-0 flex flex-col"
-      :class="isZashboard ? 'h-dvh max-h-dvh overflow-hidden' : ''"
+      :class="isEmbedFrame ? 'h-dvh max-h-dvh overflow-hidden' : ''"
     >
       <!-- 移动端顶栏：承载汉堡按钮、当前页标题与主题切换。
            lg 以上隐藏，桌面布局保持原样。sticky 使其在页面滚动时常驻可见——
@@ -388,8 +391,22 @@ const logout = async () => {
           </div>
         </div>
         <div class="ml-auto shrink-0 flex items-center gap-1.5">
+          <template v-if="pageActions.length">
+            <Button
+              v-for="(act, i) in pageActions"
+              :key="i"
+              type="button"
+              :variant="i === 0 ? 'secondary' : 'outline'"
+              size="sm"
+              class="h-8 px-2.5 text-xs"
+              :disabled="act.disabled"
+              @click="act.onClick"
+            >
+              {{ act.label }}
+            </Button>
+          </template>
           <Button
-            v-if="pageAction"
+            v-else-if="pageAction"
             type="button"
             variant="secondary"
             size="sm"
@@ -399,15 +416,14 @@ const logout = async () => {
           >
             {{ pageAction.label }}
           </Button>
-          <!-- Zashboard 顶栏已有「新标签页」等，主题三钮过宽会挤掉标题；
-               改主题可去其它页或侧栏，此处隐藏换垂直/横向空间给面板。 -->
-          <ThemeToggle v-if="!isZashboard" />
+          <!-- Zashboard/AdGuard 顶栏空间紧，主题三钮过宽；改主题可去其它页或侧栏。 -->
+          <ThemeToggle v-if="!isEmbedFrame" />
         </div>
       </header>
 
       <div
         class="flex-1 min-h-0 flex flex-col"
-        :class="isZashboard ? 'overflow-hidden' : ''"
+        :class="isEmbedFrame ? 'overflow-hidden' : ''"
       >
         <RouterView />
       </div>

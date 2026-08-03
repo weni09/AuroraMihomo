@@ -8,19 +8,22 @@ import (
 
 // AdGuard 相关 settings 键。无新 migration：一律走 settings KV。
 const (
-	settingAdGuardBoot         = "adguard.enabled_at_boot"
-	settingAdGuardWebAddr      = "adguard.web_addr"
-	settingAdGuardDNSPort      = "adguard.dns_port"
-	settingAdGuardVersion      = "adguard.version"
-	settingAdGuardWiring       = "adguard.dns_wiring"          // "off" | "on"
-	settingAdGuardSnapshot     = "adguard.dns_wiring_snapshot" // JSON of WiringPlan
-	settingAdGuardComponent    = "adguard.component_enabled"   // "true" / "false"，默认 false
-	settingAdGuardDNSMode      = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
-	settingAdGuardCDNProviders = "adguard.cdn_providers"       // JSON 字符串数组
-	settingAdGuardAutoUpdate   = "adguard.auto_update"         // "true" / "false"
-	settingAdGuardSyncPassword = "adguard.sync_password"       // "true" / "false"
-	settingAdGuardUsername     = "adguard.username"            // AGH 管理员用户名（明文可存）
+	settingAdGuardBoot           = "adguard.enabled_at_boot"
+	settingAdGuardWebAddr        = "adguard.web_addr"
+	settingAdGuardDNSPort        = "adguard.dns_port"
+	settingAdGuardVersion        = "adguard.version"
+	settingAdGuardWiring         = "adguard.dns_wiring"          // "off" | "on"
+	settingAdGuardSnapshot       = "adguard.dns_wiring_snapshot" // JSON of WiringPlan
+	settingAdGuardComponent      = "adguard.component_enabled"   // "true" / "false"，默认 false
+	settingAdGuardDNSMode        = "adguard.dns_mode"            // "0" | "1" | "2"，默认 "0"
+	settingAdGuardCDNProviders   = "adguard.cdn_providers"       // JSON 字符串数组
+	settingAdGuardAutoUpdate     = "adguard.auto_update"         // "true" / "false"
+	settingAdGuardAutoUpdateCron = "adguard.auto_update_cron"    // 6 段 cron
+	settingAdGuardUsername       = "adguard.username"            // AGH 管理员用户名（明文可存）
 )
+
+// defaultAdGuardAutoUpdateCron 与全局组件自动更新默认一致（每天 4 点）。
+const defaultAdGuardAutoUpdateCron = "0 0 4 * * *"
 
 const (
 	adguardWiringOff = "off"
@@ -62,22 +65,22 @@ type WiringPlan struct {
 	MihomoDNSListen      string   `json:"mihomoDnsListen,omitempty"` // 变更后目标
 	OriginalDNSPort      int      `json:"originalDNSPort"`
 	OriginalMihomoListen string   `json:"originalMihomoListen,omitempty"`
-		OriginalUpstream     []string `json:"originalUpstream,omitempty"`
-		// OriginalDNSHijack 清空 tun.dns-hijack 前的原文，供回滚恢复
-		OriginalDNSHijack []string `json:"originalDNSHijack,omitempty"`
-		WiringOn             bool     `json:"wiringOn"`
+	OriginalUpstream     []string `json:"originalUpstream,omitempty"`
+	// OriginalDNSHijack 清空 tun.dns-hijack 前的原文，供回滚恢复
+	OriginalDNSHijack []string `json:"originalDNSHijack,omitempty"`
+	WiringOn          bool     `json:"wiringOn"`
 
-		// 下列标志记录「计划里选中了哪些动作」，apply/rollback 按标志执行，
-		// 避免仅靠中文 Actions 文案做分支。
-		DidRedirect        bool `json:"didRedirect,omitempty"`
-		DidResolveConflict bool `json:"didResolveConflict,omitempty"`
-		DidPatchUpstream   bool `json:"didPatchUpstream,omitempty"`
-		DidWeakenTUN       bool `json:"didWeakenTUN,omitempty"`
-		// DidDNSOnlyRedirect：未开 TProxy 时用 aurora_agh_dns 表做 53→AGH 端口
-		DidDNSOnlyRedirect bool `json:"didDNSOnlyRedirect,omitempty"`
-		// DidBind53：模式 1，AGH 直接监听 53（入口 DNS）
-		DidBind53 bool `json:"didBind53,omitempty"`
-	}
+	// 下列标志记录「计划里选中了哪些动作」，apply/rollback 按标志执行，
+	// 避免仅靠中文 Actions 文案做分支。
+	DidRedirect        bool `json:"didRedirect,omitempty"`
+	DidResolveConflict bool `json:"didResolveConflict,omitempty"`
+	DidPatchUpstream   bool `json:"didPatchUpstream,omitempty"`
+	DidWeakenTUN       bool `json:"didWeakenTUN,omitempty"`
+	// DidDNSOnlyRedirect：未开 TProxy 时用 aurora_agh_dns 表做 53→AGH 端口
+	DidDNSOnlyRedirect bool `json:"didDNSOnlyRedirect,omitempty"`
+	// DidBind53：模式 1，AGH 直接监听 53（入口 DNS）
+	DidBind53 bool `json:"didBind53,omitempty"`
+}
 
 // buildWiringPlan 根据选项与当前 DNS 状态生成变更清单（纯函数，无 IO）。
 //
