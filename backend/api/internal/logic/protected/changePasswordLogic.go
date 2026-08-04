@@ -3,6 +3,7 @@ package protected
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	"auroramihomo/backend/api/internal/svc"
@@ -65,9 +66,25 @@ func (l *ChangePasswordLogic) ChangePassword(req *types.ChangePasswordReq) (*typ
 	if err != nil {
 		return nil, err
 	}
+
+	// 口令版本先落库并更新内存，最后才写新密码哈希。
+	// 次序取舍：若「版本 +1 已生效但密码写失败」，只是所有会话被要求
+	// 重新登录（fail-closed，可接受）；反过来（密码已改但版本没写进去）
+	// 会让旧令牌跨重启复活，是真正的安全漏洞。
+	newVer := l.svcCtx.PasswordVer.Current() + 1
+	if err := l.svcCtx.Database.SetSetting("admin_password_ver", strconv.FormatInt(newVer, 10)); err != nil {
+		l.Errorf("记录口令版本失败，改密中止: %v", err)
+		return nil, errors.New("记录口令版本失败，改密未生效")
+	}
+	l.svcCtx.PasswordVer.Set(newVer)
+
 	if err := l.svcCtx.Database.SetSetting("admin_password", hashed); err != nil {
 		return nil, err
 	}
+
+	// 改密后初始密码文件已无意义，且仍可能含旧明文——必须清掉。
+	// 路径与 servicecontext 首次写入时一致。
+	svc.RemoveInitialPasswordFile(l.svcCtx.Config.Mihomo.ConfigDir)
 
 	l.Info("管理员密码已更新")
 	msg := "密码已更新，请使用新密码重新登录"

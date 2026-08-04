@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"auroramihomo/backend/api/internal/handler/protected"
 	"auroramihomo/backend/api/internal/handler/public"
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/applog"
@@ -175,6 +176,21 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 			},
 		},
 	}, authOpt)
+}
+
+// registerSubscriptionProbeRoute 挂订阅流量参数探测接口。
+//
+// V2Board 类机场只在特定 flag 参数下下发 subscription-userinfo 头，
+// 探测接口对订阅 URL 逐一尝试常见参数并返回「有流量信息且节点完整」
+// 的组合，供订阅表单一键应用。走 JWT 鉴权（探测会真实拉取外部 URL，
+// 不能开放给匿名调用）；字面路径 /subscriptions/probe 优先于 goctl 的
+// /subscriptions/:id 参数路由，不冲突。
+func registerSubscriptionProbeRoute(server *rest.Server, svcCtx *svc.ServiceContext) {
+	server.AddRoute(rest.Route{
+		Method:  http.MethodPost,
+		Path:    "/api/v1/subscriptions/probe",
+		Handler: protected.ProbeSubscriptionHandler(svcCtx),
+	}, rest.WithJwt(svcCtx.Config.Auth.AccessSecret))
 }
 
 const (

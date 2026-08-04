@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,9 +18,9 @@ import (
 	"auroramihomo/backend/api/internal/handler"
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/auth"
 	"auroramihomo/backend/internal/service"
 
-	"github.com/golang-jwt/jwt/v4"
 	"github.com/gorilla/websocket"
 	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -54,6 +55,7 @@ func main() {
 	// staticMux 在 server.StartWithOpts 中包装到最外层 Handler
 	registerWebSocket(server, svcCtx)
 	registerHealthz(server, svcCtx)
+	applyAuthHardening(server, svcCtx)
 
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -201,6 +203,7 @@ func main() {
 	reloadMgr.Register("applog-cleanup-schedule", svcCtx.SettingsService.ApplyLogCleanupSchedule)
 	registerSystemRoutes(server, svcCtx, reloadMgr)
 	registerPublicAuthRoutes(server, svcCtx)
+	registerSubscriptionProbeRoute(server, svcCtx)
 
 	// 此处曾有一个「每分钟轮询、按各订阅自身 interval 逐条刷新」的任务，已移除。
 	// 它与上面的远程拉取 Cron 构成两套并行调度：用户在配置中心关掉定时拉取后，
@@ -388,7 +391,7 @@ func main() {
 	fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
 	// 同源 /adguard-ui 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI。
 	// 上游优先读 work-dir 里的 web 端口，且只允许回环地址，避免误反代到外网。
-	aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, func() string {
+	aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, svcCtx.PasswordVer, func() string {
 		if svcCtx.AdGuardManager == nil {
 			return "127.0.0.1:3000"
 		}
@@ -423,14 +426,18 @@ func main() {
 }
 
 func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	// CheckOrigin 拒绝跨站浏览器连接，降低 token 泄露后被异源页面滥用的风险。
+	// 空 Origin 放行：非浏览器客户端（部分探针/脚本）通常不带 Origin。
+	// 令牌仍常走 query（浏览器 WS 难设 Authorization），Referer/日志泄露风险仍在，
+	// 本批不改传输位置，避免牵动前端。
+	upgrader := websocket.Upgrader{CheckOrigin: wsOriginAllowed}
 	server.AddRoute(rest.Route{
 		Method: http.MethodGet,
 		Path:   "/ws",
 		Handler: func(w http.ResponseWriter, r *http.Request) {
 			// 浏览器 WebSocket 无法自定义请求头，令牌通过 query 传递；
 			// 未鉴权的连接可读取内核日志，必须拦截。
-			if !verifyWSToken(r, svcCtx.Config.Auth.AccessSecret) {
+			if !verifyWSToken(r, svcCtx.Config.Auth.AccessSecret, svcCtx.PasswordVer) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -683,28 +690,127 @@ func registerHealthz(server *rest.Server, svcCtx *svc.ServiceContext) {
 	})
 }
 
+// wsOriginAllowed 限制浏览器跨站 WebSocket。
+// 抽成独立函数便于单测，不依赖 gorilla 升级流程。
+func wsOriginAllowed(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	// 只比 host（含端口），不比 scheme：面板可能 http 而 Origin 写 https（反代）。
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		// 非法 Origin 一律拒绝，避免解析失败时放行
+		return false
+	}
+	reqHost := r.Host
+	if reqHost == "" {
+		reqHost = r.Header.Get("Host")
+	}
+	return sameWSHost(u.Host, reqHost)
+}
+
+// sameWSHost 比较 Origin host 与请求 Host，忽略默认端口写法差异。
+func sameWSHost(originHost, reqHost string) bool {
+	normalize := func(h string) string {
+		h = strings.ToLower(strings.TrimSpace(h))
+		// 去掉方括号形式的 IPv6 以便比较时一致
+		return h
+	}
+	o, rh := normalize(originHost), normalize(reqHost)
+	if o == rh {
+		return true
+	}
+	// example.com vs example.com:443 / :80 —— 仅当一侧无端口时做宽松匹配
+	stripDefault := func(h string) (host string, port string, hasPort bool) {
+		// 简易拆分：IPv6 [addr]:port 或 host:port
+		if strings.HasPrefix(h, "[") {
+			if i := strings.LastIndex(h, "]:"); i >= 0 {
+				return h[:i+1], h[i+2:], true
+			}
+			return h, "", false
+		}
+		if i := strings.LastIndex(h, ":"); i >= 0 && strings.Count(h, ":") == 1 {
+			return h[:i], h[i+1:], true
+		}
+		return h, "", false
+	}
+	oh, op, oHas := stripDefault(o)
+	rh2, rp, rHas := stripDefault(rh)
+	if oh != rh2 {
+		return false
+	}
+	if !oHas && rHas && (rp == "80" || rp == "443") {
+		return true
+	}
+	if !rHas && oHas && (op == "80" || op == "443") {
+		return true
+	}
+	return false
+}
+
 // verifyWSToken 校验 WebSocket 连接携带的 JWT。
-// 优先读 Authorization 头（便于非浏览器客户端），其次读 token query 参数。
-func verifyWSToken(r *http.Request, secret string) bool {
+// 优先读 query token（浏览器 WS 惯例），其次 Authorization Bearer。
+// ver 为口令版本闸门：改密后旧令牌即使签名有效也拒绝连接。
+func verifyWSToken(r *http.Request, secret string, ver *auth.PasswordVer) bool {
 	if secret == "" {
 		return false
 	}
 	raw := strings.TrimSpace(r.URL.Query().Get("token"))
 	if raw == "" {
-		if h := r.Header.Get("Authorization"); h != "" {
-			raw = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-		}
+		raw = auth.ExtractBearerToken(r)
 	}
 	if raw == "" {
 		return false
 	}
-	token, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+	claims, err := auth.ParseToken(raw, secret)
+	if err != nil {
+		return false
+	}
+	return auth.TokenVersionValid(claims, ver.Current())
+}
+
+// isPublicAPIPath 判断路径是否为无需 JWT 的公开 API 路由。
+// 白名单必须与 docs/AuroraMihomo-Go-Zero-API.api 的 public 组保持一致
+// （login / serveFile / shareByToken）：这些路径本就不带令牌鉴权，
+// 带旧令牌请求也不应被口令版本闸门拦截——否则改密后用户无法重新登录。
+// /ws 与 /healthz 不在列：前者令牌走 query 且由 verifyWSToken 独立校验，
+// 后者无 Authorization 头，闸门对无头请求一律放行。
+func isPublicAPIPath(p string) bool {
+	return p == "/api/v1/auth/login" ||
+		strings.HasPrefix(p, "/api/v1/file/") ||
+		strings.HasPrefix(p, "/api/v1/share/")
+}
+
+// applyAuthHardening 在 go-zero rest.WithJwt 之外补一层口令版本闸门：
+// 改密（admin_password_ver +1）后，携带旧版本 JWT 的请求立即 401，
+// 实现无状态令牌的改密吊销。
+//
+// 设计约束：
+//   - 只拦截「签名与有效期都通过」的令牌——签名错误/过期的请求仍由
+//     rest.WithJwt 处理，401 行为与日志不变，本闸门不替换 go-zero 鉴权；
+//   - 公开路径（登录/文件直链/分享）放行，避免前端对全部请求统一附加
+//     Authorization 头（api.ts）时把改密后的登录请求误杀；
+//   - 挂在 server.Use（最外层），对所有 go-zero 路由生效；
+//     不依赖 routes.go（goctl 生成物），再生成不丢失。
+func applyAuthHardening(server *rest.Server, svcCtx *svc.ServiceContext) {
+	server.Use(func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !isPublicAPIPath(r.URL.Path) {
+				if raw := auth.ExtractBearerToken(r); raw != "" {
+					if claims, err := auth.ParseToken(raw, svcCtx.Config.Auth.AccessSecret); err == nil &&
+						!auth.TokenVersionValid(claims, svcCtx.PasswordVer.Current()) {
+						http.Error(w, "token revoked", http.StatusUnauthorized)
+						return
+					}
+				}
+			}
+			next(w, r)
 		}
-		return []byte(secret), nil
 	})
-	return err == nil && token.Valid
 }
 
 // applyServerTimeouts 为原生 http.Server 补齐连接层超时。

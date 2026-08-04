@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -27,6 +26,9 @@ func New(timeout time.Duration) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: timeout,
+			// 重定向逐跳校验 + 限跳数，防 302 绕过 validateFetchURL
+			// （详见 ssrf.go 的 checkRedirect）。
+			CheckRedirect: checkRedirect,
 			// 给订阅拉取的连接打上面板专用 fwmark，使其在透明代理 TProxy
 			// 模式下不被 mihomo 自己接管（理由见 netcheck.MarkedDialer）。
 			// 非 Linux 平台上打标是空操作，行为与改动前一致。
@@ -34,7 +36,14 @@ func New(timeout time.Duration) *Client {
 				DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
 			},
 		},
-		userAgent: "AuroraMihomo/0.1",
+		// 默认 UA 用 ClashMeta/2.0 而非自定义 UA：V2Board 类机场按 UA 决定
+		// 是否下发 subscription-userinfo 头与返回格式——UA 含 "clash" 才给
+		// 流量信息（实测 ClashMeta 系返回完整 YAML+userinfo；AuroraMihomo/
+		// v2rayN 等未知 UA 只给 base64 且无 userinfo）。选 ClashMeta 而非
+		// ClashforWindows：部分机场禁用了纯 clash 输出，CFW UA 会拿到
+		// 「当前Clash客户端不支持本机场协议」占位节点，meta 系 UA 无此问题。
+		// 用户显式配置的 UA（订阅的 UserAgent 字段）始终优先于此处默认值。
+		userAgent: "ClashMeta/2.0",
 	}
 }
 
@@ -55,19 +64,15 @@ func (c *Client) FetchWithUA(ctx context.Context, rawURL, userAgent string) ([]b
 // FetchWithMeta 在下载内容的同时解析 subscription-userinfo 响应头，
 // 机场普遍用它下发已用流量与到期时间。
 func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([]byte, UserInfo, error) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return nil, UserInfo{}, fmt.Errorf("subscription url is empty")
-	}
+	// GitHub 网页链接 → raw 直链：用户常从浏览器地址栏粘贴 /blob/ 页面，
+	// 那会下到整页 HTML，模板/订阅解析必失败；在真正请求前改写。
+	rawURL = normalizeFetchURL(rawURL)
 
-	// 只允许 http/https。订阅地址由用户提供、由服务端发起请求，
-	// 限制协议可挡掉 file:// 读本地文件、gopher:// 等协议走私手法。
-	// 注意：这里不做内网地址封禁 —— 自建订阅/局域网机场是常见正当用法，
-	// 强行封禁会破坏功能；添加订阅本身需要登录，风险边界在鉴权上。
-	if u, perr := url.Parse(rawURL); perr != nil {
-		return nil, UserInfo{}, fmt.Errorf("订阅地址无法解析: %w", perr)
-	} else if sc := strings.ToLower(u.Scheme); sc != "http" && sc != "https" {
-		return nil, UserInfo{}, fmt.Errorf("订阅地址仅支持 http/https，当前为 %q", u.Scheme)
+	// 协议限制 + 云 metadata / link-local 黑名单。
+	// RFC1918 内网故意放行：自建订阅与局域网机场是正当用法；
+	// 添加订阅需登录，风险边界主要在鉴权，但仍挡掉可读实例身份令牌的地址。
+	if err := validateFetchURL(rawURL); err != nil {
+		return nil, UserInfo{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -103,6 +108,11 @@ func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
 		return nil, info, fmt.Errorf("subscription body is empty")
+	}
+	// 仍拿到 HTML 时（私有仓库登录页、未改写的网页链）直接拒掉：
+	// 否则 YAML/模板解析会给出难懂的语法错误，掩盖真正原因。
+	if looksLikeHTMLPage(resp.Header.Get("Content-Type"), data) {
+		return nil, info, fmt.Errorf("远程地址返回的是网页而非配置正文，请改用 raw 直链（GitHub 可用 raw.githubusercontent.com）")
 	}
 	return data, info, nil
 }

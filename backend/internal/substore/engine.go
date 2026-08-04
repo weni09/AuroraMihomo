@@ -76,6 +76,17 @@ func (e *Engine) Convert(ctx context.Context, req ConvertRequest, rules []Rewrit
 	}
 	nodes = dedupeNodes(nodes)
 
+	// 部分机场不下发 subscription-userinfo 响应头（userInfo 为零值），
+	// 只在节点名里写「剩余流量：1000 GB」——从处理后的节点名兜底解析，
+	// 让订阅列表仍能显示流量与到期信息（实现见 userinfo.go）。
+	if userInfo.IsZero() {
+		names := make([]string, 0, len(nodes))
+		for _, n := range nodes {
+			names = append(names, n.Name)
+		}
+		userInfo = parseUserInfoFromNames(names)
+	}
+
 	_, rendered, err := RenderTemplate(templateName, templateContent, nodes)
 	if err != nil {
 		return nil, err

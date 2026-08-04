@@ -37,6 +37,9 @@ func newSecurityTestServer(t *testing.T, port int, dbName string) (*svc.ServiceC
 	server := rest.MustNewServer(cfg.RestConf)
 	t.Cleanup(server.Stop)
 	handler.RegisterHandlers(server, ctx)
+	// 与生产 main() 一致的认证加固：口令版本闸门（改密后旧令牌失效）。
+	// 不加这一行，TestChangePassword 的吊销断言就测不到真实路径。
+	applyAuthHardening(server, ctx)
 
 	go server.Start()
 	time.Sleep(time.Second)
@@ -167,6 +170,26 @@ func TestChangePassword(t *testing.T) {
 		t.Fatal("过短的新口令不应被接受")
 	}
 
+	// 改密前旧令牌访问受保护端点应成功（前置校验：确认令牌在改密前可用，
+	// 排除「本来就不通」的假阳性）
+	req := func(bearer string) *http.Response {
+		r, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/system/status", nil)
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatalf("请求失败: %v", err)
+		}
+		return resp
+	}
+	if resp := req(token); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("改密前旧令牌访问受保护端点应成功（前置校验），实际 %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
 	// 正常改密
 	r4 := post(true, map[string]string{"oldPassword": oldPwd, "newPassword": "brand-new-pass"})
 	_ = r4.Body.Close()
@@ -188,5 +211,32 @@ func TestChangePassword(t *testing.T) {
 	// 落库的必须是哈希，不能是明文
 	if stored == "brand-new-pass" {
 		t.Fatal("新口令不得以明文形式存储")
+	}
+
+	// —— 口令版本吊销回归 ——
+	// 改密后同一旧令牌必须 401
+	if resp := req(token); resp.StatusCode != http.StatusUnauthorized {
+		resp.Body.Close()
+		t.Fatalf("改密后旧令牌应 401，实际 %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	// 未携带令牌同样 401（rest.WithJwt 行为不变）
+	if resp := req(""); resp.StatusCode != http.StatusUnauthorized {
+		resp.Body.Close()
+		t.Fatalf("无令牌应 401，实际 %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+
+	// 新口令重新登录后，新令牌携带新版本，访问受保护端点应恢复 200。
+	// loginForToken 会覆盖 admin_password（同值哈希），不影响版本计数。
+	newToken := loginForToken(t, ctx, baseURL, "brand-new-pass")
+	if resp := req(newToken); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("新令牌访问受保护端点应 200，实际 %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
 	}
 }

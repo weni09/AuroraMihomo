@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"auroramihomo/backend/internal/auth"
 )
 
 func TestSessionBridge_EstablishAndSessionCookie(t *testing.T) {
@@ -145,8 +147,8 @@ func TestProxyHandler_InjectsAghSession(t *testing.T) {
 
 	mgr := NewManager(Config{WebAddr: host})
 	mgr.testForceRunning = true
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host }, bridge)
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), func() string { return host }, bridge)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -174,8 +176,8 @@ func TestProxyHandler_LoginHTMLRedirectWithSSO(t *testing.T) {
 
 	mgr := NewManager(Config{WebAddr: host})
 	mgr.testForceRunning = true
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host }, bridge)
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), func() string { return host }, bridge)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/login.html", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -190,7 +192,7 @@ func TestProxyHandler_LoginHTMLRedirectWithSSO(t *testing.T) {
 }
 
 func TestUserKeyFromRequest(t *testing.T) {
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	if got := UserKeyFromRequest(r, testJWTSecret); got != "1" {

@@ -32,6 +32,9 @@ func TestIntegrationAuth(t *testing.T) {
 	server := rest.MustNewServer(cfg.RestConf)
 	defer server.Stop()
 	handler.RegisterHandlers(server, ctx)
+	// 与生产 main() 一致：口令版本闸门。集成测试不发旧版本令牌，
+	// 仅保证测试环境与生产行为一致。
+	applyAuthHardening(server, ctx)
 
 	go server.Start()
 	time.Sleep(1 * time.Second) // Wait for server to start
@@ -123,6 +126,8 @@ func TestTaskStatusUpdatedAfterMergeAndReload(t *testing.T) {
 	server := rest.MustNewServer(cfg.RestConf)
 	defer server.Stop()
 	handler.RegisterHandlers(server, ctx)
+	// 与生产 main() 一致：口令版本闸门。
+	applyAuthHardening(server, ctx)
 
 	go server.Start()
 	time.Sleep(1 * time.Second)

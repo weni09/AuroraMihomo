@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 
+	"auroramihomo/backend/internal/auth"
+
 	"github.com/golang-jwt/jwt/v4"
 )
 
@@ -18,8 +20,9 @@ const sessionCookieName = "aurora_session"
 const adguardURLPrefix = "/adguard-ui"
 
 // AuthorizeRequest 校验 AdGuard 反代请求：优先 aurora_session cookie，
-// 其次 Authorization Bearer。JWT 校验方式与 aurora.verifyWSToken 一致（HMAC）。
-func AuthorizeRequest(r *http.Request, secret string) bool {
+// 其次 Authorization Bearer。JWT 校验方式与 aurora.verifyWSToken 一致（HMAC）；
+// ver 为口令版本闸门：改密后旧令牌即使签名有效也拒绝访问。
+func AuthorizeRequest(r *http.Request, secret string, ver *auth.PasswordVer) bool {
 	if r == nil || secret == "" {
 		return false
 	}
@@ -28,27 +31,24 @@ func AuthorizeRequest(r *http.Request, secret string) bool {
 		raw = strings.TrimSpace(c.Value)
 	}
 	if raw == "" {
-		if h := r.Header.Get("Authorization"); h != "" {
-			raw = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-		}
+		raw = auth.ExtractBearerToken(r)
 	}
 	if raw == "" {
 		return false
 	}
-	token, err := jwt.Parse(raw, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
-	return err == nil && token.Valid
+	claims, err := auth.ParseToken(raw, secret)
+	if err != nil {
+		return false
+	}
+	return auth.TokenVersionValid(claims, ver.Current())
 }
 
 // NewProxyHandler 返回挂在 /adguard-ui 下的同源反代（与 SPA 路由 /adguard 分离，避免刷新整页变成裸 AGH）。
 // bridge 可为 nil；非 nil 时在已登录 Aurora 的前提下注入 agh_session，实现免密进 AGH。
-func NewProxyHandler(mgr *Manager, jwtSecret string, webAddrResolver func() string, bridge *SessionBridge) http.Handler {
+// ver 为口令版本闸门（改密吊销），与 API / WS 共用同一计数器。
+func NewProxyHandler(mgr *Manager, jwtSecret string, ver *auth.PasswordVer, webAddrResolver func() string, bridge *SessionBridge) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !AuthorizeRequest(r, jwtSecret) {
+		if !AuthorizeRequest(r, jwtSecret, ver) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -398,6 +398,10 @@ func rewriteAdguardAbsolutePaths(body []byte) []byte {
 
 // aghHistoryPatchScript 拦截根路径导航，并强制 /adguard-ui 带尾斜杠，
 // 避免 href.replace(/\/[^/]*$/, "/login.html") 把 /adguard-ui 整段换成 /login.html。
+//
+// 注意 Location.href setter 必须是 raw.set.call(this, fix(String(v)))——
+// 少写 call 的右括号会在 HTML 内联脚本处直接 SyntaxError
+// （浏览器报 missing ) after argument list at adguard-ui/:1:…），整页白屏。
 func aghHistoryPatchScript() string {
 	p := adguardURLPrefix
 	return `<script>/*agh-subpath-patch*/(function(){var B="` + p + `";` +
@@ -407,7 +411,8 @@ func aghHistoryPatchScript() string {
 		`var rs=history.replaceState.bind(history);history.replaceState=function(s,t,u){return rs(s,t,fix(u));};` +
 		`try{var raw=Object.getOwnPropertyDescriptor(Location.prototype,"href");` +
 		`if(raw&&raw.set){Object.defineProperty(Location.prototype,"href",{configurable:true,enumerable:true,` +
-		`get:function(){return raw.get.call(this);},set:function(v){raw.set.call(this,fix(String(v));}});}}catch(e){}` +
+		`get:function(){return raw.get.call(this);},` +
+		`set:function(v){raw.set.call(this,fix(String(v)));}});}}catch(e){}` +
 		`try{if(location.pathname===B){history.replaceState(null,"",B+"/"+(location.search||"")+(location.hash||""));}}catch(e){}` +
 		`})();</script>`
 }

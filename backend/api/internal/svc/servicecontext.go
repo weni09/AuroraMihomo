@@ -52,7 +52,11 @@ type ServiceContext struct {
 	// 仅内存、不落盘；登出时 Clear。
 	AdGuardSSO   *adguard.SessionBridge
 	LoginLimiter *auth.LoginLimiter
-	Hub          *realtime.Hub
+	// PasswordVer 记录管理员口令版本（改密次数）。登录签发的 JWT 携带
+	// 当前值，改密 +1 后旧令牌在三处验签路径（API 闸门 / WS / AdGuard
+	// 反代）被拒绝，实现无状态 JWT 的改密吊销。
+	PasswordVer *auth.PasswordVer
+	Hub         *realtime.Hub
 	// AppLog 缓存本项目自身的运行日志（logx 的输出），供界面查看。
 	// 与 MihomoManager 的内核日志分开：一个是"本程序说的"、
 	// 一个是"内核说的"，混成一条流反而更难排查。
@@ -156,7 +160,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 			log.Fatalf("Failed to persist initial password: %v", err)
 		}
 
-		pwdFilePath := filepath.Join(dataDir, "initial_password.txt")
+		pwdFilePath := filepath.Join(dataDir, InitialPasswordFileName)
 		if err := os.WriteFile(pwdFilePath, []byte(newPwd+"\n"), 0o600); err != nil {
 			logx.Errorf("写入初始密码文件失败: %v", err)
 		}
@@ -164,7 +168,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		fmt.Println("=========================================================")
 		fmt.Printf("初始管理员密码：%s\n", newPwd)
 		fmt.Printf("同时已写入文件：%s\n", pwdFilePath)
-		fmt.Println("该密码仅此次显示，请登录后尽快修改。")
+		fmt.Println("该密码仅此次显示；成功登录或改密后会自动删除上述文件。")
 		fmt.Println("=========================================================")
 	}
 
@@ -317,11 +321,31 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		return aghWebAddr
 	})
 	// 永久接管：AGH 口令 AES-GCM 加密落 settings，主密钥用 JWT AccessSecret
-	aghSSO.SetCredStore(service.NewAGHCredStore(db, c.Auth.AccessSecret))
+	credStore := service.NewAGHCredStore(db, c.Auth.AccessSecret)
+	aghSSO.SetCredStore(credStore)
 	if err := aghSSO.HydrateFromStore(); err != nil {
 		logx.Errorf("加载 AdGuard 免密凭据失败: %v", err)
 	}
 	aghSSO.SetUsername(aghSvc.AdminUsername())
+	// 存量：首次安装写了 initial_admin_password.txt 但未落 sso_password_enc 时，
+	// 反代无法免密，iframe 一直停在 AGH 登录页，用户会以为「没启动」。
+	// 仅当库中尚无密文时从该文件补写，避免覆盖用户后来在设置里改过的口令。
+	if _, encPass, lErr := credStore.Load(); lErr == nil && strings.TrimSpace(encPass) == "" {
+		passFile := filepath.Join(dataDir, "adguardhome", "initial_admin_password.txt")
+		if b, rErr := os.ReadFile(passFile); rErr == nil {
+			if p := strings.TrimSpace(string(b)); p != "" {
+				user := aghSvc.AdminUsername()
+				if user == "" {
+					user = "admin"
+				}
+				if err := aghSSO.PersistCredentials(user, p); err != nil {
+					logx.Errorf("从 initial_admin_password 补写 AGH 免密凭据失败: %v", err)
+				} else {
+					logx.Info("已从 initial_admin_password.txt 补写 AdGuard 免密凭据")
+				}
+			}
+		}
+	}
 	aghSvc.SetSSO(aghSSO)
 	// 无 TProxy 时模式 2 使用独立 DNS 重定向表；与透明代理共用 Linux 上的 Applier。
 	if dnsRedirApplier != nil {
@@ -332,21 +356,14 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	aghSvc.RestoreWiringOverrideOnBoot()
 	// enabled_at_boot 且二进制在盘：后台拉起，不阻塞面板启动。
 	// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
-	// 注意：必须用 AdGuardService.Start（会维护期望态），不要只调 Manager。
+	// StartWithBootRetry：先让出 ~800ms，失败则有限次指数退避重试（见 service 包常量）。
 	if aghSvc.ShouldStartAtBoot() {
 		go func() {
-			// 稍晚于 HTTP 监听就绪，减少与其它启动任务抢资源；
-			// 仍受 45s 总超时约束。
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			// 总预算覆盖：初始等待 + 最多 3 次 Start + 2s/4s 退避，留余量给慢盘。
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			// 短暂让出：数据库/mihomo 先就绪
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(800 * time.Millisecond):
-			}
-			if err := aghSvc.Start(ctx); err != nil {
-				logx.Errorf("AdGuard Home 开机自启失败: %v", err)
+			if err := aghSvc.StartWithBootRetry(ctx); err != nil {
+				logx.Errorf("AdGuard Home 开机自启最终失败: %v", err)
 			} else {
 				logx.Info("AdGuard Home 已按 enabled_at_boot 启动")
 			}
@@ -386,10 +403,28 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		AdGuardSSO:         aghSSO,
 		// 5 分钟内失败 5 次锁定 15 分钟，抵御口令爆破
 		LoginLimiter: auth.NewLoginLimiter(5, 5*time.Minute, 15*time.Minute),
-		Hub:          hub,
-		AppLog:       appLogBuf,
-		AppLogPath:   appLogPath,
+		// 口令版本：登录签发进 JWT，改密 +1 后旧令牌立即失效。
+		// 从 settings 恢复（见 initPasswordVer），进程内并发安全。
+		PasswordVer: initPasswordVer(db),
+		Hub:         hub,
+		AppLog:      appLogBuf,
+		AppLogPath:  appLogPath,
 	}
+}
+
+// initPasswordVer 从 settings 表恢复口令版本计数。
+// 缺失或解析失败按 0 处理：未改密过的存量部署平滑升级，
+// 旧令牌（无 ver 声明）不会被误踢下线。
+func initPasswordVer(db *repository.Database) *auth.PasswordVer {
+	ver := int64(0)
+	if v, err := db.GetSetting("admin_password_ver"); err == nil && strings.TrimSpace(v) != "" {
+		if parsed, perr := strconv.ParseInt(strings.TrimSpace(v), 10, 64); perr == nil {
+			ver = parsed
+		} else {
+			logx.Errorf("口令版本设置无法解析 %q: %v", v, perr)
+		}
+	}
+	return auth.NewPasswordVer(ver)
 }
 
 // setupAppLog 把应用自身日志接入内存缓冲、文件与实时推送。
@@ -440,4 +475,21 @@ func mustRandomToken(n int) string {
 		log.Fatalf("Failed to generate random token: %v", err)
 	}
 	return t
+}
+
+// InitialPasswordFileName 首次启动写入的明文初始密码文件名。
+// 登录成功或改密后应删除，避免明文长期留在数据卷。
+const InitialPasswordFileName = "initial_password.txt"
+
+// RemoveInitialPasswordFile 删除 dataDir 下的初始密码明文文件。
+// 文件不存在时静默忽略；其它错误只记日志，不让登录/改密失败。
+func RemoveInitialPasswordFile(dataDir string) {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	path := filepath.Join(dataDir, InitialPasswordFileName)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		logx.Errorf("删除初始密码文件失败 path=%s: %v", path, err)
+	}
 }

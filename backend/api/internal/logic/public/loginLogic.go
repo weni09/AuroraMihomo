@@ -27,11 +27,13 @@ func NewLoginLogic(ctx context.Context, svcCtx *svc.ServiceContext) *LoginLogic 
 	return &LoginLogic{Logger: logx.WithContext(ctx), ctx: ctx, svcCtx: svcCtx}
 }
 
-func (l *LoginLogic) getJwtToken(secretKey string, iat, seconds, uid int64) (string, error) {
+func (l *LoginLogic) getJwtToken(secretKey string, iat, seconds, uid, ver int64) (string, error) {
 	claims := jwt.MapClaims{
 		"exp": iat + seconds,
 		"iat": iat,
 		"uid": uid,
+		// 口令版本：改密 +1 后所有旧令牌立即失效（见 auth.PasswordVer）。
+		"ver": ver,
 	}
 	token := jwt.New(jwt.SigningMethodHS256)
 	token.Claims = claims
@@ -70,11 +72,13 @@ func (l *LoginLogic) Login(req *types.LoginReq, r *http.Request) (resp *types.Lo
 		}
 	}
 
-	// 初始密码文件按用户要求保留：登录成功后不再自动删除，
-	// 方便随时查回。代价是明文会长期留在数据卷里，
-	// 因此建议尽快改密码并手动删除该文件。
+	// 登录成功即删除 initial_password.txt：调用方已证明掌握口令，
+	// 明文再留在数据卷里只增加被同机其它进程/备份读走的面。
+	// 改密路径也会再删一次，见 changePasswordLogic。
+	svc.RemoveInitialPasswordFile(l.svcCtx.Config.Mihomo.ConfigDir)
+
 	now := time.Now().Unix()
-	tokenStr, err := l.getJwtToken(l.svcCtx.Config.Auth.AccessSecret, now, l.svcCtx.Config.Auth.AccessExpire, 1)
+	tokenStr, err := l.getJwtToken(l.svcCtx.Config.Auth.AccessSecret, now, l.svcCtx.Config.Auth.AccessExpire, 1, l.svcCtx.PasswordVer.Current())
 	if err != nil {
 		return nil, err
 	}
@@ -130,33 +134,7 @@ func clientIP(r *http.Request, trustedProxies []string) string {
 	return direct
 }
 
-// isTrustedProxy 判断直连来源是否在可信代理白名单内，支持单 IP 与 CIDR
+// isTrustedProxy 委托给 auth 包，与 Cookie Secure 等共用同一信任模型。
 func isTrustedProxy(ip string, trusted []string) bool {
-	if len(trusted) == 0 {
-		return false
-	}
-	parsed := net.ParseIP(ip)
-	for _, entry := range trusted {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if strings.Contains(entry, "/") {
-			_, network, err := net.ParseCIDR(entry)
-			if err != nil || parsed == nil {
-				continue
-			}
-			if network.Contains(parsed) {
-				return true
-			}
-			continue
-		}
-		if entry == ip {
-			return true
-		}
-		if other := net.ParseIP(entry); other != nil && parsed != nil && other.Equal(parsed) {
-			return true
-		}
-	}
-	return false
+	return auth.IsTrustedProxy(ip, trusted)
 }

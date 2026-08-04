@@ -8,18 +8,21 @@ import (
 	"testing"
 	"time"
 
+	"auroramihomo/backend/internal/auth"
+
 	"github.com/golang-jwt/jwt/v4"
 )
 
 const testJWTSecret = "test-adguard-proxy-secret-32b!!"
 
-func signTestJWT(t *testing.T, secret string, expOffset time.Duration) string {
+func signTestJWT(t *testing.T, secret string, expOffset time.Duration, ver int64) string {
 	t.Helper()
 	now := time.Now().Unix()
 	claims := jwt.MapClaims{
 		"exp": now + int64(expOffset.Seconds()),
 		"iat": now,
 		"uid": 1,
+		"ver": ver,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	s, err := tok.SignedString([]byte(secret))
@@ -31,7 +34,7 @@ func signTestJWT(t *testing.T, secret string, expOffset time.Duration) string {
 
 func TestAuthorizeRequest_NoCredentials(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	if AuthorizeRequest(r, testJWTSecret) {
+	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("expected unauthorized without cookie/bearer")
 	}
 }
@@ -39,30 +42,76 @@ func TestAuthorizeRequest_NoCredentials(t *testing.T) {
 func TestAuthorizeRequest_InvalidCookie(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "not-a-jwt"})
-	if AuthorizeRequest(r, testJWTSecret) {
+	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("expected unauthorized for invalid cookie")
 	}
 }
 
 func TestAuthorizeRequest_ValidCookieAndBearer(t *testing.T) {
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	rCookie := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	rCookie.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
-	if !AuthorizeRequest(rCookie, testJWTSecret) {
+	if !AuthorizeRequest(rCookie, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("valid cookie should authorize")
 	}
 
 	rBearer := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	rBearer.Header.Set("Authorization", "Bearer "+token)
-	if !AuthorizeRequest(rBearer, testJWTSecret) {
+	if !AuthorizeRequest(rBearer, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("valid bearer should authorize")
+	}
+}
+
+// 改密（口令版本 +1）后，签名有效但版本落后的令牌必须被拒绝；
+// 版本匹配的令牌照常放行。
+func TestAuthorizeRequest_StaleVersionRejected(t *testing.T) {
+	stale := signTestJWT(t, testJWTSecret, time.Hour, 0)
+	fresh := signTestJWT(t, testJWTSecret, time.Hour, 2)
+
+	ver := auth.NewPasswordVer(2)
+
+	rStale := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
+	rStale.AddCookie(&http.Cookie{Name: sessionCookieName, Value: stale})
+	if AuthorizeRequest(rStale, testJWTSecret, ver) {
+		t.Fatal("版本落后的旧令牌必须被拒绝")
+	}
+
+	rFresh := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
+	rFresh.AddCookie(&http.Cookie{Name: sessionCookieName, Value: fresh})
+	if !AuthorizeRequest(rFresh, testJWTSecret, ver) {
+		t.Fatal("版本匹配的令牌应放行")
+	}
+}
+
+// 无 ver 声明的存量令牌（升级前签发）：未改密（版本 0）放行，
+// 改密后（版本 ≥1）拒绝。
+func TestAuthorizeRequest_MissingVersionClaim(t *testing.T) {
+	now := time.Now().Unix()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"exp": now + 3600,
+		"iat": now,
+		"uid": 1,
+	})
+	s, err := tok.SignedString([]byte(testJWTSecret))
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: s})
+
+	if !AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
+		t.Fatal("未改密时存量令牌应放行")
+	}
+	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(1)) {
+		t.Fatal("改密后存量令牌必须被拒绝")
 	}
 }
 
 func TestProxyHandler_NoCookie_401(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), nil, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil))
@@ -73,7 +122,7 @@ func TestProxyHandler_NoCookie_401(t *testing.T) {
 
 func TestProxyHandler_InvalidCookie_401(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage.token.value"})
@@ -104,8 +153,8 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: host})
 	mgr.testForceRunning = true
 
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return host }, nil)
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), func() string { return host }, nil)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "http://panel.example/adguard-ui/control/status?x=1", nil)
 	req.Host = "panel.example"
@@ -141,8 +190,8 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 
 func TestProxyHandler_NotRunning_503(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "127.0.0.1:1"})
-	h := NewProxyHandler(mgr, testJWTSecret, nil, nil)
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), nil, nil)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -207,8 +256,8 @@ func TestIsLoopbackHost(t *testing.T) {
 func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	mgr := NewManager(Config{WebAddr: "8.8.8.8:53"})
 	mgr.testForceRunning = true
-	h := NewProxyHandler(mgr, testJWTSecret, func() string { return "8.8.8.8:53" }, nil)
-	token := signTestJWT(t, testJWTSecret, time.Hour)
+	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), func() string { return "8.8.8.8:53" }, nil)
+	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -239,6 +288,46 @@ func TestRewriteAdguardAbsolutePaths_InjectsBaseAndHistoryPatch(t *testing.T) {
 	out2 := string(rewriteAdguardAbsolutePaths([]byte(out)))
 	if strings.Contains(out2, "/adguard-ui/adguard-ui/") {
 		t.Fatalf("double prefix: %s", out2)
+	}
+}
+
+// 曾漏写 raw.set.call 的右括号，浏览器在 adguard-ui/ 文档内直接 SyntaxError 白屏。
+func TestAghHistoryPatchScript_BalancedCallParens(t *testing.T) {
+	s := aghHistoryPatchScript()
+	if !strings.Contains(s, `raw.set.call(this,fix(String(v)));`) {
+		t.Fatalf("Location.href setter 缺少 call 的闭合括号，脚本会 SyntaxError:\n%s", s)
+	}
+	// 旧错误写法不得再出现
+	if strings.Contains(s, `raw.set.call(this,fix(String(v));}`) {
+		t.Fatal("仍含有缺少 ) 的旧 setter 写法")
+	}
+	// 粗检：script 内 () 与 {} 成对（字符串里的括号忽略要求不高，此脚本无嵌套引号陷阱）
+	depthParen, depthBrace := 0, 0
+	body := s
+	if i := strings.Index(body, ">"); i >= 0 {
+		body = body[i+1:]
+	}
+	body = strings.TrimSuffix(body, "</script>")
+	for _, r := range body {
+		switch r {
+		case '(':
+			depthParen++
+		case ')':
+			depthParen--
+			if depthParen < 0 {
+				t.Fatal("多余的 )")
+			}
+		case '{':
+			depthBrace++
+		case '}':
+			depthBrace--
+			if depthBrace < 0 {
+				t.Fatal("多余的 }")
+			}
+		}
+	}
+	if depthParen != 0 || depthBrace != 0 {
+		t.Fatalf("括号不平衡 paren=%d brace=%d", depthParen, depthBrace)
 	}
 }
 

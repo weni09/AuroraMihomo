@@ -286,7 +286,9 @@ func (s *ConfigService) loadRewriteRules() []substore.RewriteRule {
 // persistSubscriptionCache 把转换结果里的节点缓存与流量信息落库。
 //
 // cached_nodes 供分享链路（RenderService）直接复用，免得每次访问分享
-// 链接都回源上游；流量信息来自机场下发的 subscription-userinfo。
+// 链接都回源上游；流量信息优先来自机场下发的 subscription-userinfo
+// 响应头，未下发时由 substore 从节点名兜底解析（「剩余流量：1000 GB」
+// 类写法，见 substore/userinfo.go）。
 // 由「刷新缓存」与配置合并两条路径共用，避免两处各写一遍而产生分歧。
 func (s *ConfigService) persistSubscriptionCache(subID int64, res *substore.ConvertResult) {
 	if res == nil {
