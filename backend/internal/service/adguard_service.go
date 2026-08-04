@@ -297,7 +297,7 @@ func (s *AdGuardService) startWithBootRetry(ctx context.Context, initialDelay ti
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
-				return fmt.Errorf("开机自启取消（已失败 %d 次，末次: %v）: %w", attempt-1, lastErr, err)
+				return fmt.Errorf("开机自启取消（已失败 %d 次，末次: %s）: %w", attempt-1, lastErr.Error(), err)
 			}
 			return fmt.Errorf("开机自启取消: %w", err)
 		}
@@ -325,7 +325,7 @@ func (s *AdGuardService) startWithBootRetry(ctx context.Context, initialDelay ti
 		delay := retryBase * time.Duration(1<<(attempt-1))
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("开机自启取消（重试等待中，末次: %v）: %w", lastErr, ctx.Err())
+			return fmt.Errorf("开机自启取消（重试等待中，末次: %s）: %w", lastErr.Error(), ctx.Err())
 		case <-time.After(delay):
 		}
 	}

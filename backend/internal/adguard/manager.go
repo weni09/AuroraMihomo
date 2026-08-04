@@ -364,7 +364,11 @@ func (m *Manager) webPortOpen() bool {
 			return false
 		}
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 400*time.Millisecond)
+	// noctx 要求 DialContext 而非 DialTimeout（后者默认绑定 Background，
+	// 无法感知上层取消）；这里本就无法用上层 ctx（Start/Status 路径都可能
+	// 同步调用），显式 Background + 400ms 超时与旧行为等价。
+	d := net.Dialer{Timeout: 400 * time.Millisecond}
+	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return false
 	}

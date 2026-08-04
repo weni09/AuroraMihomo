@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func TestPublicFileRejectsJSTemplate(t *testing.T) {
 	if err == nil {
 		t.Fatal("公开 JS 模板应被拒绝")
 	}
-	if err != ErrPublicJSTemplate {
+	if !errors.Is(err, ErrPublicJSTemplate) {
 		t.Fatalf("期望 ErrPublicJSTemplate，实际 %v", err)
 	}
 
