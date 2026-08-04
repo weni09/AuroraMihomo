@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"auroramihomo/backend/internal/model"
 )
@@ -289,5 +290,86 @@ func TestUpdateSubscriptionDoesNotClobberBackgroundFields(t *testing.T) {
 	if after.Upload != 1111 || after.Download != 2222 || after.Total != 3333 {
 		t.Errorf("后台写入的流量统计不应被用户编辑覆盖，实际 up=%d down=%d total=%d",
 			after.Upload, after.Download, after.Total)
+	}
+}
+
+// MarkTaskRun 对不存在的任务名应建账本行（settings 驱动的 auto_update 等）
+func TestMarkTaskRunCreatesLedgerWhenMissing(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.MarkTaskRun("auto_update", "ok", "done", time.Time{}); err != nil {
+		t.Fatalf("MarkTaskRun: %v", err)
+	}
+	rows, err := db.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *model.Task
+	for i := range rows {
+		if rows[i].Name == "auto_update" {
+			found = &rows[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("应补建 auto_update 账本行")
+	}
+	if found.Status != "ok" || found.LastRun.IsZero() {
+		t.Fatalf("账本字段异常: %+v", found)
+	}
+	// 二次写入应更新而非再建
+	if err := db.MarkTaskRun("auto_update", "error", "fail", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = db.ListTasks()
+	n := 0
+	for _, r := range rows {
+		if r.Name == "auto_update" {
+			n++
+			if r.Status != "error" || r.Message != "fail" {
+				t.Fatalf("二次写入未覆盖: %+v", r)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("应只有 1 条 auto_update，实际 %d", n)
+	}
+}
+
+// PromoteTaskLedger 把旧 version_check 的 LastRun 迁到 auto_update
+func TestPromoteTaskLedgerFromVersionCheck(t *testing.T) {
+	db := newTestDB(t)
+	old := time.Date(2026, 8, 4, 4, 0, 11, 0, time.Local)
+	if err := db.DB.Create(&model.Task{
+		Name: "version_check", Enabled: 0, LastRun: old, Status: "ok",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PromoteTaskLedger("version_check", "auto_update"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := db.ListTasks()
+	var au *model.Task
+	for i := range rows {
+		if rows[i].Name == "auto_update" {
+			au = &rows[i]
+		}
+	}
+	if au == nil {
+		t.Fatal("应创建 auto_update 账本")
+	}
+	if !au.LastRun.Equal(old) {
+		t.Fatalf("LastRun 未迁移: got %v want %v", au.LastRun, old)
+	}
+	// to 已有更新记录时不覆盖
+	newer := old.Add(time.Hour)
+	_ = db.DB.Model(au).Updates(map[string]interface{}{"last_run": newer, "status": "ok"})
+	if err := db.PromoteTaskLedger("version_check", "auto_update"); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = db.ListTasks()
+	for _, r := range rows {
+		if r.Name == "auto_update" && !r.LastRun.Equal(newer) {
+			t.Fatalf("不应被旧 version_check 覆盖: %v", r.LastRun)
+		}
 	}
 }

@@ -639,17 +639,79 @@ func (r *Database) DeleteTask(name string) error {
 	return r.DB.Where("name = ?", name).Delete(&model.Task{}).Error
 }
 
-// MarkTaskRun 记录任务执行结果
+// MarkTaskRun 记录任务执行结果。
+// 行不存在时补建一条账本记录：settings 驱动的调度任务（auto_update 等）
+// 不在启动时 Upsert 进表，但仍需 LastRun 供控制台展示。
 func (r *Database) MarkTaskRun(name, status, message string, nextRun time.Time) error {
+	now := time.Now()
 	updates := map[string]interface{}{
-		"last_run": time.Now(),
+		"last_run": now,
 		"status":   status,
 		"message":  message,
 	}
 	if !nextRun.IsZero() {
 		updates["next_run"] = nextRun
 	}
-	return r.DB.Model(&model.Task{}).Where("name = ?", name).Updates(updates).Error
+	res := r.DB.Model(&model.Task{}).Where("name = ?", name).Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		return nil
+	}
+	row := model.Task{
+		Name:    name,
+		Cron:    "",
+		Enabled: 0, // 启用态由 settings/调度器决定，账本行不代表开关
+		LastRun: now,
+		Status:  status,
+		Message: message,
+	}
+	if !nextRun.IsZero() {
+		row.NextRun = nextRun
+	}
+	return r.DB.Create(&row).Error
+}
+
+// PromoteTaskLedger 把 fromName 的最近执行痕迹迁到 toName（仅当 from 有 LastRun，
+// 且 to 没有更新的记录时）。用于下线旧任务名时保留控制台「上次执行」展示。
+// 用 Find 而非 First：空结果不记 gorm「record not found」噪音日志。
+func (r *Database) PromoteTaskLedger(fromName, toName string) error {
+	if fromName == "" || toName == "" || fromName == toName {
+		return nil
+	}
+	var fromRows []model.Task
+	if err := r.DB.Where("name = ?", fromName).Limit(1).Find(&fromRows).Error; err != nil {
+		return err
+	}
+	if len(fromRows) == 0 || fromRows[0].LastRun.IsZero() {
+		return nil
+	}
+	from := fromRows[0]
+
+	var toRows []model.Task
+	if err := r.DB.Where("name = ?", toName).Limit(1).Find(&toRows).Error; err != nil {
+		return err
+	}
+	if len(toRows) == 0 {
+		return r.DB.Create(&model.Task{
+			Name:    toName,
+			Enabled: 0,
+			LastRun: from.LastRun,
+			Status:  from.Status,
+			Message: from.Message,
+		}).Error
+	}
+	to := toRows[0]
+	// to 已有不早于 from 的记录：保留 to，避免用旧痕迹覆盖
+	if !to.LastRun.IsZero() && !to.LastRun.Before(from.LastRun) {
+		return nil
+	}
+	return r.DB.Model(&model.Task{}).Where("id = ?", to.ID).Updates(map[string]interface{}{
+		"last_run": from.LastRun,
+		"status":   from.Status,
+		"message":  from.Message,
+	}).Error
 }
 
 // ---- Mihomo State (设计 §6) ----

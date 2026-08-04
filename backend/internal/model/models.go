@@ -205,7 +205,10 @@ type SubFile struct {
 }
 
 // Task 设计 §5：后台任务调度记录
-// 任务名：subscription_update / config_merge / mihomo_reload / version_check
+// 常驻登记：config_merge / mihomo_reload（on-demand）。
+// settings 驱动任务（auto_update / applog_cleanup / remote_config_pull /
+// adguard_auto_update）以虚拟项列出，表内仅作 LastRun 账本；
+// version_check / subscription_update 已下线，启动时清理。
 type Task struct {
 	ID      int64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name    string    `gorm:"index" json:"name"`

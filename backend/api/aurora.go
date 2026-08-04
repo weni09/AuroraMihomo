@@ -87,7 +87,8 @@ func main() {
 				// 且这次任务并未真正跑完，不该标记成功
 				return
 			}
-			_ = svcCtx.Database.MarkTaskRun("version_check", "ok", "", time.Time{})
+			// 与控制台「组件自动更新」同名；version_check 已下线（见 ServiceContext 启动清理）
+			_ = svcCtx.Database.MarkTaskRun("auto_update", "ok", "", time.Time{})
 			svcCtx.Hub.Publish("task.progress", map[string]any{"name": "auto_update", "percent": 100})
 		})
 	})

@@ -382,9 +382,14 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// subscription_update（每分钟按订阅 interval 轮询）已随定时拉取的统一而移除，
 	// 清掉存量记录，否则任务列表里会一直显示一个永不执行的任务。
 	_ = db.DeleteTask("subscription_update")
+	// version_check 是旧名：启动时用 yaml AutoUpdate.Enabled 登记，与系统设置里的
+	// auto_update 双轨，常出现「版本检查已关闭、组件自动更新已开启」。真实调度
+	// 只走 Settings + Scheduler 的 auto_update；成功执行改记 auto_update 账本。
+	// 先把旧行的 LastRun 迁到 auto_update，再删，避免控制台丢「上次执行」痕迹。
+	_ = db.PromoteTaskLedger("version_check", "auto_update")
+	_ = db.DeleteTask("version_check")
 	_ = db.UpsertTask("config_merge", "on-demand", true)
 	_ = db.UpsertTask("mihomo_reload", "on-demand", true)
-	_ = db.UpsertTask("version_check", c.AutoUpdate.Cron, c.AutoUpdate.Enabled)
 
 	return &ServiceContext{
 		Config:             c,
