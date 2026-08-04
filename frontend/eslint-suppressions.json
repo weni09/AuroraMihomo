@@ -1,9 +1,4 @@
 {
-  "src/api.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
   "src/components/PipelineEditor.vue": {
     "@typescript-eslint/no-explicit-any": {
       "count": 5
@@ -21,7 +16,7 @@
   },
   "src/stores/config.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 8
+      "count": 2
     }
   },
   "src/stores/configlab.ts": {
@@ -31,22 +26,12 @@
   },
   "src/stores/files.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 3
+      "count": 2
     }
   },
   "src/stores/preview.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 2
-    }
-  },
-  "src/stores/settings.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 4
-    }
-  },
-  "src/stores/shares.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 4
+      "count": 1
     }
   },
   "src/stores/subscription.ts": {
@@ -72,16 +57,6 @@
   "src/views/FilesView.vue": {
     "@typescript-eslint/no-explicit-any": {
       "count": 15
-    }
-  },
-  "src/views/LoginView.vue": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 1
-    }
-  },
-  "src/views/SettingsView.vue": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 2
     }
   },
   "src/views/SubscriptionsView.vue": {
