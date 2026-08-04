@@ -202,7 +202,7 @@ const logout = async () => {
     <!-- 遮罩：仅窄屏抽屉展开时出现，点击关闭 -->
     <div
       v-if="drawerOpen && !isLogin"
-      class="fixed inset-0 z-30 bg-slate-900/60 lg:hidden"
+      class="fixed inset-0 z-30 bg-black/60 lg:hidden"
       aria-hidden="true"
       @click="closeDrawer"
     ></div>

@@ -194,7 +194,10 @@
     @apply bg-accent-solid/10 text-accent-solid dark:bg-accent-solid/15;
   }
   .tint-neutral {
-    @apply bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200;
+    /* 中性徽标对应 shadcn 的 muted 语义（--muted=--c-elevated，
+       --muted-foreground=--c-fg-muted）；深色下 elevated=slate-700、
+       fg=slate-200，与原先的 slate 字面值等价。 */
+    @apply bg-elevated text-fg-muted dark:bg-elevated dark:text-fg;
   }
 
   /**
