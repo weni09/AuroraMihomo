@@ -54,7 +54,13 @@ function syncZashboardBackend(host: string, port: string, secret: string) {
           : `aurora-${Date.now()}`
       const entry: ZashboardBackend = {
         uuid: id,
-        type: 'http',
+        // zashboard 的类型体系只有 clash / singbox 两类，协议由 protocol
+        // 字段决定（见其 SetupPage 默认值 {type:'clash',protocol:'http'}）。
+        // 此前误写 type:'http' 且漏写 protocol，zashboard 拼请求地址时
+        // 得到 undefined://host:port，全部 API 请求失败（手机端首次配置
+        // 必踩，桌面端靠旧记录侥幸正常）。这里对齐向导结构。
+        type: 'clash',
+        protocol: 'http',
         host,
         port,
         password: secret,
@@ -71,13 +77,22 @@ function syncZashboardBackend(host: string, port: string, secret: string) {
     if (!cur) {
       cur = {
         uuid,
-        type: 'http',
+        type: 'clash',
+        protocol: 'http',
         host,
         port,
         password: secret,
         label: 'AuroraMihomo 本地内核',
       }
       list.push(cur)
+    }
+
+    // 兼容此前写入的坏记录（type 非法或缺 protocol）：非 singbox 一律收敛
+    // 为 clash + http，否则 zashboard 继续用 undefined 协议拼地址报错。
+    // singbox 记录保留用户手动配置的协议。
+    if (cur.type !== 'singbox') {
+      cur.type = 'clash'
+      cur.protocol = 'http'
     }
 
     if (cur.host === host && cur.port === port && (cur.password || '') === secret) {
