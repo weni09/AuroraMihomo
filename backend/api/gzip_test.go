@@ -150,3 +150,49 @@ func TestAcceptsGzip(t *testing.T) {
 		}
 	}
 }
+
+// 静态资源缓存策略：/assets/ 构建产物内容寻址可长缓存（immutable），
+// index.html 与 SPA 回退必须可重验。这是手机端「反复白屏刷新多次才出」
+// 的关键修复——此前无 Cache-Control，zashboard 30+ 资源每次全部重验。
+func TestCachedFileServer(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(name, content string) {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("assets/index-abc123.js", "console.log(1)")
+	mustWrite("index.html", "<!doctype html><title>aurora</title>")
+
+	handler := spaFileSystemServer("", func() http.FileSystem {
+		return http.Dir(dir)
+	})
+
+	t.Run("assets 产物 immutable 长缓存", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/index-abc123.js", nil))
+		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("期望 immutable 长缓存，实际 %q", got)
+		}
+	})
+
+	t.Run("index.html no-cache 可重验", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("期望 no-cache，实际 %q", got)
+		}
+	})
+
+	t.Run("SPA 回退 no-cache 可重验", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/some/route", nil))
+		if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("期望 no-cache，实际 %q", got)
+		}
+	})
+}

@@ -551,7 +551,11 @@ func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handle
 				return
 			}
 			if adguardHandler != nil {
-				adguardHandler.ServeHTTP(w, r)
+				// AGH 前端资源同样压缩：反代响应与静态资源共享同源
+				// 6 连接池，AGH 的 JS/CSS 裸传会拖慢 zashboard/管理端
+				// 首屏（gzip.go 的流式安全同样适用：text/event-stream
+				// 不在可压缩类型里，AGH 日志流不受影响）。
+				staticGzipHandler(adguardHandler).ServeHTTP(w, r)
 				return
 			}
 			http.Error(w, "adguard proxy unavailable", http.StatusServiceUnavailable)
