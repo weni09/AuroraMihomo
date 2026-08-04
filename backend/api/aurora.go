@@ -574,7 +574,9 @@ func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handle
 			}
 		}
 
-		static.ServeHTTP(w, r)
+		// 静态资源（管理端 public/ 与 /ui zashboard）套 gzip：
+		// 主 bundle 1.16MB 裸传是手机弱网首屏慢的主因（详见 gzip.go）。
+		staticGzipHandler(static).ServeHTTP(w, r)
 	})
 }
 
