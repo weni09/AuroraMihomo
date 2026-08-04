@@ -47,6 +47,15 @@ Thumbs.db
 # 对仓库使用者没有价值，也不构成项目文档。
 .zcode/
 
+# Claude Code 本机覆盖（权限审批、本机记忆）；团队共享配置在 .claude/settings.json
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Claude skills 是指向 .agents/skills/ 的本机联接（见 scripts/setup-claude-desktop.sh）
+# 只提交 .claude/skills/README.md，避免把源目录再复制进 git
+.claude/skills/*
+!.claude/skills/README.md
+
 # Go
 vendor/
 *.test
@@ -59,3 +68,20 @@ coverage.*
 
 # git worktrees (local isolated checkouts)
 .worktrees/
+
+# 临时诊断/部署脚本与一次性补丁（会话产物，不随发版）
+/tmp_*
+scripts/patch_129_*.py
+
+# 构建产物与备份包
+*.tar.gz
+*.tgz
+/auroramihomo-linux-amd64
+/bin/
+/node_modules/
+
+# 本机 AI 会话状态
+.superpowers/
+
+# Python 缓存
+__pycache__/

@@ -10,7 +10,14 @@ endif
 CONFIG := backend/api/etc/aurora-api.yaml
 IMAGE := auroramihomo:latest
 
-VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || echo "dev")
+# 版本注入：
+# - 精确命中 git tag 且工作树干净（真发布版）：直接用 tag 名，稳定可追溯；
+# - 其余情况（非 tag 提交、或 tag 上仍有未提交改动）：dev + 编译时刻（到秒），
+#   每次构建可区分。tag 上带脏工作树也按开发版处理——否则「tag 名 + 未发布的
+#   改动」会被误认成已发布的正式版（git describe --exact-match 只看 HEAD 是否
+#   落在 tag 提交上，看不出工作树里还有没提交的东西）。
+# 外部可通过 `make VERSION=xxx build` 覆盖（?= 语义），CI 发版即这样传参。
+VERSION ?= $(shell if git describe --tags --exact-match >/dev/null 2>&1 && test -z "$$(git status --porcelain)"; then git describe --tags --exact-match; else echo "dev-$(shell date +%Y%m%d%H%M%S)"; fi)
 LDFLAGS := -w -s -X 'auroramihomo/backend/internal/version.AppVersion=$(VERSION)'
 
 .PHONY: help
