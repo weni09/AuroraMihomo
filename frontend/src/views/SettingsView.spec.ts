@@ -289,9 +289,14 @@ describe('SettingsView 自定义防火墙规则', () => {
     await saveBtn!.trigger('click')
 
     await vi.waitFor(() => {
-      expect(mockedApi.put).toHaveBeenCalledWith('/transparent/rules', {
-        customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN',
-      })
+      expect(mockedApi.put).toHaveBeenCalledWith(
+        '/transparent/rules',
+        {
+          customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN',
+        },
+        // transparent store 对这类后台保存统一跳过错误 toast（拦截器不再弹第二遍）
+        { skipErrorToast: true },
+      )
     })
 
     wrapper.unmount()

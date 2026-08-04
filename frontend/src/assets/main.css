@@ -325,9 +325,16 @@
  * 分享格式下拉、流量进度条、多个操作按钮，复制一份意味着此后每次改动都要
  * 同步两处，很快就会不一致。这里模板只有一份，列名取 td 的 data-label。
  *
+ * 断点取 1279px 而非 1023px：订阅表 7 列在桌面形态下的实际总宽约 1400px
+ * （操作列固定 16rem 还带按钮），1024-1280px 视口（常见笔记本/半屏窗口）
+ * 放不下，表格被外层 Card 的 overflow-hidden 裁掉，最右侧的操作列
+ * 「编辑/预览/更多」就看不到了。把卡片形态延伸到 1280px 以下，
+ * 该区间改用卡片布局后操作列必然可见；≥1280px 才用桌面表格。
+ * 溢出兜底见 Table.vue 的 overflow-x-auto 容器。
+ *
  * 用法：table 加 .responsive-table，每个 td 加 data-label="列名"。
  */
-@media (max-width: 1023px) {
+@media (max-width: 1279px) {
   .responsive-table,
   .responsive-table tbody,
   .responsive-table tr,

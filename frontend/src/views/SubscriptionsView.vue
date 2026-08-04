@@ -2,6 +2,7 @@
 import { subStatusLabel } from '../utils/labels'
 import { onMounted, reactive, ref } from 'vue'
 import { useSubscriptionStore } from '../stores/subscription'
+import type { ProbeCandidate } from '../stores/subscription'
 import { usePreviewStore } from '../stores/preview'
 import PipelineEditor from '../components/PipelineEditor.vue'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -69,11 +70,22 @@ onMounted(async () => {
   await store.fetchSubscriptions()
 })
 
-// 弹窗关闭时一并清空表单与预览结果，避免下次打开时残留上一次的草稿或预览内容
+// 弹窗关闭时一并清空表单、预览与探测结果，避免下次打开时残留
+// 上一次的草稿、预览内容或探测候选（探测结果属于旧 URL，留着会误导）
 const closeDialog = () => {
   dialogOpen.value = false
   resetForm()
   preview.close()
+  resetProbe()
+}
+
+// 清空流量参数探测状态：关闭弹窗与「应用」后都会调用
+const resetProbe = () => {
+  probeShown.value = false
+  probe.candidates = []
+  probe.bestUrl = ''
+  probe.error = ''
+  probe.loading = false
 }
 
 const openCreate = () => {
@@ -119,6 +131,49 @@ const onEdit = (sub: any) => {
 const onUpdate = async (id: number) => {
   await store.updateNow(id)
 }
+
+// ===== 流量参数探测 =====
+// V2Board 类机场只在特定 flag 参数下下发 subscription-userinfo 头
+// （如 &flag=clashmeta），此处对当前表单 URL 逐一尝试常见组合，
+// 找出「有流量信息且节点完整」的候选供一键应用。
+const probe = reactive({
+  loading: false,
+  candidates: [] as ProbeCandidate[],
+  bestUrl: '',
+  error: '',
+})
+const probeShown = ref(false)
+
+const onProbe = async () => {
+  if (form.sourceMode !== 'url' || !form.url.trim()) return notify.error('请先填写订阅地址')
+  probe.loading = true
+  probe.error = ''
+  probe.candidates = []
+  probe.bestUrl = ''
+  probeShown.value = true
+  try {
+    const resp = await store.probeParams({ url: form.url, userAgent: form.userAgent })
+    probe.candidates = resp.candidates || []
+    probe.bestUrl = resp.bestUrl || ''
+  } catch {
+    // 拦截器已 toast，这里只清空结果
+    probe.candidates = []
+    probe.bestUrl = ''
+  } finally {
+    probe.loading = false
+  }
+}
+
+// 把探测出的可用 URL 回填到表单（不自动保存，用户确认后走保存流程）
+const applyProbeUrl = (url: string) => {
+  form.url = url
+  resetProbe()
+  notify.success('已应用探测到的订阅地址，保存后生效')
+}
+
+// 探测结果里「有流量信息且节点完整」的候选（用于高亮推荐）
+const isUsable = (c: ProbeCandidate) =>
+  c.hasUserInfo && !c.placeholder && c.nodeCount > 0 && !c.error
 
 const onDelete = async (id: number) => {
   if (!confirm('确定要删除此订阅吗？')) return
@@ -198,24 +253,26 @@ const copyShareAs = (sub: any, target: string) =>
          使三个 substore 页面共享同一套排版与状态配色。
          窄屏形态仍由 Table 内置的 responsive-table 承担（见其注释）。 -->
     <Card class="overflow-hidden lg:rounded-xl">
-      <Table>
+      <!-- lg:table-fixed + 表头显式列宽：桌面形态下列宽由表头决定、总宽恒等于
+           容器宽度，操作列（固定 240px）永远在视区内，不会被超宽内容挤出
+           （auto 布局下 7 列总宽约 1400px，1280px 视口放不下，最右列被
+           overflow-hidden 裁掉）。truncate 由各单元格负责（带 title 兜底）。 -->
+      <Table class="lg:table-fixed">
         <TableHeader>
           <TableRow class="hover:bg-transparent">
-            <TableHead>名称</TableHead>
-            <TableHead>地址</TableHead>
-            <TableHead>节点数</TableHead>
-            <TableHead>缓存状态</TableHead>
-            <TableHead>状态</TableHead>
-            <TableHead>流量</TableHead>
+            <TableHead class="lg:w-[13%]">名称</TableHead>
+            <TableHead class="lg:w-[13%]">地址</TableHead>
+            <TableHead class="lg:w-14">节点数</TableHead>
+            <TableHead class="lg:w-[14%]">缓存状态</TableHead>
+            <TableHead class="lg:w-20">状态</TableHead>
+            <TableHead class="lg:w-36">流量</TableHead>
             <!-- 只保留编辑/预览两个高频操作在行内，其余（刷新缓存/分享设置/
                  删除）收进「更多」下拉菜单——原先 5 个按钮撑成两行，
                  让数据行比其它列高出一倍，视觉上很不协调。
-                 16rem 按「编辑+预览+更多」三个按钮（均带图标）紧挨一行算出
-                 （含单元格 px-6 内距），留出安全余量，避免「更多」被 Card 的
-                 overflow-hidden 裁掉（下方 flex-wrap 是双重保险，正常不会
-                 触发）。lg: 限定是必须的：窄屏下 responsive-table 把单元格
-                 变成 block，固定宽度会撑破卡片形态。 -->
-            <TableHead class="lg:w-64">操作</TableHead>
+                 240px 按「编辑+预览+更多」三个按钮（均带图标）紧挨一行算出
+                 （含单元格 px-4 内距），table-fixed 下此列宽度恒定，
+                 不随视口收缩，确保操作永远可见。 -->
+            <TableHead class="lg:w-[240px]">操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -224,7 +281,9 @@ const copyShareAs = (sub: any, target: string) =>
           </TableEmpty>
           <TableRow v-for="sub in store.subscriptions" :key="sub.id">
             <TableCell label="名称">
-              <div class="text-sm font-semibold text-fg break-all">{{ sub.name }}</div>
+              <!-- table-fixed 下列宽由表头定（13%），超长名称截断 + title 兜底；
+                   卡片形态（<1280px）下不受限，仍完整换行显示 -->
+              <div class="text-sm font-semibold text-fg break-all lg:truncate" :title="sub.name">{{ sub.name }}</div>
               <!-- 外部分享链接：不再展示链接文本或单独的格式选择框——那会常驻
                    占用列表空间，而多数人一次只需要复制一种格式。改为单个按钮，
                    点开菜单选格式即直接复制，选完即关，不需要额外点「复制链接」。 -->
@@ -238,10 +297,17 @@ const copyShareAs = (sub: any, target: string) =>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start">
+                  <!--
+                    必须用 @select 而非 @click：reka-ui MenuItem 在 pointerup 里
+                    合成 click 并随即关闭菜单；仅绑 @click 在部分浏览器/触控下会
+                    丢事件，表现为「点了格式却完全没复制」。组合页用独立按钮
+                    不受影响；这里是订阅页独有的菜单复制路径。
+                    value 为空串（默认格式）时 key 用占位，避免 Vue 把空 key 当异常。
+                  -->
                   <DropdownMenuItem
                     v-for="o in shareTargetOptions"
-                    :key="o.value"
-                    @click="copyShareAs(sub, o.value)"
+                    :key="o.value || '__default__'"
+                    @select="copyShareAs(sub, o.value)"
                   >
                     {{ o.label }}
                   </DropdownMenuItem>
@@ -249,12 +315,10 @@ const copyShareAs = (sub: any, target: string) =>
               </DropdownMenu>
             </TableCell>
             <TableCell label="地址">
-              <!-- 卡片形态下没有列宽约束，改为换行显示完整地址；
-                   桌面端仍截断，否则长 URL 会把表格撑宽。
-                   xl 上限从 max-w-xl(576px) 收到 max-w-md(448px)：
-                   前者在 1280px 视口下会把操作列挤成多行，而地址本来就
-                   截断显示、完整值可由 title 查看，让出这部分宽度更划算。 -->
-              <div v-if="sub.url" class="text-xs font-mono text-fg-muted break-all lg:break-normal lg:max-w-xs xl:max-w-md lg:truncate" :title="sub.url">{{ sub.url }}</div>
+              <!-- 桌面端列宽由表头（13%）控制：长 URL 截断、完整值由 title 查看。
+                   收窄到 13% 是为给操作列让出恒定的可视宽度（见表头注释），
+                   卡片形态下仍换行显示完整地址。 -->
+              <div v-if="sub.url" class="text-xs font-mono text-fg-muted break-all lg:truncate" :title="sub.url">{{ sub.url }}</div>
               <Badge v-else variant="accent">手动粘贴的节点</Badge>
               <div class="mt-1 flex flex-wrap gap-1">
                 <Badge v-if="sub.operators && sub.operators.length" variant="outline">
@@ -274,7 +338,7 @@ const copyShareAs = (sub: any, target: string) =>
                 <span v-if="sub.lastUpdate" class="text-[10px] text-fg-subtle">{{ new Date(sub.lastUpdate).toLocaleString() }}</span>
                 <span
                   v-if="sub.status === 'error' && sub.errorMessage"
-                  class="text-[10px] text-rose-600 dark:text-rose-400 max-w-[220px] break-words"
+                  class="text-[10px] text-rose-600 dark:text-rose-400 max-w-[140px] break-words"
                   :title="sub.errorMessage"
                 >
                   {{ sub.errorMessage }}
@@ -287,7 +351,7 @@ const copyShareAs = (sub: any, target: string) =>
               </Badge>
             </TableCell>
             <TableCell label="流量">
-              <div v-if="sub.traffic" class="min-w-[140px]">
+              <div v-if="sub.traffic" class="min-w-0">
                 <div class="text-xs font-medium text-fg">
                   {{ formatBytes(sub.traffic.used) }}<span class="text-fg-subtle"> / {{ sub.traffic.total ? formatBytes(sub.traffic.total) : '不限' }}</span>
                 </div>
@@ -303,11 +367,10 @@ const copyShareAs = (sub: any, target: string) =>
             <!-- 操作区：只留编辑/预览两个高频操作在行内，其余次要操作
                  （刷新缓存/分享设置/删除）收进「更多」下拉菜单——
                  5 个按钮横向换行会撑成两行，让数据行比其它列高出一倍。
-                 删除单独标红，与下拉菜单里的其它常规项区分。 -->
+                 删除单独标红，与下拉菜单里的其它常规项区分。
+                 table-fixed 下本列固定 240px，按钮不换行（flex 不 wrap）。 -->
             <TableCell label="操作">
-              <!-- flex-wrap 作为安全网：列宽按三个按钮一行算好，正常不会触发换行，
-                   但换行远比被 Card 的 overflow-hidden 裁掉更安全 -->
-              <div class="flex flex-wrap items-center gap-1.5">
+              <div class="flex items-center gap-1">
                 <Button variant="outline" size="sm" @click="onEdit(sub)"><Pencil class="h-4 w-4" aria-hidden="true" />编辑</Button>
                 <Button variant="secondary" size="sm" @click="onPreviewSaved(sub)"><Eye class="h-4 w-4" aria-hidden="true" />预览</Button>
                 <DropdownMenu>
@@ -378,6 +441,56 @@ const copyShareAs = (sub: any, target: string) =>
             </label>
           </RadioGroup>
           <Input v-if="form.sourceMode === 'url'" v-model="form.url" class="font-mono text-sm" placeholder="https://..." />
+          <!-- 流量参数探测：V2Board 类机场只在特定 flag 参数下下发
+               subscription-userinfo 头（实测 &flag=clashmeta 完整、无参数无头），
+               编辑已有订阅且无流量信息时提示探测，探测结果可一键应用。 -->
+          <div v-if="form.sourceMode === 'url'" class="space-y-2">
+            <p
+              v-if="editingId !== null && !probeShown && store.subscriptions.find(s => s.id === editingId)?.traffic == null"
+              class="note-warn border rounded px-3 py-2 text-xs"
+              role="note"
+            >
+              该订阅暂无流量信息，可能是机场需要在地址后附加参数（如 &amp;flag=clashmeta）。
+              <button type="button" class="underline underline-offset-2" @click="onProbe">自动探测</button>
+            </p>
+            <div class="flex items-center gap-2">
+              <Button variant="outline" size="sm" :disabled="probe.loading || !form.url.trim()" @click="onProbe">
+                <RefreshCw class="h-4 w-4" aria-hidden="true" />{{ probe.loading ? '探测中…' : '探测流量参数' }}
+              </Button>
+              <span v-if="probeShown && !probe.loading" class="text-xs text-fg-subtle">
+                {{ probe.candidates.length ? `已尝试 ${probe.candidates.length} 种参数组合` : '' }}
+              </span>
+            </div>
+            <div v-if="probeShown && !probe.loading" class="space-y-1.5">
+              <template v-if="probe.candidates.length">
+                <div
+                  v-for="c in probe.candidates"
+                  :key="c.params"
+                  class="flex items-center gap-2 border rounded-md px-3 py-1.5 text-xs"
+                  :class="isUsable(c) ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-line'"
+                >
+                  <code class="font-mono text-fg-muted w-28 shrink-0 truncate" :title="c.params || '（无参数）'">
+                    {{ c.params || '（无参数）' }}
+                  </code>
+                  <span class="flex-1 min-w-0 text-fg">
+                    <template v-if="c.error">失败：{{ c.error }}</template>
+                    <template v-else>
+                      <template v-if="c.hasUserInfo">
+                        {{ formatBytes(c.usedBytes) }} / {{ c.totalBytes ? formatBytes(c.totalBytes) : '不限' }}
+                      </template>
+                      <template v-else>无流量信息</template>
+                      · {{ c.nodeCount }} 节点
+                      <span v-if="c.placeholder" class="text-rose-600 dark:text-rose-400">（占位节点）</span>
+                    </template>
+                  </span>
+                  <Button v-if="isUsable(c)" variant="secondary" size="sm" @click="applyProbeUrl(c.url)">应用</Button>
+                </div>
+              </template>
+              <p v-else class="note-err border rounded px-3 py-2 text-xs">
+                未找到可用参数组合，流量信息可能由机场另行提供
+              </p>
+            </div>
+          </div>
           <div v-else>
             <!-- 内容可能是分享链接、Base64 订阅或 Clash YAML，按 YAML 高亮对三者都不至于误导 -->
             <CodeEditor

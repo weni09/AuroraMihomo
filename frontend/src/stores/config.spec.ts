@@ -41,7 +41,7 @@ describe('config store 的写回守卫', () => {
   })
 
   it('加载失败时 baseLoaded 为假并记录原因', async () => {
-    mockedApi.get.mockRejectedValueOnce({ message: '网络错误' })
+    mockedApi.get.mockRejectedValueOnce(new Error('网络错误'))
     const store = useConfigStore()
 
     await store.fetchBase()
@@ -51,7 +51,7 @@ describe('config store 的写回守卫', () => {
   })
 
   it('加载失败后调用 saveBase 必须拒绝，且不发出任何 PUT', async () => {
-    mockedApi.get.mockRejectedValueOnce({ message: '网络错误' })
+    mockedApi.get.mockRejectedValueOnce(new Error('网络错误'))
     const store = useConfigStore()
     await store.fetchBase()
     // 拒绝原因经 notify 呈现（会弹 toast），而不是只写进 store.message——
@@ -76,7 +76,7 @@ describe('config store 的写回守卫', () => {
   })
 
   it('saveAndMerge 依赖 saveBase 的返回值，未加载时不得触发合并', async () => {
-    mockedApi.get.mockRejectedValueOnce({ message: '网络错误' })
+    mockedApi.get.mockRejectedValueOnce(new Error('网络错误'))
     const store = useConfigStore()
     await store.fetchBase()
 

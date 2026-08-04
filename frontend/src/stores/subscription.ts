@@ -44,9 +44,9 @@ export const useSubscriptionStore = defineStore('subscription', {
       try {
         const response = await api.get<Subscription[]>('/subscriptions')
         this.subscriptions = response.data || []
-      } catch (error) {
+      } catch (error: unknown) {
+        // 拦截器已 toast
         console.error('Failed to fetch subscriptions', error)
-        useNotifyStore().error('加载订阅列表失败')
       } finally {
         this.isLoading = false
       }
@@ -78,5 +78,28 @@ export const useSubscriptionStore = defineStore('subscription', {
     },
     // 拉取远程订阅并重新合并配置由配置中心承担（/config/pull-merge），
     // 单个订阅页不提供这个入口。
+    // 探测订阅流量参数：V2Board 类机场只在特定 flag 参数下下发
+    // subscription-userinfo 头（如 &flag=clashmeta），探测接口逐一尝试
+    // 常见组合，返回「有流量信息且节点完整」的候选供一键应用。
+    async probeParams(payload: { url: string; userAgent?: string }) {
+      const res = await api.post('/subscriptions/probe', payload)
+      return res.data as ProbeResp
+    },
   },
 })
+
+export interface ProbeCandidate {
+  params: string
+  url: string
+  hasUserInfo: boolean
+  usedBytes: number
+  totalBytes: number
+  nodeCount: number
+  placeholder: boolean
+  error?: string
+}
+
+export interface ProbeResp {
+  candidates: ProbeCandidate[]
+  bestUrl: string
+}
