@@ -37,11 +37,11 @@ func LoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		if exp := svcCtx.Config.Auth.AccessExpire; exp > 0 {
 			cookie.MaxAge = int(exp)
 		}
-			if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
-				cookie.Secure = true
-			}
-			http.SetCookie(w, cookie)
+		if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
+			cookie.Secure = true
+		}
+		http.SetCookie(w, cookie)
 
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		httpx.OkJsonCtx(r.Context(), w, resp)
 	}
 }

@@ -52,9 +52,10 @@ func IsTrustedProxy(ip string, trusted []string) bool {
 
 // RequestIsHTTPS 判断是否应按 HTTPS 设置 Cookie Secure 等标志。
 //
-// - 直连 TLS（r.TLS != nil）→ true
-// - 否则仅当对端在 TrustedProxies 内，且 X-Forwarded-Proto=https
-//   或 X-Forwarded-Ssl=on 时采信 → true
+//   - 直连 TLS（r.TLS != nil）→ true
+//   - 否则仅当对端在 TrustedProxies 内，且 X-Forwarded-Proto=https
+//     或 X-Forwarded-Ssl=on 时采信 → true
+//
 // 未受信来源伪造的转发头一律忽略，与登录 clientIP 策略一致。
 func RequestIsHTTPS(r *http.Request, trustedProxies []string) bool {
 	if r == nil {

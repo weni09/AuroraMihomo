@@ -32,10 +32,10 @@ func LogoutHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		}
-			if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
-				cookie.Secure = true
-			}
-			http.SetCookie(w, cookie)
+		if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
+			cookie.Secure = true
+		}
+		http.SetCookie(w, cookie)
 		httpx.OkJsonCtx(r.Context(), w, map[string]any{"ok": true})
 	}
 }

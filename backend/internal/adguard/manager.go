@@ -202,50 +202,50 @@ func (m *Manager) startLocked() error {
 	m.lastErr = ""
 	m.mu.Unlock()
 
-		go func(c *exec.Cmd, done chan struct{}) {
-			waitErr := c.Wait()
-			m.mu.Lock()
-			if m.cmd == c {
-				m.cmd = nil
-				m.exited = nil
-			}
-			if waitErr != nil {
-				m.lastErr = "adguard exited: " + waitErr.Error()
-			}
-			m.mu.Unlock()
-			close(done)
-		}(cmd, exited)
+	go func(c *exec.Cmd, done chan struct{}) {
+		waitErr := c.Wait()
+		m.mu.Lock()
+		if m.cmd == c {
+			m.cmd = nil
+			m.exited = nil
+		}
+		if waitErr != nil {
+			m.lastErr = "adguard exited: " + waitErr.Error()
+		}
+		m.mu.Unlock()
+		close(done)
+	}(cmd, exited)
 
-		// Start 立刻返回时进程可能马上因端口冲突退出，日志却写「已启动」、
-		// 界面随后变成「已停止」。短暂等待：进程仍存活或 Web 口已开再成功。
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			m.mu.RLock()
-			alive := m.isProcessAliveLocked()
-			m.mu.RUnlock()
-			if !alive {
-				m.mu.RLock()
-				msg := m.lastErr
-				m.mu.RUnlock()
-				if msg == "" {
-					msg = "adguard process exited immediately after start"
-				}
-				return errors.New(msg)
-			}
-			if m.webPortOpen() {
-				return nil
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		// 进程仍在、Web 稍慢：仍视为成功（部分环境监听略晚）
+	// Start 立刻返回时进程可能马上因端口冲突退出，日志却写「已启动」、
+	// 界面随后变成「已停止」。短暂等待：进程仍存活或 Web 口已开再成功。
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
 		m.mu.RLock()
-		stillAlive := m.isProcessAliveLocked()
+		alive := m.isProcessAliveLocked()
 		m.mu.RUnlock()
-		if !stillAlive {
-			return errors.New("adguard process exited before web became ready")
+		if !alive {
+			m.mu.RLock()
+			msg := m.lastErr
+			m.mu.RUnlock()
+			if msg == "" {
+				msg = "adguard process exited immediately after start"
+			}
+			return errors.New(msg)
 		}
-		return nil
+		if m.webPortOpen() {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	// 进程仍在、Web 稍慢：仍视为成功（部分环境监听略晚）
+	m.mu.RLock()
+	stillAlive := m.isProcessAliveLocked()
+	m.mu.RUnlock()
+	if !stillAlive {
+		return errors.New("adguard process exited before web became ready")
+	}
+	return nil
+}
 
 // TakeInitialAdminPassword 取走首次引导生成的明文口令（一次性）。
 func (m *Manager) TakeInitialAdminPassword() string {
