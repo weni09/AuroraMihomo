@@ -662,7 +662,9 @@ func (r *Database) MarkTaskRun(name, status, message string, nextRun time.Time) 
 	row := model.Task{
 		Name:    name,
 		Cron:    "",
-		Enabled: 0, // 启用态由 settings/调度器决定，账本行不代表开关
+		Enabled: 0, // 账本行不表示开关；注意 Task.Enabled 带 gorm default:1，
+		// Create 时显式 0 仍会按默认值落 1。该字段无人读取（列表已过滤
+		// 账本行，虚拟项的 Enabled 取自 settings），语义由注释言明即可。
 		LastRun: now,
 		Status:  status,
 		Message: message,
