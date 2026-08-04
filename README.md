@@ -533,5 +533,6 @@ http://<地址>/api/v1/file/<token>                # 文件模板直链（不支
 
 - **[Mihomo](https://github.com/MetaCubeX/mihomo)**（Clash.Meta）— 代理内核，负责规则分流、TUN/TProxy 与出站协议实现
 - **[Zashboard](https://github.com/Zephyruso/zashboard)** — 内嵌控制面板，提供代理组、连接与流量等可视化管理界面
+- **[Sub-Store](https://github.com/sub-store-org/Sub-Store)** — 订阅管理脚本生态。其核心组件（单条/组合订阅、模板转换、分享）在本仓库以 Go 重写（`backend/internal/substore` 与 `service` 层）；脚本类操作符以 goja 内嵌执行原版脚本，订阅工作流与其操作符语义保持一致
 
 上述项目的许可证、商标与品牌归属其各自作者与社区；本仓库仅为集成与配置管理用途。
