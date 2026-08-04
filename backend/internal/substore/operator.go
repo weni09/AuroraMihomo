@@ -38,6 +38,28 @@ type PipelineOperator struct {
 	Payload map[string]interface{} `json:"payload"` // Config data for the operator
 }
 
+// StripPublicUnsafeOps 去掉公开分享/文件直链不应执行的算子。
+//
+// 公开端点仅凭 token 访问，会完整跑订阅/组合管道。script 使用进程内 goja，
+// 当前仅有超时 Interrupt、无内存上限；token 泄露或被刷即可造成 CPU/OOM。
+// 脚本仍可在 JWT 鉴权的预览、刷新、合并路径执行。
+//
+// 本函数不剥离 resolve_domain：去掉会静默改变节点 Host，行为变化更大；
+// 公开路径的 DNS 放大仍是 follow-up。
+func StripPublicUnsafeOps(ops []PipelineOperator) []PipelineOperator {
+	if len(ops) == 0 {
+		return ops
+	}
+	out := make([]PipelineOperator, 0, len(ops))
+	for _, op := range ops {
+		if op.Type == OpScript {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
 // ApplyPipeline runs the nodes through a sequence of operators.
 //
 // 保留这个无 ctx 的签名：调用点众多（含大量测试），且除 resolve_domain
@@ -175,11 +197,11 @@ func applyScript(nodes []Node, payload map[string]interface{}) ([]Node, error) {
 
 	vm := goja.New()
 
-	// 用户脚本可能死循环。公开的分享端点会触发该管道，
-	// 无超时保护时反复请求即可打满所有 CPU 核心。
-	// 已知限制：当前依赖的 goja 版本未提供内存上限 API（只有 Interrupt），
-	// 因此超时中断挡不住 `new Array(1e9)` 这类瞬间耗尽内存的脚本。
-	// 缓解措施是脚本算子只对已登录用户开放；若后续 goja 提供
+	// 用户脚本可能死循环。无超时保护时反复请求即可打满 CPU。
+	// 已知限制：当前 goja 无内存上限 API（只有 Interrupt），
+	// 挡不住 `new Array(1e9)` 这类瞬间 OOM。
+	// 公开分享/文件直链已在 RenderService 侧 StripPublicUnsafeOps 剥离 script；
+	// 此处仍保留超时，保护 JWT 预览/刷新/合并路径。若后续 goja 提供
 	// SetMemoryLimit，应在此补上内存约束。
 	timer := time.AfterFunc(scriptTimeout, func() {
 		vm.Interrupt("脚本执行超时")

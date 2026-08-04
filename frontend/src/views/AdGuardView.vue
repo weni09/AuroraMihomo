@@ -18,10 +18,19 @@ const wiringOpen = ref(false)
 const settingsOpen = ref(false)
 /** 递增以强制重载 iframe（刷新按钮 / 会话对齐后） */
 const iframeKey = ref(0)
-/** 会话 cookie 对齐完成前不挂 iframe，避免手机先刷出 unauthorized */
+/**
+ * 会话 cookie 已写入且探测 /adguard-ui 可通过后才为 true。
+ * 仅 POST /auth/session 成功不够：部分手机浏览器 Set-Cookie 后立刻导航
+ * iframe 仍带不上 cookie，表现为空白或 unauthorized，多刷几次才好。
+ */
 const sessionReady = ref(false)
+/** 正在对齐会话 / 探测反代（与 store.isLoading 区分，避免整页误判为「未启用」） */
+const sessionPreparing = ref(false)
 /** 移动端工具条默认收起，把高度留给 iframe；需要启停/更新时再展开 */
 const mobileToolbarOpen = ref(false)
+const iframeRef = ref<HTMLIFrameElement | null>(null)
+/** 避免 watch(running) 与 onMounted 并发准备会话 */
+let prepareGen = 0
 
 const wiringOpts = reactive<WiringOptions>({
   redirectTProxy: true,
@@ -31,13 +40,17 @@ const wiringOpts = reactive<WiringOptions>({
 })
 
 const entryPath = computed(() => store.status.entryPath || '/adguard-ui/')
-const busy = computed(() => store.isLoading || store.actionLoading)
+const busy = computed(() => store.isLoading || store.actionLoading || sessionPreparing.value)
 const componentEnabled = computed(() => store.status.componentEnabled)
 const installed = computed(() => store.status.installed)
 const running = computed(() => store.status.running)
 const desiredRunning = computed(() => store.status.desiredRunning === true)
 const showIframe = computed(() => running.value && sessionReady.value)
 const sessionFailed = ref(false)
+/** 首次进入且尚无可用 status 时的整页 loading（已有缓存 status 时不挡界面） */
+const bootLoading = computed(
+  () => store.isLoading && !installed.value && !running.value && !componentEnabled.value,
+)
 
 function openExternally() {
   window.open(entryPath.value, '_blank', 'noopener,noreferrer')
@@ -47,29 +60,172 @@ function openSettings() {
   settingsOpen.value = true
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+/** Android Edge / 部分 Chromium 移动版对「XHR 写 cookie → 立刻 iframe」特别敏感 */
+function isMobileEdgeLike(): boolean {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  // EdgA = Android Edge；EdgiOS = iOS Edge；同时兜底一般 Android 移动浏览器
+  return /EdgA|EdgiOS|Android.*Edg|Mobile.*Edg/i.test(ua) || /Android/i.test(ua)
+}
+
 /**
- * API 用 localStorage Bearer，/adguard-ui 反代只认 aurora_session cookie。
- * 手机上常见「已登录面板但 iframe unauthorized」：补一次 Bearer→cookie。
+ * 探测反代是否已接受当前 cookie、AGH 是否已可服务。
+ * 手机上 XHR Set-Cookie 与随后 iframe 导航之间常有竞态；用同源 fetch 确认后再挂 iframe。
+ *
+ * Android Edge：优先用 mode:cors 的普通 GET（follow 重定向），读最终 status；
+ * redirect:manual 在部分 Chromium 移动版上对同站 302 表现不稳定。
  */
-async function ensureSessionCookie(): Promise<boolean> {
+async function probeAdGuardEntry(path: string): Promise<'ok' | 'unauthorized' | 'unavailable' | 'error'> {
+  const probeOnce = async (redirect: RequestRedirect) => {
+    const res = await fetch(path, {
+      method: 'GET',
+      credentials: 'include',
+      redirect,
+      cache: 'no-store',
+      headers: { Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' },
+    })
+    return res
+  }
+
   try {
-    await api.post('/auth/session')
-    sessionFailed.value = false
-    sessionReady.value = true
-    return true
-  } catch (e) {
-    console.error('ensure aurora_session failed', e)
-    sessionFailed.value = true
-    // 失败时不挂 iframe，避免闪 unauthorized；用户可点重试
-    sessionReady.value = false
-    return false
+    // Android Edge 先 follow；桌面/其它仍可用 manual 区分 302
+    const res = isMobileEdgeLike()
+      ? await probeOnce('follow')
+      : await probeOnce('manual')
+
+    if (res.status === 401) return 'unauthorized'
+    if (res.status === 503 || res.status === 502) return 'unavailable'
+    if (res.status === 0 || res.type === 'opaqueredirect') return 'ok'
+    if (res.status >= 200 && res.status < 400) return 'ok'
+    if (res.status >= 500) return 'unavailable'
+    return 'ok'
+  } catch {
+    // manual 失败时再试 follow（个别 WebView 不支持 manual）
+    try {
+      const res = await probeOnce('follow')
+      if (res.status === 401) return 'unauthorized'
+      if (res.status === 503 || res.status === 502) return 'unavailable'
+      if (res.status >= 200 && res.status < 400) return 'ok'
+      return 'error'
+    } catch {
+      return 'error'
+    }
   }
 }
 
-async function refreshIframe() {
-  await ensureSessionCookie()
-  iframeKey.value += 1
+/**
+   * API 用 localStorage Bearer，/adguard-ui 反代只认 aurora_session cookie。
+   *
+   * 手机慢/空白的主因曾是：挂 iframe 前最多 10 次探测 + 递增 sleep（可卡数秒～十几秒），
+   * 且 sessionReady 为 false 时整页只显示「正在准备…」像白屏。
+   *
+   * 现策略：
+   * 1) POST /auth/session 写 cookie（登录时通常已有，再覆盖一次防过期）
+   * 2) 立刻 sessionReady=true 挂 iframe（乐观），最多 2 次轻量探测修 401
+   * 3) 探测失败不拆掉已显示的 iframe，只标 sessionFailed 给重试条
+   */
+  async function ensureSessionCookie(): Promise<boolean> {
+    const gen = ++prepareGen
+    sessionPreparing.value = true
+    try {
+      await api.post('/auth/session', null, { skipErrorToast: true })
+      if (gen !== prepareGen) return false
+
+      // 乐观：先允许挂 iframe，避免「准备中」空等
+      sessionReady.value = true
+      sessionFailed.value = false
+
+      await sleep(isMobileEdgeLike() ? 50 : 0)
+      if (gen !== prepareGen) return false
+
+      let last: 'ok' | 'unauthorized' | 'unavailable' | 'error' = 'error'
+      for (let i = 0; i < 2; i++) {
+        if (gen !== prepareGen) return false
+        if (i > 0) await sleep(100)
+        last = await probeAdGuardEntry(entryPath.value)
+        if (last === 'ok') {
+          sessionFailed.value = false
+          return true
+        }
+        if (last === 'unauthorized') {
+          try {
+            await api.post('/auth/session', null, { skipErrorToast: true })
+          } catch {
+            /* 继续 */
+          }
+        }
+      }
+
+      // 仍失败：保留 iframe（可能已能看），角标提示可重试
+      sessionFailed.value = true
+      console.warn('adguard entry probe soft-fail', last)
+      return true
+    } catch (e) {
+      if (gen !== prepareGen) return false
+      console.error('ensure aurora_session failed', e)
+      // 即使 session POST 失败也尝试挂 iframe：登录时可能已有 cookie
+      sessionReady.value = true
+      sessionFailed.value = true
+      return true
+    } finally {
+      if (gen === prepareGen) sessionPreparing.value = false
+    }
+  }
+
+  async function refreshIframe() {
+    await ensureSessionCookie()
+    iframeKey.value += 1
+  }
+
+/**
+ * 同源 iframe 可窥 body：若仍是 unauthorized / not running 文案，自动再对齐一次。
+ * 避免用户只看到白屏小字、只能整页刷新。
+ */
+function onIframeLoad() {
+  const el = iframeRef.value
+  if (!el || !running.value) return
+  try {
+    const text = (el.contentDocument?.body?.innerText || '').trim().slice(0, 80).toLowerCase()
+    if (!text) return
+    if (
+      text.includes('unauthorized') ||
+      text.includes('adguard not running') ||
+      text.includes('bad gateway')
+    ) {
+      void (async () => {
+        await sleep(200)
+        await refreshIframe()
+      })()
+    }
+  } catch {
+    // 极端情况下 document 不可读则忽略
+  }
 }
+
+/** bfcache 恢复时补一次会话；普通 pageshow 不再整页重探，避免手机来回切卡死 */
+  function onPageShow(ev: PageTransitionEvent) {
+    if (!running.value) return
+    if (ev.persisted) {
+      void refreshIframe()
+    }
+  }
+
+  function onVisibilityChange() {
+    // 仅在明确失败且仍无 iframe 时才自动重试，避免每次回前台都卡「刷新」
+    if (
+      document.visibilityState === 'visible' &&
+      running.value &&
+      sessionFailed.value &&
+      !sessionReady.value
+    ) {
+      void ensureSessionCookie()
+    }
+  }
 
 function syncPageChrome() {
   // 副标题：对接文案 / 期望运行 / 错误；运行态用 badge 表达，避免再占一行页面工具条
@@ -144,8 +300,31 @@ async function rollbackWiring() {
 }
 
 onMounted(async () => {
-  await Promise.all([store.fetchStatus(), ensureSessionCookie()])
+  window.addEventListener('pageshow', onPageShow)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+
+  await store.fetchStatus()
+  // 仅在运行中才对齐会话并探测；未运行时写 cookie 也无妨，但不要阻塞启停 UI
+  if (running.value) {
+    await ensureSessionCookie()
+  }
   syncPageChrome()
+})
+
+// AGH 从停止→运行（本页点启动、或 desiredRunning 自启）后必须重新探测，
+// 否则 sessionReady 可能仍是旧值，或 iframe 打到 503 白屏。
+watch(running, async (isRun, wasRun) => {
+  if (isRun && !wasRun) {
+    await ensureSessionCookie()
+    iframeKey.value += 1
+    syncPageChrome()
+  }
+  if (!isRun) {
+    prepareGen += 1
+    sessionReady.value = false
+    sessionPreparing.value = false
+    sessionFailed.value = false
+  }
 })
 
 watch(
@@ -158,12 +337,18 @@ watch(
     store.status.lastError,
     store.isLoading,
     store.actionLoading,
+    sessionPreparing.value,
     mobileToolbarOpen.value,
   ],
   syncPageChrome,
 )
 
-onBeforeUnmount(clearPageChrome)
+onBeforeUnmount(() => {
+  prepareGen += 1
+  window.removeEventListener('pageshow', onPageShow)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  clearPageChrome()
+})
 </script>
 <template>
   <!-- 高度由 App 在 adguard 路由上锁 h-dvh 后 flex 分给本页，勿再 h-dvh 叠顶栏 -->
@@ -291,7 +476,7 @@ onBeforeUnmount(clearPageChrome)
       </div>
     </div>
 
-    <p v-if="store.isLoading && !installed && !running" class="p-4 sm:p-6 text-sm text-fg-muted">
+    <p v-if="bootLoading" class="p-4 sm:p-6 text-sm text-fg-muted" data-testid="adguard-boot-loading">
       正在获取 AdGuard 状态…
     </p>
 
@@ -401,35 +586,48 @@ onBeforeUnmount(clearPageChrome)
       </Card>
     </div>
 
-    <!-- 运行中但会话尚未对齐：短占位，避免空白或抢先 401 -->
+    <!-- 运行中：立刻给壳层高度；会话问题用顶条提示，不再整页空白等待 -->
     <div
-      v-else-if="running && !sessionReady"
-      class="flex-1 min-h-0 flex flex-col items-center justify-center gap-3 p-4 text-sm text-fg-muted"
-      data-testid="adguard-session-pending"
+      v-else-if="running"
+      class="relative flex-1 min-h-0 w-full bg-surface"
+      data-testid="adguard-iframe-shell"
     >
-      <template v-if="sessionFailed">
-        <p class="text-destructive text-center">会话对齐失败，iframe 暂未加载（避免 unauthorized）</p>
-        <Button size="sm" :disabled="busy" data-testid="adguard-session-retry" @click="refreshIframe">
-          重试对齐会话
+      <div
+        v-if="sessionPreparing && !sessionReady"
+        class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-surface/80 p-4 text-sm text-fg-muted"
+        data-testid="adguard-session-pending"
+      >
+        <p data-testid="adguard-session-preparing">正在打开 AdGuard…</p>
+      </div>
+      <div
+        v-if="sessionFailed"
+        class="absolute top-0 inset-x-0 z-20 flex flex-wrap items-center justify-center gap-2 border-b border-line bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+        data-testid="adguard-session-banner"
+      >
+        <span>会话可能未带上，面板若空白请重试；也可在设置中保存 AdGuard 账号开启免密。</span>
+        <Button
+          size="sm"
+          variant="outline"
+          class="h-7"
+          :disabled="busy"
+          data-testid="adguard-session-retry"
+          @click="refreshIframe"
+        >
+          重试
         </Button>
-      </template>
-      <template v-else>
-        正在准备 AdGuard 会话…
-      </template>
-    </div>
-
-    <!-- 运行中：同源 iframe（先对齐 cookie，避免手机 unauthorized） -->
-    <template v-else-if="showIframe">
+      </div>
       <iframe
+        v-if="showIframe"
+        ref="iframeRef"
         data-testid="adguard-iframe"
         :key="iframeKey"
         :src="entryPath"
-        class="flex-1 min-h-0 w-full border-0 bg-surface"
+        class="absolute inset-0 h-full w-full border-0 bg-surface"
         title="AdGuard Home"
         referrerpolicy="same-origin"
+        @load="onIframeLoad"
       ></iframe>
-      <!-- 次要：旧 wiring 入口（不占主工具栏） -->
-      <div class="hidden lg:block px-4 sm:px-6 py-1 border-t bg-surface shrink-0">
+      <div class="hidden lg:block absolute bottom-0 left-0 right-0 z-20 px-4 sm:px-6 py-1 border-t bg-surface/95">
         <details class="text-xs text-fg-subtle">
           <summary class="cursor-pointer select-none hover:text-fg-muted">高级 · 旧版 DNS 对接</summary>
           <div class="py-1">
@@ -437,7 +635,7 @@ onBeforeUnmount(clearPageChrome)
           </div>
         </details>
       </div>
-    </template>
+    </div>
 
     <!-- AdGuard 设置弹窗：运行 / 端口 / 版本 / DNS 模式 -->
     <AdGuardSettingsDialog v-model:open="settingsOpen" />

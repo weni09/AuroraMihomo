@@ -6,6 +6,7 @@ import (
 	"auroramihomo/backend/api/internal/logic/public"
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/api/internal/types"
+	"auroramihomo/backend/internal/auth"
 	"github.com/zeromicro/go-zero/rest/httpx"
 )
 
@@ -36,11 +37,11 @@ func LoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		if exp := svcCtx.Config.Auth.AccessExpire; exp > 0 {
 			cookie.MaxAge = int(exp)
 		}
-		if r.TLS != nil {
-			cookie.Secure = true
-		}
-		http.SetCookie(w, cookie)
+			if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
+				cookie.Secure = true
+			}
+			http.SetCookie(w, cookie)
 
-		httpx.OkJsonCtx(r.Context(), w, resp)
+			httpx.OkJsonCtx(r.Context(), w, resp)
 	}
 }

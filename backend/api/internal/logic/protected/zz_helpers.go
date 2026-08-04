@@ -32,6 +32,11 @@ func firstNonEmpty(vs ...string) string {
 	return ""
 }
 
+// shareTokenBytes 是公开分享链接凭据的随机字节数。
+// 16 字节 → 32 位十六进制 = 128 bit 熵。分享端点免登录，
+// 低于此强度时在可枚举的 token 空间里更易被撞库式探测。
+const shareTokenBytes = 16
+
 // randomToken 生成 n 字节的随机十六进制凭据，用于订阅/组合/文件的分享链接。
 //
 // 必须返回 error：此前实现丢弃了 rand.Read 的错误，随机源异常时

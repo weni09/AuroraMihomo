@@ -123,21 +123,25 @@ const jsOverridePlaceholder = [
  * 三种模板语法的完整参考示例（公开仓库，可对照抄写/改写）。
  * 与下方 templateLang 选项一一对应，编辑器旁会按当前语言高亮对应链接。
  */
+// 示例必须是 raw 直链：blob 页面返回 HTML，粘贴进「远程地址」后
+// 预览/同步会把整页当配置解析而 400。后端虽会把 github.com/.../blob/
+// 改写成 raw.githubusercontent.com，示例本身仍应给可直接下载的地址，
+// 避免用户照抄后仍踩坑（其它托管没有自动改写）。
 const TEMPLATE_EXAMPLES = [
   {
     lang: 'yaml' as const,
     title: 'YAML 覆写',
-    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo.yaml',
+    url: 'https://raw.githubusercontent.com/weni09/clash_my_conf/main/mihomo.yaml',
   },
   {
     lang: 'gotemplate' as const,
     title: 'Go 模板',
-    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo-gotemplate.yaml',
+    url: 'https://raw.githubusercontent.com/weni09/clash_my_conf/main/mihomo-gotemplate.yaml',
   },
   {
     lang: 'javascript' as const,
     title: 'JS 脚本覆写',
-    url: 'https://github.com/weni09/clash_my_conf/blob/main/mihomo-jstemplate.yaml',
+    url: 'https://raw.githubusercontent.com/weni09/clash_my_conf/main/mihomo-jstemplate.yaml',
   },
 ] as const
 
@@ -445,6 +449,12 @@ const sourceLabel = (f: any) => {
             <span v-if="i < TEMPLATE_EXAMPLES.length - 1" class="text-fg-subtle" aria-hidden="true">·</span>
           </template>
         </p>
+        <!-- 参考模板不只是语法示例：它们的 raw 直链可直接作为模板的远程内容来源。
+             提示放在语法参考旁，让用户不必在「本地编辑」与「远程拉取」两个入口间
+             来回试错才知道这条用法。 -->
+        <p class="text-xs sm:text-sm text-fg-subtle mt-1">
+          以上示例也可直接当作模板使用：把对应 raw 链接填进「远程地址」，选择远程拉取即可。
+        </p>
       </div>
       <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建模板文件</Button>
     </div>
@@ -718,6 +728,7 @@ const sourceLabel = (f: any) => {
             />
             <p class="text-xs text-fg-subtle">
               多个地址并发拉取，但按此处的先后顺序拼接。可在下方列表点「立即同步」把远程内容固化到本地正文。
+              想直接试用时，也可粘贴页面上方参考模板的 raw 链接。
             </p>
           </div>
           <div class="space-y-1">
@@ -784,15 +795,20 @@ const sourceLabel = (f: any) => {
             class="text-primary hover:underline inline-flex items-center gap-0.5"
           >YAML 覆写示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
         </p>
-        <p v-else-if="isTemplate && form.templateLang === 'javascript'" class="text-xs text-fg-subtle">
-          必须定义 <code class="text-fg-muted">function main(config)</code> 并 return，config 为自动生成的基础配置对象。
-          完整写法见
-          <a
-            :href="currentTemplateExample.url"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-primary hover:underline inline-flex items-center gap-0.5"
-          >JS 脚本示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
+        <p v-else-if="isTemplate && form.templateLang === 'javascript'" class="text-xs text-fg-subtle space-y-1">
+          <span class="block">
+            必须定义 <code class="text-fg-muted">function main(config)</code> 并 return，config 为自动生成的基础配置对象。
+            完整写法见
+            <a
+              :href="currentTemplateExample.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary hover:underline inline-flex items-center gap-0.5"
+            >JS 脚本示例<ExternalLink class="size-3" aria-hidden="true" /></a>。
+          </span>
+          <span class="block text-amber-700 dark:text-amber-400/90">
+            注意：JS 覆写仅在登录后的预览与配置合并中执行；文件分享链接 / 公开直链会拒绝输出，请改用 Go 模板或 YAML 覆写对外分发。
+          </span>
         </p>
       </div>
       <p v-else class="text-xs text-fg-muted bg-elevated border border-line rounded p-3">

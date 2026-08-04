@@ -37,10 +37,28 @@ function env(patch: Partial<TransparentEnvReport> = {}): TransparentEnvReport {
   }
 }
 
+/**
+ * status 接口走原生 fetch（与 axios 实例解耦），单测用这个 stub 响应体。
+ * 每个用例 beforeEach 会 unstub，避免泄漏到其它用例。
+ */
+function stubStatusFetch(data: Record<string, unknown>, init?: { ok?: boolean; status?: number }) {
+  const ok = init?.ok !== false
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok,
+    status: init?.status ?? (ok ? 200 : 500),
+    headers: { get: () => 'application/json' },
+    json: async () => data,
+    text: async () => JSON.stringify(data),
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
 describe('自动准备环境入口的显示条件', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('有模式因缺工具不可用时，允许装包', () => {
@@ -127,10 +145,77 @@ describe('自动准备环境入口的显示条件', () => {
   })
 })
 
+describe('开关禁用与环境就绪', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('首次拉取完成前即使 modes 为空也不该显示成「环境不具备」语义上的可判定态', () => {
+    const s = useTransparentStore()
+    // 初始：未就绪、loading 可能为 false（进页前）
+    expect(s.envReady).toBe(false)
+    expect(s.anyAvailable).toBe(false)
+    expect(s.switchDisabled).toBe(true)
+  })
+
+  it('成功 applyStatus 后 envReady，有可用模式则开关可点', () => {
+    const s = useTransparentStore()
+    s.applyStatus({
+      enabled: true,
+      mode: 'tun',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env({
+        modes: [
+          { mode: 'tun', available: true, reason: '可用', missing: [], installHint: '' },
+          { mode: 'tproxy', available: true, reason: '可用', missing: [], installHint: '' },
+        ],
+      }),
+    })
+    s.envReady = true
+    s.loading = false
+    expect(s.anyAvailable).toBe(true)
+    expect(s.switchDisabled).toBe(false)
+  })
+
+  it('fetch 写入 status 后标记 envReady', async () => {
+    const s = useTransparentStore()
+    const payload = {
+      enabled: false,
+      mode: 'off',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env({
+        modes: [{ mode: 'tun', available: true, reason: '', missing: [], installHint: '' }],
+      }),
+    }
+    const fetchMock = stubStatusFetch(payload)
+    await s.fetch()
+    expect(s.envReady).toBe(true)
+    expect(s.anyAvailable).toBe(true)
+    expect(s.switchDisabled).toBe(false)
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/transparent/status',
+      expect.objectContaining({ method: 'GET', cache: 'no-store' }),
+    )
+  })
+})
+
 describe('provision 动作', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   /**
@@ -228,10 +313,14 @@ describe('provision 动作', () => {
 
     await s.provision({ installPackages: true, applySysctl: false })
 
-    expect(mockedApi.post).toHaveBeenCalledWith('/transparent/provision', {
-      installPackages: true,
-      applySysctl: false,
-    })
+    expect(mockedApi.post).toHaveBeenCalledWith(
+      '/transparent/provision',
+      {
+        installPackages: true,
+        applySysctl: false,
+      },
+      { skipErrorToast: true },
+    )
   })
 })
 
@@ -246,21 +335,21 @@ describe('端口已配置但未接管的状态', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('透传 portConfiguredOnly 与端口号，且不误报为已启用', async () => {
     const s = useTransparentStore()
-    mockedApi.get.mockResolvedValueOnce({
-      data: {
-        enabled: false,
-        mode: 'off',
-        pendingConfirm: false,
-        secondsLeft: 0,
-        tproxyPort: 7894,
-        tunStack: 'mixed',
-        portConfiguredOnly: true,
-        env: env(),
-      },
+    stubStatusFetch({
+      enabled: false,
+      mode: 'off',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7894,
+      tunStack: 'mixed',
+      portConfiguredOnly: true,
+      rulesOutOfSync: false,
+      env: env(),
     })
 
     await s.fetch()
@@ -274,17 +363,16 @@ describe('端口已配置但未接管的状态', () => {
 
   it('面板确实接管后不再提示', async () => {
     const s = useTransparentStore()
-    mockedApi.get.mockResolvedValueOnce({
-      data: {
-        enabled: true,
-        mode: 'tproxy',
-        pendingConfirm: false,
-        secondsLeft: 0,
-        tproxyPort: 7893,
-        tunStack: 'mixed',
-        portConfiguredOnly: false,
-        env: env(),
-      },
+    stubStatusFetch({
+      enabled: true,
+      mode: 'tproxy',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env(),
     })
 
     await s.fetch()
@@ -308,6 +396,7 @@ describe('已启用状态下切换模式', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('切到 TProxy 会带着新模式提交，且状态随响应更新', async () => {
@@ -341,11 +430,15 @@ describe('已启用状态下切换模式', () => {
 
     expect(ok).toBe(true)
     // 关键：请求确实发出去了，且带的是新模式而不是旧模式
-    expect(mockedApi.put).toHaveBeenCalledWith('/transparent', {
-      enabled: true,
-      mode: 'tproxy',
-      tunStack: 'mixed',
-    })
+    expect(mockedApi.put).toHaveBeenCalledWith(
+      '/transparent',
+      {
+        enabled: true,
+        mode: 'tproxy',
+        tunStack: 'mixed',
+      },
+      expect.objectContaining({ skipErrorToast: true, timeout: expect.any(Number) }),
+    )
     expect(s.status.mode).toBe('tproxy')
     // TProxy 会进入确认窗口，倒计时要起来
     expect(s.status.pendingConfirm).toBe(true)
@@ -387,6 +480,7 @@ describe('切换模式后同步配置中心的缓存', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   const okStatus = (mode: 'tun' | 'tproxy') => ({
@@ -418,7 +512,7 @@ describe('切换模式后同步配置中心的缓存', () => {
     const s = useTransparentStore()
     await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
 
-    expect(mockedApi.get).toHaveBeenCalledWith('/config/base')
+    expect(mockedApi.get).toHaveBeenCalledWith('/config/base', { skipErrorToast: true })
     // 配置中心的缓存已跟上，TUN 开关不会再显示为开着
     expect(cfg.model.tun?.enable).toBe(false)
   })
@@ -433,7 +527,7 @@ describe('切换模式后同步配置中心的缓存', () => {
     const s = useTransparentStore()
     await s.update({ enabled: true, mode: 'tproxy', tunStack: 'mixed' })
 
-    expect(mockedApi.get).not.toHaveBeenCalledWith('/config/base')
+    expect(mockedApi.get).not.toHaveBeenCalledWith('/config/base', { skipErrorToast: true })
   })
 
   it('刷新配置中心失败不影响本次切换的结果', async () => {
@@ -464,22 +558,21 @@ describe('规则与配置不一致的提示', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('透传 rulesOutOfSync', async () => {
     const s = useTransparentStore()
-    mockedApi.get.mockResolvedValueOnce({
-      data: {
-        enabled: true,
-        mode: 'tproxy',
-        pendingConfirm: false,
-        secondsLeft: 0,
-        tproxyPort: 7893,
-        tunStack: 'mixed',
-        portConfiguredOnly: false,
-        rulesOutOfSync: true,
-        env: env(),
-      },
+    stubStatusFetch({
+      enabled: true,
+      mode: 'tproxy',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: true,
+      env: env(),
     })
 
     await s.fetch()
@@ -491,18 +584,16 @@ describe('规则与配置不一致的提示', () => {
 
   it('规则同步正常时不提示', async () => {
     const s = useTransparentStore()
-    mockedApi.get.mockResolvedValueOnce({
-      data: {
-        enabled: true,
-        mode: 'tproxy',
-        pendingConfirm: false,
-        secondsLeft: 0,
-        tproxyPort: 7893,
-        tunStack: 'mixed',
-        portConfiguredOnly: false,
-        rulesOutOfSync: false,
-        env: env(),
-      },
+    stubStatusFetch({
+      enabled: true,
+      mode: 'tproxy',
+      pendingConfirm: false,
+      secondsLeft: 0,
+      tproxyPort: 7893,
+      tunStack: 'mixed',
+      portConfiguredOnly: false,
+      rulesOutOfSync: false,
+      env: env(),
     })
 
     await s.fetch()
@@ -515,6 +606,7 @@ describe('自定义防火墙规则', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.unstubAllGlobals()
   })
 
   it('fetchRules 拉取规则与内置规则展示数据', async () => {
@@ -533,7 +625,7 @@ describe('自定义防火墙规则', () => {
     expect(s.rules?.customRules).toContain('-t nat -A')
     expect(s.rules?.iptablesBackend).toBe('nf_tables')
     expect(s.rules?.policyRoutes).toEqual(['ip rule add fwmark 1 table 100'])
-    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules')
+    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules', { skipErrorToast: true })
   })
 
   it('saveRules 提交原文并在成功后刷新展示数据', async () => {
@@ -556,9 +648,9 @@ describe('自定义防火墙规则', () => {
     expect(ok).toBe(true)
     expect(mockedApi.put).toHaveBeenCalledWith('/transparent/rules', {
       customRules: 'iptables -A INPUT -j ACCEPT\n',
-    })
+    }, { skipErrorToast: true })
     // 保存成功后重新拉取，内置规则文本可能随参数变化
-    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules')
+    expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules', { skipErrorToast: true })
   })
 
   it('saveRules 失败时返回 false 且不清空已有展示数据', async () => {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/netcheck"
@@ -222,8 +223,23 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	return nil
 }
 
+// 面板开机自启：首次尝试前等待、失败后有限次重试（指数退避）。
+// 总预算留给调用方 context；默认参数覆盖「mihomo/磁盘抢资源」类瞬时失败。
+const (
+	adguardBootStartInitialDelay = 800 * time.Millisecond
+	adguardBootStartMaxAttempts  = 3
+	adguardBootStartRetryBase    = 2 * time.Second
+)
+
 // Start 拉起 AdGuard 子进程，成功后记录「期望运行」以便面板重启后自启。
+//
+// 组件总开关关闭时直接拒绝：避免 API/调用方在 component_enabled=false 时仍把
+// 进程拉起并写入 enabled_at_boot，造成「关了组件却在跑 / 期望态与开关矛盾」。
+// 面板开机自启走 ShouldStartAtBoot，本身已要求组件开启；此处与之对齐。
 func (s *AdGuardService) Start(ctx context.Context) error {
+	if !s.ComponentEnabled() {
+		return errors.New("AdGuard 组件未启用，请先在系统设置中开启组件后再启动")
+	}
 	if err := adguard.EnsureBindLocalhost(s.workDir); err != nil {
 		s.logger.Errorf("启动前确保 bind_host 失败: %v", err)
 	}
@@ -251,6 +267,69 @@ func (s *AdGuardService) Start(ctx context.Context) error {
 		s.logger.Errorf("记录 AdGuard 期望运行状态失败: %v", err)
 	}
 	return nil
+}
+
+// StartWithBootRetry 供面板进程启动时异步调用：先短暂让出资源，再有限次 Start。
+//
+// 与用户点击「启动」不同——那条路径失败应立刻返回，由前端提示；
+// 开机自启面对的是 mihomo/磁盘/瞬态端口 等竞争，一次失败不代表用户意图改变，
+// 故在 ctx 未取消前按 2s、4s… 退避重试，最多 adguardBootStartMaxAttempts 次。
+//
+// 任一次成功即返回 nil；全部失败返回最后一次 error（调用方只记日志，不拖垮面板）。
+func (s *AdGuardService) StartWithBootRetry(ctx context.Context) error {
+	return s.startWithBootRetry(ctx, adguardBootStartInitialDelay, adguardBootStartMaxAttempts, adguardBootStartRetryBase)
+}
+
+// startWithBootRetry 可注入延迟参数，便于单测不真 sleep 数秒。
+func (s *AdGuardService) startWithBootRetry(ctx context.Context, initialDelay time.Duration, maxAttempts int, retryBase time.Duration) error {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if initialDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("开机自启取消（初始等待）: %w", ctx.Err())
+		case <-time.After(initialDelay):
+		}
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			if lastErr != nil {
+				return fmt.Errorf("开机自启取消（已失败 %d 次，末次: %v）: %w", attempt-1, lastErr, err)
+			}
+			return fmt.Errorf("开机自启取消: %w", err)
+		}
+		// 中途用户关组件 / 清 desired：不再重试，避免与「不要跑」意图打架
+		if !s.ShouldStartAtBoot() {
+			if lastErr != nil {
+				return fmt.Errorf("开机自启中止（组件或期望运行已关闭，末次失败: %w）", lastErr)
+			}
+			return errors.New("开机自启中止（组件未启用、未期望运行或未安装）")
+		}
+
+		err := s.Start(ctx)
+		if err == nil {
+			if attempt > 1 {
+				s.logger.Infof("AdGuard Home 开机自启在第 %d 次尝试成功", attempt)
+			}
+			return nil
+		}
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+		s.logger.Errorf("AdGuard Home 开机自启第 %d/%d 次失败: %v，将重试", attempt, maxAttempts, err)
+		// 指数退避：2s、4s、…（受 ctx 限制）
+		delay := retryBase * time.Duration(1<<(attempt-1))
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("开机自启取消（重试等待中，末次: %v）: %w", lastErr, ctx.Err())
+		case <-time.After(delay):
+		}
+	}
+	return fmt.Errorf("开机自启 %d 次均失败: %w", maxAttempts, lastErr)
 }
 
 // Stop 用户主动停止：停进程并清除「期望运行」，面板重启后不再自启。

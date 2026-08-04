@@ -105,6 +105,8 @@ CI（`.github/workflows/ci.yml`）会跑：`gofmt` 检查、`go vet`、`golangci
 
 `.agents/skills/` 下配置了若干 AI 编码代理技能。各技能 `SKILL.md` 头部若带 `⚠️` 提示，说明其在本仓库的可用性现状（多为依赖脚本/外部资料缺失），使用前先看该提示：
 
+**Claude Code Desktop / CLI**：项目记忆入口是 `CLAUDE.md`（通过 `@AGENTS.md` 引入本文件）；MCP 在仓库根 `.mcp.json`；skill 需在 `.claude/skills/` 可见——clone 后执行 `bash scripts/setup-claude-desktop.sh` 创建指向 `.agents/skills/` 的本机联接。详见 `CLAUDE.md`。
+
 | Skill | 用途 | 本仓库可用性 |
 |---|---|---|
 | `vue3` | Vue 3 官方指南与 API 参考 | 可用 |

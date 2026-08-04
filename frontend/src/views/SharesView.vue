@@ -141,9 +141,14 @@ const statusOf = (item: ShareItem) => {
           </SelectContent>
         </Select>
       </div>
-      <p class="text-xs text-amber-600 dark:text-amber-400 mt-3 bg-amber-50 border border-amber-100 rounded px-3 py-2">
-        分享链接无需登录即可访问，凭据即链接本身。若链接可能已外泄，请使用「重置」生成新凭据。
-      </p>
+      <div class="text-xs text-amber-600 dark:text-amber-400 mt-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/50 rounded px-3 py-2 space-y-1">
+        <p>分享链接无需登录即可访问，凭据即链接本身。若链接可能已外泄，请使用「重置」生成新凭据。</p>
+        <p>
+          安全限制：公开拉取时<strong class="font-medium">不会执行</strong>处理管道中的
+          JS 脚本算子；文件若使用 JS 覆写模板，直链/分享会拒绝输出。
+          脚本仍可在登录后的即时预览与配置合并中运行。
+        </p>
+      </div>
     </div>
 
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->

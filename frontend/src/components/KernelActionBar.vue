@@ -82,8 +82,8 @@ async function updateCore() {
     else notify.success(text)
     await store.fetchStatus()
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { message?: string } } }
-    notify.error(err?.response?.data?.message || '更新失败')
+    // 拦截器已 toast HTTP 错误；此处只结束 loading
+    console.error(e)
   } finally {
     updating.value = false
   }

@@ -15,6 +15,83 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// normalizeYAMLFlowColons 修复 yaml.v3 无法解析「flow 映射键后紧跟 [ 或 {」的问题。
+//
+// 现象：`{type: select, proxies:[A,B]}` 这类紧凑写法 yaml.v3 会报
+// "did not find expected ',' or '}'"（报错行号还常比实际行少 1），而 mihomo /
+// Clash 生态的真实配置里 `proxies:[` 无空格写法非常普遍——模板作者为省行宽
+// 把策略组压成一行。YAML 规范在 flow 上下文里允许 `key:[`（冒号后紧跟 flow
+// 指示符即视为键值分隔符），块上下文则必须有空格，所以修复只在 flow 集合
+// （{ / [ 深度 > 0）内补一个空格；块上下文与引号内的 `a:[b]` 一律不动，
+// 避免把普通标量误改成键值对。
+func normalizeYAMLFlowColons(s string) string {
+	if !strings.Contains(s, ":[") && !strings.Contains(s, ":{") {
+		return s
+	}
+	var out strings.Builder
+	out.Grow(len(s) + 8)
+	depth := 0
+	var quote byte
+	comment := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if comment {
+			out.WriteByte(c)
+			if c == '\n' {
+				comment = false
+			}
+			continue
+		}
+		if quote != 0 {
+			out.WriteByte(c)
+			if quote == '"' && c == '\\' && i+1 < len(s) {
+				i++
+				out.WriteByte(s[i])
+			} else if c == quote {
+				// 单引号内 '' 是转义的单引号，不能视为字符串结束
+				if quote == '\'' && i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					out.WriteByte(s[i])
+					continue
+				}
+				quote = 0
+			}
+			continue
+		}
+		switch {
+		case c == '\'' || c == '"':
+			quote = c
+			out.WriteByte(c)
+		case c == '#' && (i == 0 || isYAMLCommentSep(s[i-1])):
+			comment = true
+			out.WriteByte(c)
+		case c == '{' || c == '[':
+			depth++
+			out.WriteByte(c)
+		case c == '}' || c == ']':
+			if depth > 0 {
+				depth--
+			}
+			out.WriteByte(c)
+		case c == ':' && depth > 0 && i+1 < len(s) && (s[i+1] == '[' || s[i+1] == '{'):
+			out.WriteString(": ")
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// isYAMLCommentSep 判断上一个字节是否为让 `#` 开始注释的分隔：只有前有
+// 空白或位于行首时 `#` 才是注释，紧贴其它字符则是标量的一部分。
+func isYAMLCommentSep(prev byte) bool {
+	switch prev {
+	case ' ', '\t', '\n', '\r':
+		return true
+	}
+	return false
+}
+
 // RenderMihomoOverride 是 SubFile.ConfigType=mihomo 时的统一入口：
 // 先由 buildBaseMihomoConfig 生成一份自动生成的基础配置（proxies/proxy-groups/rules），
 // 再按 lang 决定正文如何在此基础上做增量修改——对齐官方 Sub-Store 的"覆写"概念：
@@ -62,8 +139,11 @@ func normalizeYAMLText(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return s
 	}
+	// 先补 flow 中 `key:[` 的空格（yaml.v3 解析不了，见该函数注释），
+	// 解析与语义对比都基于补过的文本，避免这里转成块状后又被语义检查拦回
+	normalized := normalizeYAMLFlowColons(s)
 	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(s), &doc); err != nil {
+	if err := yaml.Unmarshal([]byte(normalized), &doc); err != nil {
 		return s
 	}
 	expanded := expandYAMLNode(&doc)
@@ -85,7 +165,7 @@ func normalizeYAMLText(s string) string {
 		return s
 	}
 	// 规范化前后语义必须一致，否则宁可保留原文
-	if !sameYAMLSemantics(s, out) {
+	if !sameYAMLSemantics(normalized, out) {
 		return s
 	}
 	return out
@@ -123,7 +203,8 @@ func ValidateTemplateLang(lang, content string) error {
 		}
 	case model.TemplateLangYAML:
 		var v map[string]interface{}
-		if err := yaml.Unmarshal([]byte(content), &v); err != nil {
+		// flow 中 `key:[` 的紧凑写法 yaml.v3 解析不了，先补空格再校验
+		if err := yaml.Unmarshal([]byte(normalizeYAMLFlowColons(content)), &v); err != nil {
 			return fmt.Errorf("YAML 覆写内容解析失败: %w", err)
 		}
 	case model.TemplateLangJS:
@@ -148,7 +229,8 @@ func renderYAMLOverride(content string, nodes []Node) (string, error) {
 	}
 
 	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+	// flow 中 `key:[` 的紧凑写法 yaml.v3 解析不了，先补空格（见 normalizeYAMLFlowColons）
+	if err := yaml.Unmarshal([]byte(normalizeYAMLFlowColons(content)), &doc); err != nil {
 		return "", fmt.Errorf("YAML 覆写内容解析失败: %w", err)
 	}
 	// 必须在 expandYAMLNode 之前采集：后者会清掉 Anchor 字段，

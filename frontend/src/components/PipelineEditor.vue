@@ -380,7 +380,10 @@ const removeOperator = (index: number) => {
           </div>
 
           <!-- Script Form -->
-          <div v-else-if="op.type === 'script'" class="w-full">
+          <div v-else-if="op.type === 'script'" class="w-full space-y-2">
+            <p class="text-xs text-amber-700 dark:text-amber-400/90 bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/40 rounded px-2.5 py-1.5">
+              JS 脚本只在登录后的即时预览、刷新与配置合并中执行；外部分享链接拉取时会自动跳过本算子（其它算子仍生效）。
+            </p>
             <!-- 不再强制 dark：编辑器跟随全局主题，
                  浅色模式下嵌一块深色代码框与周围表单割裂 -->
             <CodeEditor

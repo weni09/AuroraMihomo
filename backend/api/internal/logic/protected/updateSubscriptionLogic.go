@@ -65,9 +65,9 @@ func (l *UpdateSubscriptionLogic) UpdateSubscription(req *types.UpdateSubscripti
 	if strings.TrimSpace(sub.URL) == "" && strings.TrimSpace(sub.Content) == "" {
 		return nil, errInvalid("订阅地址与节点内容不能同时为空")
 	}
-	// 历史数据可能没有分享令牌，补发一个
+	// 历史数据可能没有分享令牌，补发一个（与新建统一为 128 bit 熵）
 	if sub.ShareToken == "" {
-		token, tErr := randomToken(8)
+		token, tErr := randomToken(shareTokenBytes)
 		if tErr != nil {
 			return nil, tErr
 		}

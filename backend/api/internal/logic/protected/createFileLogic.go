@@ -31,7 +31,7 @@ func (l *CreateFileLogic) CreateFile(req *types.SubFileReq) (resp *types.SubFile
 	if name == "" {
 		return nil, errInvalid("文件名不能为空")
 	}
-	token, err := randomToken(16)
+	token, err := randomToken(shareTokenBytes)
 	if err != nil {
 		return nil, err
 	}

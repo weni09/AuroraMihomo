@@ -1,6 +1,7 @@
 package protected
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,18 +97,22 @@ func TestExpiredHelper(t *testing.T) {
 
 // randomToken 必须产出足够长度且互不相同的凭据。
 // 此前实现丢弃了 rand.Read 的错误，随机源异常时会返回全零 token。
+// 分享凭据统一为 shareTokenBytes（16）→ 32 位十六进制 / 128 bit。
 func TestRandomTokenUniqueAndSized(t *testing.T) {
+	if shareTokenBytes != 16 {
+		t.Fatalf("shareTokenBytes 应为 16（128 bit），实际 %d", shareTokenBytes)
+	}
 	seen := map[string]bool{}
+	wantLen := shareTokenBytes * 2 // hex
 	for i := 0; i < 50; i++ {
-		tok, err := randomToken(8)
+		tok, err := randomToken(shareTokenBytes)
 		if err != nil {
 			t.Fatalf("生成凭据失败: %v", err)
 		}
-		// 8 字节 -> 16 位十六进制
-		if len(tok) != 16 {
-			t.Fatalf("凭据长度应为 16，实际 %d (%q)", len(tok), tok)
+		if len(tok) != wantLen {
+			t.Fatalf("凭据长度应为 %d，实际 %d (%q)", wantLen, len(tok), tok)
 		}
-		if tok == "0000000000000000" {
+		if tok == strings.Repeat("0", wantLen) {
 			t.Fatal("凭据不应为全零（随机源失效的征兆）")
 		}
 		if seen[tok] {

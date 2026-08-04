@@ -44,7 +44,7 @@ func (l *CreateSubscriptionLogic) CreateSubscription(req *types.CreateSubscripti
 	if req.Enabled {
 		enabled = 1
 	}
-	token, err := randomToken(8)
+	token, err := randomToken(shareTokenBytes)
 	if err != nil {
 		return nil, err
 	}

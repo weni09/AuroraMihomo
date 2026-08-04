@@ -77,8 +77,9 @@ export const useConfigStore = defineStore('config', {
         this.remoteSourceCron = res.data?.cron || '0 0 * * * *'
         this.remoteSourceCronEnabled = res.data?.cronEnabled !== false
         this.remoteSourceOptions = res.data?.options || []
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '加载远程来源失败')
+      } catch (e: unknown) {
+        // HTTP 错误由 api 拦截器统一 toast，此处只记日志
+        console.error(e)
       }
     },
 
@@ -99,8 +100,8 @@ export const useConfigStore = defineStore('config', {
         }
         // 合并可能产生冲突或改动，刷新差异视图的数据源
         return res.data?.success !== false
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '拉取失败')
+      } catch (e: unknown) {
+        console.error(e)
         return false
       } finally {
         this.pulling = false
@@ -140,8 +141,8 @@ export const useConfigStore = defineStore('config', {
             ? '已设为不使用远程配置，最终配置将只用本地配置'
             : '远程来源已保存，下次合并生效',
         )
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '保存失败')
+      } catch (e: unknown) {
+        console.error(e)
       } finally {
         this.loading = false
       }
@@ -150,7 +151,10 @@ export const useConfigStore = defineStore('config', {
       this.loading = true
       this.baseLoadError = ''
       try {
-        const res = await api.get<{ content: string }>('/config/base')
+        // 失败时页面要长期展示 baseLoadError，自行 toast 一次即可
+        const res = await api.get<{ content: string }>('/config/base', {
+          skipErrorToast: true,
+        })
         this.raw = res.data.content || ''
         this.model = (loadYaml(this.raw) as any) || {}
         // 只有真正读到内容才放开写回，见 baseLoaded 的说明
@@ -159,12 +163,13 @@ export const useConfigStore = defineStore('config', {
         // 刷新页面/换浏览器都一致。不阻塞主流程：提示只是辅助信息，
         // 接口失败时保持原值。
         void this.fetchUnmerged()
-      } catch (e: any) {
+      } catch (e: unknown) {
         this.baseLoaded = false
         // baseLoadError 保留为持久错误态：页面据此显示「配置未加载、
         // 禁止保存」的警示区，防止误覆盖服务端配置。
         // 这类需要持续可见的状态不适合只用一闪而过的 toast 表达。
-        this.baseLoadError = e?.response?.data?.message || e?.message || '加载基础配置失败'
+        const { apiErrorMessage } = await import('../utils/apiError')
+        this.baseLoadError = apiErrorMessage(e, '加载基础配置失败')
         useNotifyStore().error(this.baseLoadError)
       } finally {
         this.loading = false
@@ -189,8 +194,8 @@ export const useConfigStore = defineStore('config', {
         this.unmergedChanges = true
         useNotifyStore().success(res.data?.message || '保存成功')
         return true
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '保存失败')
+      } catch (e: unknown) {
+        console.error(e)
         return false
       } finally {
         this.loading = false
@@ -214,8 +219,8 @@ export const useConfigStore = defineStore('config', {
         this.unmergedChanges = false
         useNotifyStore().success(res.data?.message || '已应用并生效')
         merged = true
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '合并失败')
+      } catch (e: unknown) {
+        console.error(e)
       } finally {
         this.loading = false
       }

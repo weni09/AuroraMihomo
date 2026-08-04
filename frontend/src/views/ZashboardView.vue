@@ -43,14 +43,42 @@ interface ZashboardBackend {
 
 function syncZashboardBackend(host: string, port: string, secret: string) {
   try {
+    if (!host || !port) return
     const listRaw = window.localStorage.getItem('setup/api-list')
     const uuid = window.localStorage.getItem('setup/active-uuid')
-    if (!listRaw || !uuid) return // 从未配置过，交给 zashboard 自己的首次配置逻辑
+    // 从未配置：写入一条默认后端，避免 zashboard 仍连旧/错地址刷 Network Error
+    if (!listRaw || !uuid) {
+      const id =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `aurora-${Date.now()}`
+      const entry: ZashboardBackend = {
+        uuid: id,
+        type: 'http',
+        host,
+        port,
+        password: secret,
+        label: 'AuroraMihomo 本地内核',
+      }
+      window.localStorage.setItem('setup/api-list', JSON.stringify([entry]))
+      window.localStorage.setItem('setup/active-uuid', id)
+      return
+    }
 
     const list = JSON.parse(listRaw) as ZashboardBackend[]
     if (!Array.isArray(list)) return
-    const cur = list.find((b) => b.uuid === uuid)
-    if (!cur) return
+    let cur = list.find((b) => b.uuid === uuid)
+    if (!cur) {
+      cur = {
+        uuid,
+        type: 'http',
+        host,
+        port,
+        password: secret,
+        label: 'AuroraMihomo 本地内核',
+      }
+      list.push(cur)
+    }
 
     if (cur.host === host && cur.port === port && (cur.password || '') === secret) {
       return // 已经是最新值，不必写回（避免每次加载都触发 localStorage 变更事件）
@@ -85,7 +113,8 @@ async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    const res = await api.get('/dashboard/entry')
+    // 错误展示在页内 errorMsg，避免再弹全局 toast
+    const res = await api.get('/dashboard/entry', { skipErrorToast: true })
     if (!res.data?.available) {
       errorMsg.value = res.data?.message || '内核未启用外部控制接口（external-controller），面板无法连接。'
       frameSrc.value = ''
@@ -99,8 +128,8 @@ async function load() {
     syncZashboardBackend(entryHost.value, entryPort.value, secret)
     frameSrc.value = res.data.url
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { message?: string } }; message?: string }
-    errorMsg.value = err?.response?.data?.message || err?.message || '获取面板入口失败'
+    const { apiErrorMessage } = await import('../utils/apiError')
+    errorMsg.value = apiErrorMessage(e, '获取面板入口失败')
     frameSrc.value = ''
     entryHost.value = ''
     entryPort.value = ''
@@ -163,11 +192,17 @@ onBeforeUnmount(clearPageChrome)
     <!-- 同源内嵌，无需 sandbox 放行清单；面板需要访问 localStorage 保存自身设置。
          上方 load() 里已在设置 frameSrc 之前调用 syncZashboardBackend，
          这里加载时读到的就是同步过的值，不需要再监听 @load 二次处理 -->
-    <iframe
+    <!-- absolute 填满：手机（含安卓 Edge）上 flex-1 直接挂 iframe 常高度为 0 白屏 -->
+    <div
       v-else
-      :src="frameSrc"
-      class="flex-1 min-h-0 w-full border-0"
-      title="Zashboard 控制面板"
-    ></iframe>
+      class="relative flex-1 min-h-0 w-full bg-surface"
+      data-testid="zashboard-iframe-shell"
+    >
+      <iframe
+        :src="frameSrc"
+        class="absolute inset-0 h-full w-full border-0"
+        title="Zashboard 控制面板"
+      ></iframe>
+    </div>
   </main>
 </template>

@@ -281,6 +281,7 @@ func TestValidateTemplateLang(t *testing.T) {
 		{"go template invalid", model.TemplateLangGo, "{{ range .Nodes }", true},
 		{"yaml valid", model.TemplateLangYAML, "rules:\n  - MATCH,Proxy\n", false},
 		{"yaml invalid", model.TemplateLangYAML, "rules:\n  - a\n  b\n c", true},
+		{"yaml compact flow colon", model.TemplateLangYAML, "pr1: &pr1 {type: select, proxies:[DIRECT,REJECT]}\n", false},
 		{"js valid", model.TemplateLangJS, "function main(config){return config;}", false},
 		{"js invalid", model.TemplateLangJS, "function main(config) {", true},
 		{"empty content always valid", model.TemplateLangYAML, "", false},
@@ -295,6 +296,82 @@ func TestValidateTemplateLang(t *testing.T) {
 				t.Errorf("expected no error, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestNormalizeYAMLFlowColons 锁定扫描器的行为边界：只在 flow 集合内补空格，
+// 块上下文、引号、注释里的 `:[` 都不能动——动了会改变 YAML 语义。
+func TestNormalizeYAMLFlowColons(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// flow 映射键后紧跟 flow 指示符：补空格
+		{"x: {a:[1]}", "x: {a: [1]}"},
+		{"x: {a:{b:1}}", "x: {a: {b:1}}"},
+		{"pr2: &pr2 {type: url-test, proxies:[A, B]}", "pr2: &pr2 {type: url-test, proxies: [A, B]}"},
+		// 嵌套 flow 序列里的键同样要补
+		{"- {name: AI, proxies:[a]}", "- {name: AI, proxies: [a]}"},
+		// 块上下文 `a:[1]` 是普通标量（键名含冒号），不能加空格
+		{"a:[1]", "a:[1]"},
+		{"key: value\nsub:[x]", "key: value\nsub:[x]"},
+		// 引号内的 `:[` 是字符串内容，不动
+		{`x: {a: "proxies:[1]"}`, `x: {a: "proxies:[1]"}`},
+		{`x: {a: 'proxies:[1]'}`, `x: {a: 'proxies:[1]'}`},
+		// 注释里的 `:[` 不动，后面的真实 flow 正常补
+		{"# proxies:[a,b]\nx: {a:[1]}", "# proxies:[a,b]\nx: {a: [1]}"},
+		// 无空格模式的文本原样返回
+		{"a: b", "a: b"},
+	}
+	for _, c := range cases {
+		if got := normalizeYAMLFlowColons(c.in); got != c.want {
+			t.Errorf("normalizeYAMLFlowColons(%q)=\n  %q\nwant %q", c.in, got, c.want)
+		}
+	}
+}
+
+// compactFlowOverride 模拟真实 mihomo 配置的紧凑写法：flow 映射键后紧跟
+// `[`（无空格）+ emoji 节点名 + `!!merge` 显式合并标签。这是从用户报障的
+// 远程模板文件提炼出的最小可复现子集。
+const compactFlowOverride = `pr: &pr {type: fallback, proxies: [👵 大妈节点,🐂 所有-手动]}
+pr1: &pr1 {type: select, proxies:[DIRECT,REJECT,👵 大妈节点]}
+proxy-groups:
+  - {name: 🤖⚡ AI,!!merge <<: *pr}
+  - {name: ⏱ 检测,!!merge <<: *pr1}
+rules:
+  - RULE-SET,a1,🤖⚡ AI
+`
+
+// TestRenderYAMLOverrideCompactFlow 验证带 `proxies:[` 紧凑写法的模板
+// 能正常渲染：锚点展开、`!!merge` 生效、产物里不再出现无空格冒号。
+func TestRenderYAMLOverrideCompactFlow(t *testing.T) {
+	nodes := []Node{{Name: "HK-01", Type: "ss", Server: "1.2.3.4", Port: 8443}}
+	out, err := RenderMihomoOverride(model.TemplateLangYAML, compactFlowOverride, nodes)
+	if err != nil {
+		t.Fatalf("紧凑 flow 模板渲染失败: %v", err)
+	}
+	if strings.Contains(out, "proxies:[") {
+		t.Errorf("产物里不应残留无空格冒号:\n%s", out)
+	}
+	for _, token := range []string{"&pr", "&pr1", "<<:"} {
+		if strings.Contains(out, token) {
+			t.Errorf("锚点语法 %q 未被展开:\n%s", token, out)
+		}
+	}
+	var got map[string]interface{}
+	if err := yaml.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("渲染产物不是合法 YAML: %v\n%s", err, out)
+	}
+	groups, ok := got["proxy-groups"].([]interface{})
+	if !ok || len(groups) != 2 {
+		t.Fatalf("proxy-groups 应有 2 个，实际: %#v", got["proxy-groups"])
+	}
+	first, ok := groups[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("第一个策略组类型异常: %T", groups[0])
+	}
+	// *pr 合并来的 type 必须展开
+	if first["type"] != "fallback" {
+		t.Errorf("锚点未展开：AI 组 type 应为 fallback，实际 %v（完整: %#v）", first["type"], first)
 	}
 }
 

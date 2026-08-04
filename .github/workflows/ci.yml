@@ -1,17 +1,26 @@
 name: CI
 
-# 本 workflow 不自己监听 push：日常推送分支不消耗 Actions 额度。
+# 入口：
+#   1. pull_request —— 任何指向仓库的 PR（含 fork）在合并前必须过门禁，
+#      避免「只在打 tag 时才发现 main 已红」。
+#   2. push.branches: main —— 直推 main（或 PR 合并进 main）后再验一次；
+#      不监听其它功能分支的 push，以免每推一次都耗光 Actions 额度。
+#   3. workflow_call —— 由 release.yml 在打 tag 后作为发版前置门禁调用。
+#      刻意不写 push.tags：release.yml 已监听同样的 tag，两边都写会让
+#      推一个 tag 触发两次完整 CI（一次独立、一次被调用）。
+#   4. workflow_dispatch —— 手动入口，想在打 tag 前先验一遍时用。
 #
-# 实际入口有两个：
-#   1. workflow_call —— 由 release.yml 在打 tag 后作为前置门禁调用，
-#      从而保证「CI 全绿才构建发布产物」。这里刻意不写 push.tags：
-#      release.yml 已经监听了同样的 tag，两边都写会让推一个 tag 触发
-#      两次完整 CI（一次独立、一次被调用），既费额度又让状态列表混乱。
-#   2. workflow_dispatch —— 手动入口，想在打 tag 前先验一遍时用，
-#      不必为此制造一个废弃 tag。
+# 并发：同一 ref 上新 run 会取消旧 run，避免 PR 连续 push 排队占额。
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_call:
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:

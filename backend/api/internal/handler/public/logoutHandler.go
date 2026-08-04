@@ -5,6 +5,7 @@ import (
 
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/adguard"
+	"auroramihomo/backend/internal/auth"
 	"github.com/zeromicro/go-zero/rest/httpx"
 )
 
@@ -31,10 +32,10 @@ func LogoutHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		}
-		if r.TLS != nil {
-			cookie.Secure = true
-		}
-		http.SetCookie(w, cookie)
+			if auth.RequestIsHTTPS(r, svcCtx.Config.TrustedProxies) {
+				cookie.Secure = true
+			}
+			http.SetCookie(w, cookie)
 		httpx.OkJsonCtx(r.Context(), w, map[string]any{"ok": true})
 	}
 }

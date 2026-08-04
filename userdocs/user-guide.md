@@ -61,7 +61,7 @@ cat data/initial_password.txt                        # 二进制部署
 docker exec auroramihomo cat /data/initial_password.txt   # Docker
 ```
 
-登录后请立即在「系统设置 → 管理员密码」改掉，并手工删除该文件——它不会自动删除。
+登录成功后程序会自动删除该明文文件；请仍立即在「系统设置 → 管理员密码」改掉初始密码。
 
 5 分钟内失败 5 次会锁定 15 分钟，页面会显示剩余时间。
 

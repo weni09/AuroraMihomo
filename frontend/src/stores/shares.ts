@@ -35,8 +35,9 @@ export const useSharesStore = defineStore('shares', {
       try {
         const res = await api.get<{ items: ShareItem[] }>('/shares')
         this.items = res.data?.items || []
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '加载分享列表失败')
+      } catch (e: unknown) {
+        // 拦截器已 toast
+        console.error(e)
       } finally {
         this.loading = false
       }
@@ -48,8 +49,8 @@ export const useSharesStore = defineStore('shares', {
         const res = await api.put<{ items: ShareItem[] }>(`/shares/${kind}/${id}`, payload)
         this.items = res.data?.items || []
         useNotifyStore().success('分享设置已保存')
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '保存失败')
+      } catch (e: unknown) {
+        console.error(e)
         throw e
       } finally {
         this.loading = false
@@ -62,8 +63,8 @@ export const useSharesStore = defineStore('shares', {
         const res = await api.post<{ items: ShareItem[] }>(`/shares/${kind}/${id}/reset`)
         this.items = res.data?.items || []
         useNotifyStore().success('已生成新的分享链接，旧链接已失效')
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '重置失败')
+      } catch (e: unknown) {
+        console.error(e)
         throw e
       } finally {
         this.loading = false
@@ -76,8 +77,8 @@ export const useSharesStore = defineStore('shares', {
         const res = await api.post<{ items: ShareItem[] }>(`/shares/${kind}/${id}/revoke`)
         this.items = res.data?.items || []
         useNotifyStore().success('分享已撤销')
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '撤销失败')
+      } catch (e: unknown) {
+        console.error(e)
         throw e
       } finally {
         this.loading = false

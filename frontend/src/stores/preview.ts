@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import api from '../api'
+import { apiErrorMessage } from '../utils/apiError'
 
 /** 预览结果：处理前后的内容对照 */
 export interface PreviewResult {
@@ -53,8 +54,11 @@ export const usePreviewStore = defineStore('preview', {
       try {
         const res = await api.post<PreviewResult>('/preview', payload)
         this.result = res.data
-      } catch (e: any) {
-        this.error = e?.response?.data?.message || e?.message || '预览失败'
+      } catch (e: unknown) {
+        // go-zero httpx.Error 写的是纯文本响应体，不是 {message}；
+        // 旧逻辑只会落到 axios 的 "Request failed with status code 400"，
+        // 把后端真正原因（如「远程返回网页」）丢掉。
+        this.error = apiErrorMessage(e, '预览失败')
       } finally {
         this.loading = false
       }

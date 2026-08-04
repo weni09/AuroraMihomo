@@ -44,9 +44,9 @@ export const useFilesStore = defineStore('files', {
       try {
         const res = await api.get<SubFile[]>('/files')
         this.files = res.data || []
-      } catch (e) {
+      } catch (e: unknown) {
+        // 拦截器已 toast
         console.error(e)
-        useNotifyStore().error('加载文件失败')
       } finally {
         this.loading = false
       }
@@ -65,10 +65,12 @@ export const useFilesStore = defineStore('files', {
     },
     async sync(id: number) {
       try {
-        await api.post(`/files/${id}/sync`)
+        // 领域 fallback：上游地址问题比通用 HTTP 句更有用
+        await api.post(`/files/${id}/sync`, null, { skipErrorToast: true })
         useNotifyStore().success('已从上游同步最新内容')
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || '同步失败，请检查上游地址')
+      } catch (e: unknown) {
+        const { apiErrorMessage } = await import('../utils/apiError')
+        useNotifyStore().error(apiErrorMessage(e, '同步失败，请检查上游地址'))
         throw e
       } finally {
         await this.fetch()

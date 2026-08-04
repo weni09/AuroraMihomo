@@ -233,6 +233,14 @@ const onCopy = () => copy(shareUrl.value, '分享链接')
             该链接无需登录即可访问，凭据即链接本身。
             <template v-if="supportsTarget">可追加 <code>&amp;filter=关键词</code> 临时筛选节点。</template>
           </p>
+          <p class="text-xs text-amber-700 dark:text-amber-400/90 bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/40 rounded px-2.5 py-1.5">
+            <template v-if="kind === 'file'">
+              公开直链不会执行源订阅上的 JS 脚本算子；若模板语言为 JavaScript，公开访问会返回错误（请改用 Go 模板或 YAML，或仅用登录后预览）。
+            </template>
+            <template v-else>
+              公开拉取时不会执行处理管道中的 JS 脚本算子（过滤/改名等其它算子仍生效）。需要脚本效果时请用面板内「即时预览」。
+            </template>
+          </p>
         </div>
 
         <!-- 操作结果统一走 toast（见 stores/notify.ts），不在弹窗里占位 -->

@@ -194,13 +194,16 @@ async function refreshProxyCount() {
 
 onMounted(async () => {
   startClock()
+  // 透明代理 status 优先发出：控制台卡里要显示开关状态，且该请求
+  // 若与一堆其它 API 抢浏览器 HTTP/1.1 连接池，容易在客户端一直 pending。
+  const tpP = tp.fetch()
   await Promise.all([
+    tpP,
     mihomoStore.fetchStatus(),
     subStore.fetchSubscriptions(),
     conflictStore.fetch(),
     taskStore.fetch(),
     refreshConfigState(),
-    tp.fetch(),
   ])
   syncClockFromStore()
   // 每分钟再对齐一次宿主钟，抑制长期漂移

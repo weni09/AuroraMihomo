@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,6 +97,15 @@ func (m *Manager) startLocked() error {
 	m.mu.RUnlock()
 	if alive {
 		// 已在跑：对调用方是幂等成功语义更友好，不污染 lastErr
+		return nil
+	}
+	// 面板重启后，若上次子进程被 init 收养或仍占着 Web 口，
+	// 再 Start 会因端口冲突失败，Status 却一直 Running=false，界面显示「已停止」。
+	// Web 口已可连时视为已在服务，幂等成功（Stop 仍只能管本 Manager 拉起的进程）。
+	if m.webPortOpen() {
+		m.mu.Lock()
+		m.lastErr = ""
+		m.mu.Unlock()
 		return nil
 	}
 
@@ -192,22 +202,50 @@ func (m *Manager) startLocked() error {
 	m.lastErr = ""
 	m.mu.Unlock()
 
-	go func(c *exec.Cmd, done chan struct{}) {
-		waitErr := c.Wait()
-		m.mu.Lock()
-		if m.cmd == c {
-			m.cmd = nil
-			m.exited = nil
-		}
-		if waitErr != nil {
-			m.lastErr = "adguard exited: " + waitErr.Error()
-		}
-		m.mu.Unlock()
-		close(done)
-	}(cmd, exited)
+		go func(c *exec.Cmd, done chan struct{}) {
+			waitErr := c.Wait()
+			m.mu.Lock()
+			if m.cmd == c {
+				m.cmd = nil
+				m.exited = nil
+			}
+			if waitErr != nil {
+				m.lastErr = "adguard exited: " + waitErr.Error()
+			}
+			m.mu.Unlock()
+			close(done)
+		}(cmd, exited)
 
-	return nil
-}
+		// Start 立刻返回时进程可能马上因端口冲突退出，日志却写「已启动」、
+		// 界面随后变成「已停止」。短暂等待：进程仍存活或 Web 口已开再成功。
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			m.mu.RLock()
+			alive := m.isProcessAliveLocked()
+			m.mu.RUnlock()
+			if !alive {
+				m.mu.RLock()
+				msg := m.lastErr
+				m.mu.RUnlock()
+				if msg == "" {
+					msg = "adguard process exited immediately after start"
+				}
+				return errors.New(msg)
+			}
+			if m.webPortOpen() {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		// 进程仍在、Web 稍慢：仍视为成功（部分环境监听略晚）
+		m.mu.RLock()
+		stillAlive := m.isProcessAliveLocked()
+		m.mu.RUnlock()
+		if !stillAlive {
+			return errors.New("adguard process exited before web became ready")
+		}
+		return nil
+	}
 
 // TakeInitialAdminPassword 取走首次引导生成的明文口令（一次性）。
 func (m *Manager) TakeInitialAdminPassword() string {
@@ -302,11 +340,41 @@ func (m *Manager) Restart(ctx context.Context) error {
 	return m.startLocked()
 }
 
+// webPortOpen 探测 Web 管理口是否已在监听（默认 127.0.0.1:3000）。
+// 用于：Status 反映真实可达性；Start 时避免对已在跑的实例二次拉起。
+func (m *Manager) webPortOpen() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	addr := strings.TrimSpace(m.cfg.WebAddr)
+	m.mu.RUnlock()
+	addr = strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
+	if addr == "" {
+		addr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
+	}
+	// 只认回环，避免误把局域网其它服务当成 AGH
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		if host != "localhost" {
+			return false
+		}
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 400*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // Status 返回安装/运行状态快照。
 func (m *Manager) Status() Status {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	st := Status{
 		Version:   m.version,
 		WorkDir:   m.cfg.WorkDir,
@@ -323,6 +391,13 @@ func (m *Manager) Status() Status {
 	} else if m.isProcessAliveLocked() {
 		st.Running = true
 		st.PID = m.cmd.Process.Pid
+	}
+	m.mu.RUnlock()
+
+	// 端口探测不能持 mu（Dial 可能数百 ms）。子进程未登记但 Web 已监听时仍报运行中，
+	// 避免界面误显示「已停止」而 :3000 其实可达。
+	if !st.Running && m.webPortOpen() {
+		st.Running = true
 	}
 	return st
 }

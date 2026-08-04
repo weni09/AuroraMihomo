@@ -3,11 +3,9 @@ package public
 import (
 	"context"
 	"strings"
-	"time"
 
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/model"
-	"auroramihomo/backend/internal/service"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -33,15 +31,9 @@ func NewServeFileLogic(ctx context.Context, svcCtx *svc.ServiceContext) *ServeFi
 // 两条分享路径（/file/:token 与 /share/:token）共用同一渲染入口，
 // 避免直链看到的内容与参与配置合并的内容不一致。
 func (l *ServeFileLogic) ServeFileRaw(token string) (string, string, error) {
-	f, err := l.svcCtx.Database.GetFileByToken(token)
-	if err != nil {
-		return "", "", err
-	}
-	// 零值表示永不过期
-	if !f.ShareExpiresAt.IsZero() && time.Now().After(f.ShareExpiresAt) {
-		return "", "", service.ErrShareExpired
-	}
-	body, err := l.svcCtx.RenderService.RenderFile(l.ctx, f)
+	// 与 /share/:token 共用 cachedRender 闸门，避免 file 直链绕过并发上限刷管道。
+	// 公开路径会剥离 script 并拒绝 JS 覆写模板。
+	body, f, err := l.svcCtx.RenderService.RenderPublicFileByToken(l.ctx, token)
 	if err != nil {
 		return "", "", err
 	}

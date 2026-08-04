@@ -473,19 +473,21 @@ func (s *TransparentService) Provision(ctx context.Context, opts netcheck.Provis
 		return nil, s.detect(), errors.New("当前平台不支持自动准备环境（仅 Linux 可用）")
 	}
 
-	before := s.detect()
-	res, err := s.provisioner.Provision(ctx, before, opts)
-	if err != nil {
-		// 前置校验不通过（非 root、非 Linux、没指定动作等）。
-		// 环境报告照常返回，界面上那些"缺什么"的提示不该因此消失。
-		return nil, before, err
-	}
+		before := s.detect()
+		res, err := s.provisioner.Provision(ctx, before, opts)
+		if err != nil {
+			// 前置校验不通过（非 root、非 Linux、没指定动作等）。
+			// 环境报告照常返回，界面上那些"缺什么"的提示不该因此消失。
+			return nil, before, err
+		}
 
-	// 装完包后 nft/iptables 才出现在 PATH 上，必须重新探测才能反映真实状态
-	after := s.detect()
-	s.logger.Infof("透明代理环境准备完成: %s", res.Message)
-	return res, after, nil
-}
+		// 装完包后 nft/iptables 才出现在 PATH 上；先清短缓存再探测，
+		// 否则会在 TTL 内继续返回「不可用」的旧结论。
+		netcheck.InvalidateDetectCache()
+		after := s.detect()
+		s.logger.Infof("透明代理环境准备完成: %s", res.Message)
+		return res, after, nil
+	}
 
 func (s *TransparentService) enable(ctx context.Context, mode string,
 	tproxyPort int, tunStack string) error {

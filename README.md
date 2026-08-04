@@ -82,7 +82,7 @@ docker exec auroramihomo cat /data/initial_password.txt
 
 浏览器打开 `http://<宿主机IP>:8899`，用该密码登录。
 
-> 该明文密码文件**不会自动删除**。登录后请立即在「系统设置 → 管理员密码」修改密码，然后手工删除 `data/initial_password.txt`。
+> 首次成功登录或在「系统设置 → 管理员密码」改密后，程序会自动删除该明文文件。请仍尽快修改初始密码。
 
 **升级**
 
@@ -363,7 +363,7 @@ data/
 ├── substore/              # Sub-Store 脚本运行目录
 ├── netbackup/             # 透明代理启用前的防火墙/路由快照
 ├── logs/aurora.log        # 应用日志（8MB × 5 份滚动）
-└── initial_password.txt   # 首次启动生成的初始密码，登录后请手工删除
+└── initial_password.txt   # 首次启动生成的初始密码；登录或改密后自动删除
 ```
 
 目录位置由配置项 `Mihomo.ConfigDir` 决定（容器内是 `/data`）。备份整个目录即可完整迁移。

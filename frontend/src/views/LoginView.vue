@@ -18,17 +18,18 @@ const handleLogin = async () => {
   loading.value = true
   error.value = ''
   try {
-    const res = await api.post('/auth/login', { password: password.value })
+    // skipErrorToast：错误只显示在表单内，避免再弹全局 toast
+    const res = await api.post('/auth/login', { password: password.value }, {
+      skipErrorToast: true,
+    })
     localStorage.setItem('aurora_token', res.data.token)
     // 回到被拦截前的目标页面
     const redirect = route.query.redirect
     router.push(typeof redirect === 'string' && redirect ? redirect : '/')
-  } catch (err: any) {
-    // 后端登录接口出错时返回纯文本 body（如「密码错误」「尝试次数过多，请在 X 后重试」），
-    // 不是 JSON，因此不能读 .message；否则真实原因会被吞掉，只剩一句无信息量的「登录失败」
-    const data = err.response?.data
-    const text = typeof data === 'string' ? data.trim() : ''
-    error.value = text || data?.message || '登录失败'
+  } catch (err: unknown) {
+    // 后端登录接口出错时返回纯文本 body（如「密码错误」「尝试次数过多，请在 X 后重试」）
+    const { apiErrorMessage } = await import('../utils/apiError')
+    error.value = apiErrorMessage(err, '登录失败')
   } finally {
     loading.value = false
   }

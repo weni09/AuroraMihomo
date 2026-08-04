@@ -38,6 +38,14 @@ describe('AdGuardView', () => {
     vi.clearAllMocks()
     clearPageChrome()
     mockedApi.post.mockResolvedValue({ data: { ok: true } })
+    // 会话探测：默认反代已就绪
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        status: 200,
+        type: 'basic',
+      }),
+    )
     document.body.removeAttribute('style')
     document.body.innerHTML = ''
   })
@@ -102,6 +110,12 @@ describe('AdGuardView', () => {
   })
 
   it('运行中挂 iframe，并写入 page chrome，工具栏含设置', async () => {
+    vi.useFakeTimers()
+    // rAF 在 fake timers 下需手动落地，否则会话准备会一直挂起
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      return setTimeout(() => cb(performance.now()), 0) as unknown as number
+    })
+
     mockedApi.get.mockResolvedValue({
       data: statusPayload({
         installed: true,
@@ -114,6 +128,8 @@ describe('AdGuardView', () => {
     })
 
     const wrapper = mount(AdGuardView, { attachTo: document.body })
+    await flushPromises()
+    await vi.runAllTimersAsync()
     await flushPromises()
 
     const iframe = wrapper.get('[data-testid="adguard-iframe"]')
@@ -128,7 +144,13 @@ describe('AdGuardView', () => {
     expect(actions.value.map((a) => a.icon)).toEqual(['refresh', 'settings', 'tools'])
     expect(action.value?.label).toBe('刷新')
     expect(wrapper.find('[data-testid="adguard-refresh-btn"]').exists()).toBe(true)
-    expect(mockedApi.post).toHaveBeenCalledWith('/auth/session')
+    expect(mockedApi.post).toHaveBeenCalledWith(
+      '/auth/session',
+      null,
+      expect.objectContaining({ skipErrorToast: true }),
+    )
+    expect(globalThis.fetch).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="adguard-iframe-shell"]').exists()).toBe(true)
 
     const header = wrapper.get('[data-testid="adguard-page-header"]')
     expect(header.classes()).toEqual(expect.arrayContaining(['hidden', 'lg:flex']))
@@ -152,5 +174,33 @@ describe('AdGuardView', () => {
     wrapper.unmount()
     expect(subtitle.value).toBe('')
     expect(action.value).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('反代持续 401 时仍乐观挂 iframe，并展示重试条', async () => {
+    vi.useFakeTimers()
+    mockedApi.get.mockResolvedValue({
+      data: statusPayload({ installed: true, running: true }),
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        status: 401,
+        type: 'basic',
+      }),
+    )
+
+    const wrapper = mount(AdGuardView)
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    // 不再整页空白等待：先挂 iframe，探测失败只留顶条重试
+    expect(wrapper.find('[data-testid="adguard-iframe"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adguard-session-banner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="adguard-session-retry"]').exists()).toBe(true)
+
+    wrapper.unmount()
+    vi.useRealTimers()
   })
 })

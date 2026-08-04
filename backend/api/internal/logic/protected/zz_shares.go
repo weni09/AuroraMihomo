@@ -118,12 +118,9 @@ func updateShare(svcCtx *svc.ServiceContext, req *types.ShareUpdateReq) (*types.
 
 // resetShare 重置分享凭据。旧链接立即失效，用于凭据外泄后的补救。
 func resetShare(svcCtx *svc.ServiceContext, req *types.ShareActionReq) (*types.ShareListResp, error) {
-	// 凭据长度沿用各自创建时的约定：订阅/组合 8 字节，文件 16 字节
-	size := 8
-	if req.Kind == shareKindFile {
-		size = 16
-	}
-	token, err := randomToken(size)
+	// 三类分享统一 16 字节（128 bit）。旧实现订阅/组合仅 8 字节，
+	// 对免登录公开端点偏短；重置时一并抬到与文件相同的强度。
+	token, err := randomToken(shareTokenBytes)
 	if err != nil {
 		// 随机源异常时必须失败，不能退化为可预测凭据
 		return nil, err

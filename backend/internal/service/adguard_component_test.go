@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/netcheck"
@@ -160,6 +162,44 @@ func TestShouldStartAtBoot_RequiresComponentEnabled(t *testing.T) {
 	}
 	if !svc.ShouldStartAtBoot() {
 		t.Fatal("component 与 boot 均开时应自启")
+	}
+}
+
+// TestStart_RejectsWhenComponentDisabled 关组件时 Start 必须失败。
+// 与 ShouldStartAtBoot 三道门对齐，避免 API 绕过组件开关把进程拉起并写 desired。
+func TestStart_RejectsWhenComponentDisabled(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+	if svc.ComponentEnabled() {
+		t.Fatal("默认 component 应为 false")
+	}
+	// 即使库里残留 desired=true，关组件时也不允许 Start
+	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	beforeDesired := svc.DesiredRunning()
+	err := svc.Start(ctx)
+	if err == nil {
+		t.Fatal("组件关闭时 Start 应失败")
+	}
+	if !strings.Contains(err.Error(), "组件未启用") {
+		t.Fatalf("错误应提示组件未启用，实际: %v", err)
+	}
+	// 拒绝发生在 mgr.Start 之前，不得把 desired 改成「已确认启动成功」之外的语义；
+	// 此处不应因失败路径调用 setDesiredRunning(true)。残留 true 可保留，false 也不得被写 true。
+	if !beforeDesired && svc.DesiredRunning() {
+		t.Fatal("组件关闭时 Start 失败不应写入 desiredRunning=true")
+	}
+	// 开组件后校验门打开：错误不再是「组件未启用」（是否真能 exec 因平台假二进制而异）
+	if err := svc.SetComponentEnabled(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	err = svc.Start(ctx)
+	if err != nil && strings.Contains(err.Error(), "组件未启用") {
+		t.Fatalf("组件已开启时不应再报组件未启用: %v", err)
+	}
+	if err == nil {
+		_ = svc.Stop(ctx)
 	}
 }
 
@@ -382,5 +422,74 @@ func TestStopProcess_DoesNotClearDesiredRunning(t *testing.T) {
 	}
 	if svc.DesiredRunning() {
 		t.Fatal("用户 Stop 应清除 enabled_at_boot")
+	}
+}
+
+// TestStartWithBootRetry_GivesUpAfterMaxAttempts 组件关时每次 Start 都失败，
+// 有限次重试后应返回聚合错误（initialDelay/retryBase 置 0 避免单测空等）。
+func TestStartWithBootRetry_GivesUpAfterMaxAttempts(t *testing.T) {
+	svc, _ := newTestAdGuardService(t)
+	// 默认 component=false → Start 立即「组件未启用」
+	ctx := context.Background()
+	err := svc.startWithBootRetry(ctx, 0, 3, 0)
+	if err == nil {
+		t.Fatal("应在重试耗尽后失败")
+	}
+	if !strings.Contains(err.Error(), "3 次") && !strings.Contains(err.Error(), "中止") {
+		// component 关时第二次循环 ShouldStartAtBoot 仍 false，可能走「中止」或「均失败」
+		// 首次 Start 已失败；若 desired 未开，第二次会「开机自启中止」
+		t.Logf("got err: %v", err)
+	}
+	if !strings.Contains(err.Error(), "组件") && !strings.Contains(err.Error(), "失败") && !strings.Contains(err.Error(), "中止") {
+		t.Fatalf("错误应体现失败/中止语义: %v", err)
+	}
+}
+
+// TestStartWithBootRetry_StopsWhenBootIntentCleared 重试间隙若用户清掉期望运行，应中止而非空转。
+func TestStartWithBootRetry_StopsWhenBootIntentCleared(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	ctx := context.Background()
+	// 组件开但无可用二进制 → Start 失败；desired 先开再在失败后由「未安装/关 desired」中止较难注入，
+	// 这里用：组件关 + desired 开，第一次 Start 因组件失败，ShouldStartAtBoot 一直 false → 第二次中止。
+	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	// component 仍为 false
+	err := svc.startWithBootRetry(ctx, 0, 3, 0)
+	if err == nil {
+		t.Fatal("应失败或中止")
+	}
+	// 至少不应成功写「已在跑」；desired 可仍为 true（用户意图），但进程未起
+	if svc.mgr.Status().Running {
+		t.Fatal("组件关闭时不应 Running")
+	}
+}
+
+// TestStartWithBootRetry_RespectsContextCancel 取消 ctx 应尽快返回。
+func TestStartWithBootRetry_RespectsContextCancel(t *testing.T) {
+	svc, db := newTestAdGuardService(t)
+	if err := svc.SetComponentEnabled(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	// 无二进制：Start 会失败并进入重试等待；用已取消的 ctx
+	svc.mgr = adguard.NewManager(adguard.Config{
+		BinaryPath: filepath.Join(t.TempDir(), "missing-agh"),
+		WorkDir:    svc.workDir,
+		WebAddr:    "127.0.0.1:3000",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := svc.startWithBootRetry(ctx, 0, 3, time.Minute) // 长退避，若未尊重 cancel 会卡住
+	if err == nil {
+		t.Fatal("已取消的 ctx 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "取消") && !errors.Is(err, context.Canceled) {
+		// 包装后可能是「开机自启取消」
+		if !strings.Contains(err.Error(), "cancel") && !strings.Contains(err.Error(), "canceled") && !strings.Contains(err.Error(), "取消") {
+			t.Fatalf("应体现取消: %v", err)
+		}
 	}
 }

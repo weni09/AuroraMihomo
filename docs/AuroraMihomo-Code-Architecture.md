@@ -1,299 +1,153 @@
 # AuroraMihomo Code Architecture
 
+> 本文描述**当前实现**的代码结构。早期草案中的 `cmd/server`、`apps/api`、`pkg/` 等布局已废弃，以仓库实况与 `AGENTS.md` 为准。
+
 ## 1. Overview
 
-This document defines the internal Go code architecture of AuroraMihomo.
+AuroraMihomo 是 Mihomo（Clash.Meta）配置与运行时管理平台：
 
-Design goals:
+- 单体部署：一个 Go 二进制同时提供 HTTP API 与前端静态资源
+- 无独立 rpc/gRPC 服务
+- Go module：`auroramihomo`
 
--   Clear module boundaries
--   Easy testing
--   Support future Mihomo embedding
--   Support Sub-Store replacement
--   Suitable for long-running service
+设计目标：
 
-------------------------------------------------------------------------
-
-# 2. Repository Structure
-
-    AuroraMihomo/
-
-    ├── cmd/
-    │
-    │   ├── server/
-    │   │   └── main.go
-    │   │
-    │   └── worker/
-    │       └── main.go
-    │
-
-    ├── apps/
-
-    │   └── api/
-
-    │       ├── aurora.api
-    │       └── internal/
-
-    │
-
-    ├── internal/
-
-    │   ├── mihomo/
-    │   ├── config/
-    │   ├── merge/
-    │   ├── substore/
-    │   ├── scheduler/
-    │   ├── updater/
-    │   ├── storage/
-    │   └── runtime/
-
-    │
-
-    ├── pkg/
-
-    │   ├── yaml/
-    │   ├── logger/
-    │   └── utils/
-
-    └── web/
+- 模块边界清晰、可单测
+- 适合长驻进程（内核托管、定时任务、透明代理）
+- Sub-Store 算子在 Go 内通过 goja 执行，不依赖外置 Node 服务
 
 ------------------------------------------------------------------------
 
-# 3. Module Responsibilities
+## 2. Repository Structure
 
-## mihomo
-
-Responsible:
-
--   process lifecycle
--   status detection
--   reload
--   logs
--   version management
-
-Interface:
-
-``` go
-type Manager interface {
-
- Start() error
-
- Stop() error
-
- Restart() error
-
- Reload() error
-
- Status() Status
-
-}
+```
+AuroraMihomo/
+├── backend/
+│   ├── api/                      # go-zero rest 入口（main 在 aurora.go）
+│   │   ├── aurora.go
+│   │   ├── etc/aurora-api.yaml
+│   │   └── internal/
+│   │       ├── config/
+│   │       ├── handler/          # goctl 生成 + 少量手写
+│   │       ├── logic/            # 业务编排（public / protected）
+│   │       ├── svc/              # ServiceContext 依赖注入
+│   │       └── types/            # goctl 生成的 API 类型
+│   └── internal/                 # 领域实现（与 api 分层）
+│       ├── adguard/              # 可选 AdGuard Home 子进程与反代
+│       ├── applog/
+│       ├── auth/                 # 密码哈希、登录限流、JWT 辅助
+│       ├── domain/               # 配置领域模型
+│       ├── engine/               # MergeEngine（Base/Remote/Override）
+│       ├── fetcher/              # 远程订阅拉取
+│       ├── mihomo/               # 内核进程管理
+│       ├── model/                # 持久化模型
+│       ├── netcheck/             # 透明代理环境检测与规则
+│       ├── realtime/             # WebSocket hub
+│       ├── repository/           # SQLite / gorm，唯一允许写 SQL 的层
+│       ├── scheduler/            # 后台定时任务
+│       ├── service/              # 应用服务（配置、设置、渲染、透明代理…）
+│       ├── substore/             # 订阅解析与管道算子（含 goja）
+│       ├── updater/              # mihomo / Zashboard / AdGuard 更新
+│       └── version/
+├── frontend/                     # Vue 3 + Vite + Pinia + Tailwind
+├── docs/                         # 设计与 API 规格（.api）
+├── migrations/                   # 手写 SQL 迁移
+├── public/                       # 前端构建产物（make build-frontend 同步）
+├── scripts/                      # 规范机检等
+└── userdocs/                     # 用户文档原件
 ```
 
-------------------------------------------------------------------------
-
-## config
-
-Responsible:
-
--   yaml loading
--   model conversion
--   config generation
-
-Structure:
-
-    config/
-
-    model.go
-
-    parser.go
-
-    generator.go
-
-    validator.go
+入口二进制：`go build -o auroramihomo ./backend/api`
 
 ------------------------------------------------------------------------
 
-## merge
+## 3. Request Path
 
-Core module.
-
-Responsibilities:
-
--   semantic merge
--   conflict detection
--   policy execution
--   diff generation
-
-Interface:
-
-``` go
-type Engine interface {
-
- Merge(
- base Config,
- remote Config,
- policy Policy,
- ) Result
-
-}
+```
+浏览器
+  → backend/api（go-zero rest + 静态资源 / Zashboard /ui/）
+      → logic（public 免登录 / protected JWT）
+          → internal/service
+              → internal/repository → SQLite
+          → internal/mihomo（进程）
+          → internal/substore（渲染分享、管道）
+          → internal/fetcher（拉订阅）
 ```
 
-------------------------------------------------------------------------
+公开端点（仅 token，无 JWT）：
 
-## substore
+- `GET /api/v1/share/:token` — 订阅/组合分享
+- `GET /api/v1/file/:token` — 文件分享
 
-Responsible:
-
--   subscription fetching
--   conversion
--   update
-
-Initial:
-
-    Go
-     |
-    Node Runtime
-     |
-    SubStore
+公开渲染路径会剥离不安全算子（如任意 JS 模板），见 `substore.StripPublicUnsafeOps`。
 
 ------------------------------------------------------------------------
 
-## scheduler
+## 4. Module Responsibilities
 
-Background tasks:
-
--   subscription update
--   merge
--   reload
--   update check
-
-------------------------------------------------------------------------
-
-## updater
-
-Responsible:
-
--   mihomo upgrade
--   zashboard update
--   runtime update
+| 包 | 职责 |
+|---|---|
+| `mihomo` | 内核启停、重载、日志、版本探测 |
+| `engine` | 语义合并、冲突策略、产出 config.yaml |
+| `substore` | 节点解析、管道算子、分享渲染、goja 脚本 |
+| `fetcher` | http(s) 订阅下载；拒绝非 http 与云 metadata/link-local |
+| `scheduler` | 订阅刷新、自动更新等定时任务 |
+| `updater` | 下载并校验 mihomo / Zashboard / AdGuard 发布包 |
+| `netcheck` | TUN/TProxy 环境检测、防火墙规则、面板出站 fwmark |
+| `auth` | PBKDF2 口令、登录限流、TrustedProxies |
+| `service` | 跨包用例编排，供 logic 调用 |
+| `repository` | 唯一 SQL 边界（规范 BE1） |
 
 ------------------------------------------------------------------------
 
-# 4. Dependency Direction
+## 5. Dependency Direction
 
-Allowed:
+允许：
 
-    api
-
-     |
-
-    service
-
-     |
-
-    domain
-
-     |
-
-    repository
-
-Avoid:
-
-    merge -> api
-
-    mihomo -> web
-
-------------------------------------------------------------------------
-
-# 5. Service Layer
-
-Example:
-
-    SubscriptionService
-
-          |
-
-    SubscriptionRepository
-
-          |
-
-    SQLite
-
-------------------------------------------------------------------------
-
-# 6. Runtime Manager
-
-Unified control:
-
-    RuntimeManager
-
-     |
-     +-- Mihomo
-     |
-     +-- SubStore
-     |
-     +-- Scheduler
-
-------------------------------------------------------------------------
-
-# 7. Dependency Injection
-
-Use:
-
--   go-zero built-in config
--   manual constructor injection
-
-Example:
-
-``` go
-func NewService(
- repo Repository,
- merge Engine,
- mihomo Manager,
-) Service
+```
+api/logic → service → repository → model
+         ↘ engine / mihomo / substore / fetcher / updater …
 ```
 
-------------------------------------------------------------------------
+避免：
 
-# 8. Logging
+- `engine` / `mihomo` / `substore` 依赖 `api`
+- repository 以外的包写 SQL
 
-Unified:
-
-    zap/logx
-
-Categories:
-
-    api
-
-    mihomo
-
-    merge
-
-    scheduler
-
-    update
+依赖注入：`svc.NewServiceContext` 手工构造，配置来自 go-zero `config.Config`。
 
 ------------------------------------------------------------------------
 
-# 9. Testing Strategy
+## 6. Auth & Session
 
-Unit:
-
--   Merge Engine
--   Parser
--   Conflict
-
-Integration:
-
--   Mihomo lifecycle
--   API
+- 管理员单用户；口令 PBKDF2 存 SQLite `settings.admin_password`
+- 首次启动生成随机口令，写入 `data/initial_password.txt` 并打印一次；**成功登录或改密后删除该文件**
+- JWT HS256；`Authorization` 与 HttpOnly cookie `aurora_session` 双通道（后者供 AdGuard 反代等同源场景）
+- 登录失败按来源 IP 限流；仅 TrustedProxies 命中时采信 XFF
 
 ------------------------------------------------------------------------
 
-# 10. Future Extension
+## 7. Logging & Realtime
 
-Support:
+- 应用日志：go-zero `logx` + `applog.Buffer`（界面可查）与可选落盘
+- 内核日志：`mihomo.Manager` 订阅后经 `realtime.Hub` WebSocket 推送
+- WS 连接校验 Origin（与 Host 同站），降低跨站滥用面
 
--   plugin interface
--   multi-core runtime
--   cluster mode
+------------------------------------------------------------------------
+
+## 8. Testing
+
+- 单测：`go test ./backend/...`（MergeEngine、fetcher 协议/SSRF、substore 算子、auth…）
+- 前端：`vitest` + `vue-tsc` + eslint
+- 门禁：`make check`；CI 在 PR / main / release 调用
+
+规范机检见 `scripts/check-conventions.py` 与 `AGENTS.md`。
+
+------------------------------------------------------------------------
+
+## 9. Related Docs
+
+- 跨层规范：`AGENTS.md`、`backend/AGENTS.md`、`frontend/AGENTS.md`
+- API 契约：`docs/AuroraMihomo-Go-Zero-API.api`
+- 用户文档：`userdocs/user-guide.md`
+- 透明代理：`docs/AuroraMihomo-Transparent-Proxy.md`

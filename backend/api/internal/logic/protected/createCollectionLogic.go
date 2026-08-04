@@ -38,7 +38,7 @@ func (l *CreateCollectionLogic) CreateCollection(req *types.CollectionReq) (resp
 	if len(req.Operators) > 0 {
 		opsJSON, _ = jsonMarshal(req.Operators)
 	}
-	token, err := randomToken(8)
+	token, err := randomToken(shareTokenBytes)
 	if err != nil {
 		return nil, err
 	}

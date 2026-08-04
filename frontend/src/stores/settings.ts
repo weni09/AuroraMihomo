@@ -53,9 +53,9 @@ export const useSettingsStore = defineStore('settings', {
       try {
         const res = await api.get<UpdateSettings>('/settings/update')
         this.settings = res.data
-      } catch (e) {
+      } catch (e: unknown) {
+        // HTTP 错误由 api 拦截器统一 toast
         console.error(e)
-        useNotifyStore().error('加载设置失败')
       } finally {
         this.loading = false
       }
@@ -74,9 +74,8 @@ export const useSettingsStore = defineStore('settings', {
         const res = await api.put<UpdateSettings>('/settings/update', payload)
         this.settings = res.data
         useNotifyStore().success('设置已保存')
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error(e)
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '保存失败')
       } finally {
         this.loading = false
       }
@@ -88,8 +87,8 @@ export const useSettingsStore = defineStore('settings', {
       try {
         const res = await api.get('/update/check')
         useNotifyStore().success(res.data?.message || '检查完成')
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '检查更新失败')
+      } catch (e: unknown) {
+        console.error(e)
       } finally {
         this.checkingUpdate = false
       }
@@ -102,8 +101,8 @@ export const useSettingsStore = defineStore('settings', {
         const res = await api.post('/update/mihomo')
         useNotifyStore().success(res.data?.message || 'Mihomo 已更新')
         await this.fetch()
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '更新失败')
+      } catch (e: unknown) {
+        console.error(e)
       } finally {
         this.updatingMihomo = false
       }
@@ -115,8 +114,8 @@ export const useSettingsStore = defineStore('settings', {
         const res = await api.post('/update/zashboard')
         useNotifyStore().success(res.data?.message || 'Zashboard 已更新')
         await this.fetch()
-      } catch (e: any) {
-        useNotifyStore().error(e?.response?.data?.message || e?.message || '更新失败')
+      } catch (e: unknown) {
+        console.error(e)
       } finally {
         this.updatingZashboard = false
       }

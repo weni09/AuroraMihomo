@@ -9,7 +9,7 @@ allowed-tools: Bash(npx shadcn-vue@latest *), Bash(pnpm dlx shadcn-vue@latest *)
 
 > **⚠️ 本仓库尚未初始化 shadcn-vue。** 没有 `components.json`，`frontend/` 也未安装 `reka-ui` / `clsx` / `tailwind-merge`，因此 `add` 类命令无法直接使用（`init` 会改动前端依赖与目录结构，属于需用户确认的范围）。
 >
-> MCP 服务器 `shadcn-vue` 已配置并可用（配置在用户级 `~/.zcode/cli/config.json`，非项目级；团队成员不会自动获得），可用于查询组件文档与示例。
+> MCP 服务器 `shadcn-vue`：项目级配置在仓库根 `.mcp.json`（Claude Code / Desktop 用）；ZCode 仍可在用户级 `~/.zcode/cli/config.json` 配置。可用于查询组件文档与示例。
 >
 > 前端现状：Tailwind 3.4 + 自建语义色 token（`canvas` / `surface` / `elevated` / `fg` / `line`，见 `frontend/src/assets/main.css`），组件平铺在 `frontend/src/components/`。本文下方"使用 `bg-primary`、`text-muted-foreground` 等语义色"的规则**在本仓库当前不成立** —— 这些 token 尚未定义。详见 `frontend/AGENTS.md` 顶部的现状说明。
 

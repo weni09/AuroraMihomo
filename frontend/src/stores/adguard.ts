@@ -100,6 +100,9 @@ export const useAdGuardStore = defineStore('adguard', {
           ...res.data,
           // 显式归一：缺省/非法值按关闭处理，避免侧栏误显示
           componentEnabled: res.data?.componentEnabled === true,
+          // running/installed 也必须严格布尔，避免 JSON 缺字段时被 spread 成 undefined 再被 UI 当假
+          installed: res.data?.installed === true,
+          running: res.data?.running === true,
           entryPath: res.data?.entryPath || '/adguard-ui/',
           dnsMode: Number.isFinite(dnsMode) && dnsMode >= 0 && dnsMode <= 2 ? dnsMode : 0,
           cdnProviders: Array.isArray(res.data?.cdnProviders) ? res.data.cdnProviders : [],
@@ -109,6 +112,8 @@ export const useAdGuardStore = defineStore('adguard', {
           desiredRunning: res.data?.desiredRunning === true,
         }
       } catch (error) {
+        // 失败时保留上一次成功的 status，避免手机弱网把「已启用/运行中」打成
+        // emptyStatus（componentEnabled=false），整页变成「未启用」或空白感。
         console.error('Failed to fetch AdGuard status', error)
       } finally {
         this.isLoading = false

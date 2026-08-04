@@ -33,15 +33,20 @@ const form = reactive({
 })
 
 onMounted(async () => {
-  await store.fetch()
-  syncForm()
-  await loadPolicy()
+  // 先拉透明代理 status（开关是否可点取决于它），再并行其它设置项。
+  // 全部一股脑并行时，若浏览器连接池被其它长请求/WS 占满，
+  // status 会在客户端一直 pending，表现为「不具备条件」或超时。
   await tp.fetch()
-  // 自定义规则与内置规则展示数据独立拉取（见 store 的 fetchRules 注释）
-  await tp.fetchRules()
-  if (tp.rules) customRulesDraft.value = tp.rules.customRules
-  // 组件开关状态来自 /adguard/status（关组件时 status 仍可读）
-  await adguard.fetchStatus()
+  await Promise.all([
+    store.fetch().then(() => syncForm()),
+    loadPolicy(),
+    // 自定义规则与内置规则展示数据独立拉取（见 store 的 fetchRules 注释）
+    tp.fetchRules().then(() => {
+      if (tp.rules) customRulesDraft.value = tp.rules.customRules
+    }),
+    // 组件开关状态来自 /adguard/status（关组件时 status 仍可读）
+    adguard.fetchStatus(),
+  ])
 })
 
 /** 自定义规则草稿：textarea 直接双向绑定（与 CDN 列表同款），保存时才提交 */
@@ -117,8 +122,9 @@ async function savePolicy() {
     const res = await api.put('/settings/merge-policy', { ...mergePolicy })
     Object.assign(mergePolicy, res.data)
     notify.success('合并策略已保存')
-  } catch (e: any) {
-    notify.error(e?.response?.data?.message || '保存失败')
+  } catch (e: unknown) {
+    // 拦截器已 toast
+    console.error(e)
   }
 }
 
@@ -161,17 +167,22 @@ async function onChangePassword() {
   }
   pwdSaving.value = true
   try {
-    const res = await api.post('/auth/password', {
-      oldPassword: pwdForm.oldPassword,
-      newPassword: pwdForm.newPassword,
-    })
+    const res = await api.post(
+      '/auth/password',
+      {
+        oldPassword: pwdForm.oldPassword,
+        newPassword: pwdForm.newPassword,
+      },
+      { skipErrorToast: true },
+    )
     notify.success(res.data?.message || '密码已更新')
     pwdForm.oldPassword = ''
     pwdForm.newPassword = ''
     pwdForm.confirmPassword = ''
-  } catch (e: any) {
-    // 改密失败的原因（旧密码错误等）由后端返回，直接透出
-    notify.error(e?.response?.data?.message || '修改失败')
+  } catch (e: unknown) {
+    // 改密失败的原因（旧密码错误等）由后端返回，直接透出；只 toast 一次
+    const { apiErrorMessage } = await import('../utils/apiError')
+    notify.error(apiErrorMessage(e, '修改失败'))
   } finally {
     pwdSaving.value = false
   }
@@ -724,12 +735,30 @@ const navOpen = ref(false)
           <label class="mb-1 flex items-center gap-3">
             <Switch
               :model-value="tp.status.enabled"
-              :disabled="!tp.anyAvailable || tp.saving"
+              :disabled="tp.switchDisabled"
               @update:model-value="onToggleTransparent"
             />
             <span>启用透明代理</span>
           </label>
-          <p v-if="!tp.anyAvailable" class="mb-3 text-xs text-fg-subtle">
+          <!-- 三种互斥提示：加载中 / 拉取失败 / 环境确实不可用。
+               绝不能在 env 尚未就绪时渲染「不具备条件」——那会把请求挂起
+               或失败伪装成环境问题，开关灰掉且用户按模式说明排查无果。 -->
+          <p v-if="tp.loading && !tp.envReady" class="mb-3 text-xs text-fg-subtle">
+            正在检测运行环境…
+          </p>
+          <div v-else-if="tp.fetchError" class="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
+            <div class="font-medium text-amber-800 dark:text-amber-300">透明代理状态加载失败</div>
+            <p class="mt-1 text-xs text-amber-700 dark:text-amber-400">{{ tp.fetchError }}</p>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm mt-2"
+              :disabled="tp.loading"
+              @click="tp.fetch({ force: true })"
+            >
+              重试
+            </button>
+          </div>
+          <p v-else-if="tp.envReady && !tp.anyAvailable" class="mb-3 text-xs text-fg-subtle">
             当前环境不具备条件，开关不可用。原因与解决办法见下方各模式说明。
           </p>
 

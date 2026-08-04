@@ -151,13 +151,18 @@ func DecodeOperators(raw string) []substore.PipelineOperator {
 	return ops
 }
 
+// ErrPublicJSTemplate 表示公开直链/分享不允许执行 JS 覆写模板。
+// 避免 token 暴露后被刷 goja；登录预览与合并路径仍可使用 JS。
+var ErrPublicJSTemplate = errors.New("公开直链不支持 JavaScript 模板，请改用 Go 模板或 YAML 覆写，或在登录后预览")
+
 // RenderCollection 渲染组合订阅。target 为空时使用组合自身的模板设置。
 func (s *RenderService) RenderCollection(ctx context.Context, id int64, target string) (string, error) {
 	c, err := s.db.GetCollection(id)
 	if err != nil {
 		return "", err
 	}
-	return s.renderCollection(ctx, c, target, nil)
+	// 鉴权路径保留 script（合并远程源、面板预览）
+	return s.renderCollection(ctx, c, target, nil, false)
 }
 
 // ShareResult 是一次公开分享请求的产物
@@ -215,7 +220,7 @@ func (s *RenderService) renderByTokenUncached(ctx context.Context, token, target
 			return nil, ErrShareExpired
 		}
 		effective := ResolveTarget(target, "mihomo-yaml")
-		body, err := s.renderCollection(ctx, c, target, extra)
+		body, err := s.renderCollection(ctx, c, target, extra, true)
 		if err != nil {
 			return nil, err
 		}
@@ -231,14 +236,14 @@ func (s *RenderService) renderByTokenUncached(ctx context.Context, token, target
 			return nil, ErrShareExpired
 		}
 		effective := ResolveTarget(target, "mihomo-yaml")
-		body, err := s.renderSubscription(ctx, sub, effective, extra)
+		body, err := s.renderSubscription(ctx, sub, effective, extra, true)
 		if err != nil {
 			return nil, err
 		}
 		return &ShareResult{Body: body, Target: effective, Traffic: sub}, nil
 	}
 
-	// 最后尝试文件模板的分享
+	// 最后尝试文件模板的分享（与 /file/:token 一样走公开渲染规则）
 	f, err := s.db.GetFileByToken(token)
 	if err != nil {
 		return nil, err
@@ -246,7 +251,7 @@ func (s *RenderService) renderByTokenUncached(ctx context.Context, token, target
 	if shareExpired(f.ShareExpiresAt) {
 		return nil, ErrShareExpired
 	}
-	body, err := s.RenderFile(ctx, f)
+	body, err := s.renderFile(ctx, f, true)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +294,8 @@ func (s *RenderService) collectionTraffic(collectionID int64) *model.Subscriptio
 	return nil
 }
 
-func (s *RenderService) renderCollection(ctx context.Context, c *model.SubCollection, target string, extra []substore.PipelineOperator) (string, error) {
+// public=true 时剥离 script，防止无鉴权 token 路径执行 goja。
+func (s *RenderService) renderCollection(ctx context.Context, c *model.SubCollection, target string, extra []substore.PipelineOperator, public bool) (string, error) {
 	items, err := s.db.ListCollectionItems(c.ID)
 	if err != nil {
 		return "", err
@@ -312,13 +318,17 @@ func (s *RenderService) renderCollection(ctx context.Context, c *model.SubCollec
 		if sub.Enabled != 1 {
 			continue
 		}
+		ops := DecodeOperators(sub.Operators)
+		if public {
+			ops = substore.StripPublicUnsafeOps(ops)
+		}
 		reqs = append(reqs, substore.ConvertRequest{
 			URL:       sub.URL,
 			Source:    sub.Name,
 			UserAgent: sub.UserAgent,
 			CacheRaw:  sub.CachedNodes,
 			Content:   sub.Content,
-			Operators: DecodeOperators(sub.Operators),
+			Operators: ops,
 		})
 	}
 	if len(reqs) == 0 {
@@ -328,6 +338,9 @@ func (s *RenderService) renderCollection(ctx context.Context, c *model.SubCollec
 	target = ResolveTarget(target, "mihomo-yaml")
 
 	ops := append(DecodeOperators(c.Operators), extra...)
+	if public {
+		ops = substore.StripPublicUnsafeOps(ops)
+	}
 	res, err := s.engine.ConvertMany(ctx, reqs, s.RewriteRules(), ops, target, "")
 	if err != nil {
 		return "", err
@@ -370,18 +383,27 @@ func (s *RenderService) RenderSubscription(ctx context.Context, id int64, target
 	if len(subs) == 0 {
 		return "", fmt.Errorf("订阅 %d 不存在", id)
 	}
-	return s.renderSubscription(ctx, &subs[0], ResolveTarget(target, "mihomo-yaml"), nil)
+	return s.renderSubscription(ctx, &subs[0], ResolveTarget(target, "mihomo-yaml"), nil, false)
 }
 
-func (s *RenderService) renderSubscription(ctx context.Context, sub *model.Subscription, target string, extra []substore.PipelineOperator) (string, error) {
+// public=true 时剥离 script（公开分享）；鉴权预览传 false。
+func (s *RenderService) renderSubscription(ctx context.Context, sub *model.Subscription, target string, extra []substore.PipelineOperator, public bool) (string, error) {
+	ops := DecodeOperators(sub.Operators)
+	if public {
+		ops = substore.StripPublicUnsafeOps(ops)
+	}
+	collOps := extra
+	if public {
+		collOps = substore.StripPublicUnsafeOps(extra)
+	}
 	res, err := s.engine.ConvertMany(ctx, []substore.ConvertRequest{{
 		URL:       sub.URL,
 		Source:    sub.Name,
 		UserAgent: sub.UserAgent,
 		CacheRaw:  sub.CachedNodes,
 		Content:   sub.Content,
-		Operators: DecodeOperators(sub.Operators),
-	}}, s.RewriteRules(), extra, target, "")
+		Operators: ops,
+	}}, s.RewriteRules(), collOps, target, "")
 	if err != nil {
 		return "", err
 	}
@@ -439,15 +461,57 @@ func ContentTypeFor(target string) string {
 
 // ---- 文件模板 ----
 
-// RenderFile 渲染一个文件的对外内容。
+// RenderFile 渲染文件内容（鉴权/合并路径）：允许 JS 模板与源订阅 script。
 //
 // 两种配置类型：
 //   - file：原样输出文件内容（规则片段、Surge 模块等）
-//   - mihomo：把文件内容当作 Go 模板，套用其指定订阅来源的节点渲染
+//   - mihomo：把文件内容当作模板，套用其指定订阅来源的节点渲染
 //
-// 这是文件直链与「文件作为远程配置来源」共用的唯一入口，
-// 避免直链看到的内容与实际参与合并的内容不一致。
+// 公开直链请用 RenderPublicFileByToken，会剥离 script 并拒绝 JS 模板。
 func (s *RenderService) RenderFile(ctx context.Context, f *model.SubFile) (string, error) {
+	return s.renderFile(ctx, f, false)
+}
+
+// RenderPublicFileByToken 按直链 token 渲染文件，经 cachedRender 与分享端点共享并发闸。
+// 返回文件元数据便于上层决定 Content-Type。
+func (s *RenderService) RenderPublicFileByToken(ctx context.Context, token string) (body string, f *model.SubFile, err error) {
+	f, err = s.db.GetFileByToken(token)
+	if err != nil {
+		return "", nil, err
+	}
+	if shareExpired(f.ShareExpiresAt) {
+		return "", nil, ErrShareExpired
+	}
+	// 版本键与订阅分享一致：文件或来源变更后 updated_at 变化即可失效缓存
+	cacheKey := "file|" + token + "|" + s.fileDataVersion(f)
+	res, err := s.cachedRender(ctx, cacheKey, func() (*ShareResult, error) {
+		b, rerr := s.renderFile(ctx, f, true)
+		if rerr != nil {
+			return nil, rerr
+		}
+		effective := "file"
+		if f.ConfigType == model.FileConfigTypeMihomo {
+			effective = "mihomo-yaml"
+		}
+		return &ShareResult{Body: b, Target: effective, Traffic: s.fileTraffic(f)}, nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return res.Body, f, nil
+}
+
+func (s *RenderService) fileDataVersion(f *model.SubFile) string {
+	if f == nil {
+		return ""
+	}
+	return "f" + strconv.FormatInt(f.UpdatedAt.UnixNano(), 10)
+}
+
+// renderFile 是文件渲染的唯一实现。public=true 时：
+//   - 源订阅 operators 剥离 script
+//   - TemplateLang=javascript 直接拒绝（明确错误，避免静默输出未脚本化配置）
+func (s *RenderService) renderFile(ctx context.Context, f *model.SubFile, public bool) (string, error) {
 	if f == nil {
 		return "", fmt.Errorf("文件不存在")
 	}
@@ -466,8 +530,11 @@ func (s *RenderService) RenderFile(ctx context.Context, f *model.SubFile) (strin
 	if strings.TrimSpace(resolved.Content) == "" {
 		return "", fmt.Errorf("文件「%s」的模板内容为空", f.Name)
 	}
+	if public && strings.EqualFold(strings.TrimSpace(f.TemplateLang), model.TemplateLangJS) {
+		return "", ErrPublicJSTemplate
+	}
 
-	reqs, err := s.fileSourceRequests(f)
+	reqs, err := s.fileSourceRequests(f, public)
 	if err != nil {
 		return "", err
 	}
@@ -494,7 +561,8 @@ func (s *RenderService) RenderFileTemplate(ctx context.Context, id int64) (strin
 
 // fileSourceRequests 组装文件模板的节点来源请求。
 // 来源可以是单条订阅，也可以是一个组合（取其下全部启用订阅）。
-func (s *RenderService) fileSourceRequests(f *model.SubFile) ([]substore.ConvertRequest, error) {
+// public 时剥离源订阅上的 script 算子。
+func (s *RenderService) fileSourceRequests(f *model.SubFile, public bool) ([]substore.ConvertRequest, error) {
 	if f.SourceID <= 0 {
 		return nil, fmt.Errorf("文件「%s」未指定节点来源", f.Name)
 	}
@@ -533,13 +601,17 @@ func (s *RenderService) fileSourceRequests(f *model.SubFile) ([]substore.Convert
 		if sub.Enabled != 1 {
 			continue
 		}
+		ops := DecodeOperators(sub.Operators)
+		if public {
+			ops = substore.StripPublicUnsafeOps(ops)
+		}
 		reqs = append(reqs, substore.ConvertRequest{
 			URL:       sub.URL,
 			Source:    sub.Name,
 			UserAgent: sub.UserAgent,
 			CacheRaw:  sub.CachedNodes,
 			Content:   sub.Content,
-			Operators: DecodeOperators(sub.Operators),
+			Operators: ops,
 		})
 	}
 	if len(reqs) == 0 {

@@ -30,6 +30,8 @@ package netcheck
 import (
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Mode 是透明代理的实现方式。
@@ -169,8 +171,71 @@ func (r *Report) AnyAvailable() bool {
 	return false
 }
 
+// detectCacheTTL 环境探测结果的短缓存。
+//
+// Status 接口会被控制台、设置页、倒计时频繁打到，每次都完整跑一遍
+// LookPath / 读 /proc / 版本探测没有必要——几秒内内核能力不会变。
+// 缓存还能在探测偶发变慢时把并发请求合并到同一轮结果上，
+// 避免面板刷新把 HTTP 工作线程和浏览器连接池一起打满。
+const detectCacheTTL = 3 * time.Second
+
+var (
+	detectMu        sync.Mutex
+	detectCached    *Report
+	detectCachedAt  time.Time
+	detectInflight  *sync.Once
+	detectInflightR *Report
+)
+
 // Detect 探测当前环境。实现按平台分文件，见 detect_*.go。
-func Detect() *Report { return detect() }
+//
+// 带短 TTL 缓存与单飞：同一时刻多次调用只跑一轮真实探测。
+func Detect() *Report {
+	detectMu.Lock()
+	if detectCached != nil && time.Since(detectCachedAt) < detectCacheTTL {
+		r := detectCached
+		detectMu.Unlock()
+		return r
+	}
+	// 单飞：并发调用共用一次 detect()
+	if detectInflight == nil {
+		detectInflight = &sync.Once{}
+		detectInflightR = nil
+	}
+	once := detectInflight
+	detectMu.Unlock()
+
+	once.Do(func() {
+		r := detect()
+		detectMu.Lock()
+		detectCached = r
+		detectCachedAt = time.Now()
+		detectInflightR = r
+		detectInflight = nil
+		detectMu.Unlock()
+	})
+
+	detectMu.Lock()
+	r := detectInflightR
+	if r == nil {
+		r = detectCached
+	}
+	detectMu.Unlock()
+	if r == nil {
+		// 理论上 once.Do 之后必有结果；兜底再跑一次避免返回 nil
+		return detect()
+	}
+	return r
+}
+
+// InvalidateDetectCache 清掉探测缓存。Provision / 装包后调用，
+// 否则界面会在 TTL 内继续看到「不可用」。
+func InvalidateDetectCache() {
+	detectMu.Lock()
+	detectCached = nil
+	detectCachedAt = time.Time{}
+	detectMu.Unlock()
+}
 
 // hasCommand 与 fileExists 定义在 detect_linux.go：
 // 只有 Linux 的探测路径用得到它们，放在本文件（无构建标签、全平台编译）
