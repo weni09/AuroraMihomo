@@ -33,15 +33,14 @@ deps: ## 安装前后端依赖
 
 # ---------- 构建 ----------
 .PHONY: build
-build: build-frontend build-backend ## 完整构建（前端产物会同步到 public/）
+build: build-frontend build-backend ## 完整构建（前端产物经 go:embed 内嵌进二进制）
 
 .PHONY: build-frontend
-build-frontend: sync-docs ## 构建前端并同步到 public/ 与 backend/api/public（后者是 go:embed 内嵌源）
+build-frontend: sync-docs ## 构建前端并同步到 backend/api/public（go:embed 内嵌源）
 	cd frontend && npm run build
-	rm -rf public
-	cp -r frontend/dist public
 	# backend/api/public 是 go:embed all:public 的嵌入源：不同步的话二进制里
-	# 只有 .gitkeep，运行时删掉磁盘 public/ 就 404（getWebFS 的降级路径形同虚设）
+	# 只有 .gitkeep，运行时静态资源 404。前端只经此一条链路进二进制，
+	# 不再生成根 public/（磁盘优先兼容已移除）。
 	rm -rf backend/api/public
 	cp -r frontend/dist backend/api/public
 	# .gitkeep 被 git 跟踪（保证 embed 目录在 CI checkout 后仍然存在），
@@ -151,7 +150,7 @@ docker-multiarch: ## 构建 amd64/arm64 多架构镜像（需 buildx）
 .PHONY: clean
 clean: ## 清理构建产物（不动 data/）
 	rm -f $(BINARY)
-	rm -rf public frontend/dist
+	rm -rf frontend/dist
 
 .PHONY: sync-docs
 sync-docs: ## 把 userdocs/ 下的用户文档同步到前端内置副本

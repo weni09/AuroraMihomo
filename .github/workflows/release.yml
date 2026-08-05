@@ -57,7 +57,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: frontend-dist
-          path: public
+          # 仅作 embed 同步源的中间目录，不是运行时磁盘 public/
+          path: frontend-dist
 
       - uses: actions/setup-go@v5
         with:
@@ -69,7 +70,7 @@ jobs:
       - name: 同步前端产物到内嵌源
         run: |
           rm -rf backend/api/public
-          cp -r public backend/api/public
+          cp -r frontend-dist backend/api/public
           touch backend/api/public/.gitkeep
 
       # SQLite 驱动是纯 Go 的（github.com/libtnb/sqlite → modernc.org/sqlite），
@@ -98,9 +99,9 @@ jobs:
           name="auroramihomo_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
           mkdir -p "dist/$name/etc"
           cp "auroramihomo${{ matrix.ext }}" "dist/$name/"
-          cp -r public "dist/$name/public"
           cp backend/api/etc/aurora-api.yaml "dist/$name/etc/"
           cp README.md "dist/$name/" 2>/dev/null || true
+          # 前端资源仅经 go:embed 内嵌进二进制，包内不再带 public/
           # Windows 用 zip（解压后保留不了执行位也无所谓），其余用 tar.gz
           if [ "${{ matrix.goos }}" = windows ]; then
             (cd dist && zip -qr "$name.zip" "$name")

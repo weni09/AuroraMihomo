@@ -45,8 +45,8 @@ func main() {
 
 	// 静态资源（Zashboard 内嵌面板 + 本项目前端）挂到原生 mux，
 	// go-zero 路由无法匹配任意深度路径，这里在进入路由前直接分流。
-	// getWebFS 作为 provider 按请求求值：磁盘 public/ 与二进制内嵌
-	// 资源随时切换，删掉磁盘目录不需要重启也能回退到内嵌。
+	// getWebFS 固定回内嵌资源：前端打包进二进制是唯一真相，
+	// 不再读磁盘 public/（曾支持磁盘优先，已移除）。
 	staticMux := http.NewServeMux()
 	mountStatic(staticMux, "/ui", func() http.FileSystem {
 		return http.Dir(filepath.Join(c.Mihomo.ConfigDir, "zashboard"))

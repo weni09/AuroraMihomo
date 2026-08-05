@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -14,16 +13,12 @@ import (
 var embeddedWebFS embed.FS
 
 // getWebFS 返回用于提供静态资源服务的 http.FileSystem。
-// 优先检查本地磁盘目录（如 "./public" 或 "./frontend/dist"），如果其中存在 index.html，
-// 则优先使用本地磁盘静态资源（方便开发调试或自定义静态文件）；
-// 否则降级使用编译内嵌的 embeddedWebFS 资源。
+// 固定使用编译期内嵌资源：前端产物由 make build-frontend 同步进
+// backend/api/public（go:embed 源），运行时不再读磁盘 public/。
+// 曾支持磁盘优先（./public、./frontend/dist 便于开发调试或自定义静态
+// 文件），但双链路让「改了前端没进二进制也能生效」成为隐式行为——
+// 单二进制方案下内嵌资源即唯一真相，升级时前端与后端永远同版。
 func getWebFS() http.FileSystem {
-	for _, dir := range []string{"./public", "./frontend/dist"} {
-		if st, err := os.Stat(filepath.Join(dir, "index.html")); err == nil && !st.IsDir() {
-			return http.Dir(dir)
-		}
-	}
-
 	subFS, err := fs.Sub(embeddedWebFS, "public")
 	if err != nil {
 		return http.FS(embeddedWebFS)
@@ -55,9 +50,8 @@ func cachedFileServer(fsys http.FileSystem, path string) http.Handler {
 // 对于请求的具体静态文件存在时正常响应；若文件不存在（例如前端 SPA 的路由路径），
 // 则自动降级返回 index.html 内容，以支持前端单页应用（SPA）的客户端路由。
 //
-// fsysProvider 在每次请求时调用而不是启动时求值一次：getWebFS 的
-// 磁盘优先/内嵌降级判断必须反映当前磁盘状态——部署后删掉磁盘 public/
-// 目录应立即回退到内嵌资源，而不是继续指向已删除的目录（404）。
+// fsysProvider 在每次请求时调用而不是启动时求值一次：/ui 的 zashboard
+// 目录可能被运行时替换（面板更新），按请求求值让它始终读到当前状态。
 func spaFileSystemServer(routePrefix string, fsysProvider func() http.FileSystem) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fsys := fsysProvider()

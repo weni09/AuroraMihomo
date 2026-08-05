@@ -23,17 +23,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.eslintcache
 
-# 根 public/ 是前端构建产物（由 make build-frontend 生成）：
-# 单二进制方案下前端资源已内嵌进二进制（见 backend/api/public 规则），
-# 这里只作为运行时可覆盖的磁盘副本，不再入库——每次构建都会产生噪音 diff。
-# 必须用 / 锚定根目录：裸写 public/ 会连 go:embed 的嵌入源
-# backend/api/public 一起忽略，那条豁免规则（!backend/api/public/.gitkeep）
-# 也会因父目录被忽略而失效。
-/public/
-
 # go:embed 内嵌源：make build-frontend 把 frontend/dist 拷进
-# backend/api/public（二进制内嵌静态资源），属于构建产物，不入库；
-# .gitkeep 用于保证 embed 目录存在（已跟踪，不受本规则影响）
+# backend/api/public（前端静态资源唯一入口，随二进制分发），
+# 属于构建产物，不入库；.gitkeep 用于保证 embed 目录存在（已跟踪）
 backend/api/public/*
 !backend/api/public/.gitkeep
 

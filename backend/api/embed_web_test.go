@@ -12,9 +12,10 @@ import (
 
 // 回归：go:embed 的内嵌资源必须真实包含前端产物。
 // 曾出现 backend/api/public 只留 .gitkeep、二进制内嵌为空壳的情况——
-// 磁盘 public/ 存在时被 getWebFS 的磁盘优先逻辑掩盖，删掉磁盘目录
-// 降级到内嵌资源就 404。make build-frontend 会把 frontend/dist 同步进
-// backend/api/public；CI 后端 job 不构建前端，产物缺失时跳过。
+// 当时磁盘 public/ 存在会被优先使用，删掉磁盘目录降级到内嵌资源就 404。
+// 现已移除磁盘 public/ 兼容链路，内嵌资源是唯一真相，更不可缺失。
+// make build-frontend 会把 frontend/dist 同步进 backend/api/public；
+// CI 后端 job 不构建前端，产物缺失时跳过。
 func TestEmbeddedWebFSHasIndex(t *testing.T) {
 	f, err := embeddedWebFS.Open("public/index.html")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -73,9 +74,9 @@ func TestSpaFileSystemServer(t *testing.T) {
 }
 
 // 回归：fsysProvider 必须按请求求值，而不是启动时绑定一次。
-// 曾出现静态服务在启动时固定指向磁盘 public/ 目录，部署后删掉该目录
-// 请求仍然打向已删除的路径（404），内嵌降级路径永远走不到。
-// 这里模拟「目录先缺失、后补回」，同一 handler 应随 provider 切换响应。
+// 曾出现静态服务在启动时固定指向磁盘目录，部署后目录变化请求仍打向
+// 旧路径（404）。这里模拟「目录先缺失、后补回」，同一 handler 应随
+// provider 切换响应。
 func TestSpaFileSystemServerSwitchesProviderPerRequest(t *testing.T) {
 	emptyDir := t.TempDir()
 	tmpDir := t.TempDir()

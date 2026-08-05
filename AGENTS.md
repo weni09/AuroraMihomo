@@ -31,7 +31,7 @@ backend/                      后端源码（go-zero 服务入口 + 领域实现
 frontend/                     Vue 3 前端源码，见 frontend/AGENTS.md
 docs/AuroraMihomo-Go-Zero-API.api   API 规格（对外契约）
 migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
-public/                       前端构建产物（由 make build-frontend 同步，不要手改）
+backend/api/public/           前端构建产物（go:embed 内嵌源，由 make build-frontend 同步，不要手改）
 scripts/                      开发规范机检脚本（check-conventions.py）
 .agents/skills/                本仓库可用的 AI 编码代理技能，见下方「Skills」
 ```
@@ -43,7 +43,7 @@ scripts/                      开发规范机检脚本（check-conventions.py）
 ```bash
 make deps            # 安装前后端依赖
 make dev             # 仅启动后端；前端另开 cd frontend && npm run dev
-make build           # 前端构建 → 同步 public/ → 编译后端二进制
+make build           # 前端构建 → 同步 go:embed 内嵌源 → 编译后端二进制
 make run-supervised  # 常驻运行，进程退出后自动重启（配合 /system/restart）
 make check           # 提交前跑这个：fmt-check vet test type-check lint-frontend test-frontend conventions
 make check-all       # 再加上 golangci-lint

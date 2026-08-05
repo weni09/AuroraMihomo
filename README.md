@@ -186,7 +186,7 @@ cd /opt/auroramihomo
 ./auroramihomo -f etc/aurora-api.yaml
 ```
 
-包内含二进制、前端资源（`public/`）与默认配置，**不含 mihomo 内核**。完全离线时需手工放置内核：
+包内含二进制与默认配置（前端资源已内嵌进二进制），**不含 mihomo 内核**。完全离线时需手工放置内核：
 
 ```bash
 # 从 https://github.com/MetaCubeX/mihomo/releases 下载对应平台的 .gz
@@ -294,7 +294,7 @@ sudo cat /opt/auroramihomo/data/initial_password.txt
 
 ```bash
 make deps    # 安装前后端依赖
-make build   # 构建前端并同步到 public/，再编译后端
+make build   # 构建前端（同步到 go:embed 内嵌源）并编译后端
 make run     # 启动
 ```
 
@@ -303,7 +303,8 @@ make run     # 启动
 ```bash
 go mod download
 cd frontend && npm ci && npm run build && cd ..
-rm -rf public && cp -r frontend/dist public   # 后端从 ./public 提供前端资源
+rm -rf backend/api/public && cp -r frontend/dist backend/api/public  # go:embed 内嵌源
+touch backend/api/public/.gitkeep
 go build -o auroramihomo ./backend/api
 ./auroramihomo -f backend/api/etc/aurora-api.yaml
 ```
@@ -392,7 +393,7 @@ sudo systemctl start auroramihomo
 |---|---|
 | Docker | `git pull && docker compose -f docker/docker-compose.yml up -d --build` |
 | 二进制（在线） | 重跑安装脚本，会保留配置并自动停服替换 |
-| 二进制（离线） | 停服 → 覆盖二进制与 `public/` → 启动。**不要覆盖 `etc/` 与 `data/`** |
+| 二进制（离线） | 停服 → 覆盖二进制 → 启动。**不要覆盖 `etc/` 与 `data/`** |
 | 源码 | `git pull && make build && make run` |
 
 mihomo 内核与 Zashboard 面板的升级独立于本体，在「系统设置」页手动触发或开启自动更新。
