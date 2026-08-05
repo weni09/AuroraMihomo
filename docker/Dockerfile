@@ -62,12 +62,15 @@ RUN apk --no-cache add ca-certificates tzdata curl \
 # 授予单项 capability 与「以 root 运行」的风险面不可同日而语。
 RUN addgroup -g 10001 -S aurora \
     && adduser -u 10001 -S aurora -G aurora \
-    && mkdir -p /data/zashboard /data/substore /data/backups /data/logs /app/public \
+    # /app 必须显式创建：此前靠 mkdir 列表里的 /app/public 顺带创建，
+    # 去掉磁盘 public/ 后漏了它，chown -R /app 会在 WORKDIR 之前执行，
+    # 路径不存在导致镜像构建失败（v0.3.11 发版即栽在此处）
+    && mkdir -p /app /data/zashboard /data/substore /data/backups /data/logs \
     && chown -R aurora:aurora /data /app
 
 WORKDIR /app
 COPY --from=backend-builder --chown=aurora:aurora /app/auroramihomo .
-COPY --from=frontend-builder --chown=aurora:aurora /app/frontend/dist ./public
+# 前端静态资源已内嵌进二进制（go:embed），不再拷贝磁盘 public/
 # 容器专用配置，数据路径直接指向 /data 卷，不再用 sed 改写
 COPY --chown=aurora:aurora docker/aurora-api.docker.yaml ./etc/aurora-api.yaml
 
