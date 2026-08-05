@@ -28,8 +28,7 @@ ARG TARGETARCH
 ARG VERSION=dev
 COPY backend ./backend
 # 把前端产物放进 backend/api/public：go:embed 嵌入的就是这个目录，
-# 不拷的话二进制里只有 .gitkeep。前端只经此一条链路进二进制
-# （运行镜像不再带磁盘 public/，见下方运行阶段）
+# 不拷的话二进制里只有 .gitkeep，运行时删掉 /app/public 就 404
 COPY --from=frontend-builder /app/frontend/dist ./backend/api/public
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-w -s -X 'auroramihomo/backend/internal/version.AppVersion=${VERSION}'" -o auroramihomo ./backend/api
@@ -63,12 +62,12 @@ RUN apk --no-cache add ca-certificates tzdata curl \
 # 授予单项 capability 与「以 root 运行」的风险面不可同日而语。
 RUN addgroup -g 10001 -S aurora \
     && adduser -u 10001 -S aurora -G aurora \
-    && mkdir -p /data/zashboard /data/substore /data/backups /data/logs \
+    && mkdir -p /data/zashboard /data/substore /data/backups /data/logs /app/public \
     && chown -R aurora:aurora /data /app
 
 WORKDIR /app
 COPY --from=backend-builder --chown=aurora:aurora /app/auroramihomo .
-# 前端静态资源已内嵌进二进制（go:embed），不拷贝磁盘 public/
+COPY --from=frontend-builder --chown=aurora:aurora /app/frontend/dist ./public
 # 容器专用配置，数据路径直接指向 /data 卷，不再用 sed 改写
 COPY --chown=aurora:aurora docker/aurora-api.docker.yaml ./etc/aurora-api.yaml
 
