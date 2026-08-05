@@ -66,10 +66,29 @@ const onCopy = () => copy(body.value, '内容')
     @close="emit('close')"
   >
     <template #header>
-      <div class="flex items-center gap-3 flex-wrap px-4 py-3 border-b border-line bg-elevated rounded-t-xl shrink-0">
-        <DialogTitle class="text-sm font-semibold text-fg">即时预览</DialogTitle>
+      <!-- 头部布局：移动端两行式，桌面单行。
+           原单行 flex-wrap + ml-auto 在窄屏换行后错位：关闭钮被挤到
+           新行、复制钮位置漂浮。用 order 重排——order-2 关闭钮紧随
+           标题（ml-auto 推右），order-3 操作组 w-full 强制换行为第二行；
+           lg 以上 w-auto 回到同一行、关闭钮经 lg:order-4 排回最右。 -->
+      <div class="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-line bg-elevated rounded-t-xl shrink-0">
+        <DialogTitle class="order-1 text-sm font-semibold text-fg">即时预览</DialogTitle>
 
-        <template v-if="result">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          class="order-2 lg:order-4 tap-target ml-auto text-fg-muted hover:text-fg"
+          aria-label="关闭"
+          @click="emit('close')"
+        >
+          <X class="!h-5 !w-5" aria-hidden="true" />
+        </Button>
+
+        <div
+          v-if="result"
+          class="order-3 flex w-full flex-wrap items-center gap-2 lg:w-auto lg:gap-3"
+        >
           <div class="flex rounded-md border border-line-strong overflow-hidden text-xs" role="tablist">
             <Button
               type="button"
@@ -104,18 +123,7 @@ const onCopy = () => copy(body.value, '内容')
             节点数: <strong class="text-fg">{{ result.count }}</strong>
           </span>
           <Button variant="outline" size="sm" @click="onCopy">复制内容</Button>
-        </template>
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          class="tap-target ml-auto text-fg-muted hover:text-fg"
-          aria-label="关闭"
-          @click="emit('close')"
-        >
-          <X class="!h-5 !w-5" aria-hidden="true" />
-        </Button>
+        </div>
       </div>
     </template>
 
