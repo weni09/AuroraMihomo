@@ -2,6 +2,7 @@ package adguard
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -265,11 +266,51 @@ func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 for non-loopback upstream", rec.Code)
+		t.Fatalf("status = %d, want 502 for non-local upstream", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "loopback") {
-		t.Fatalf("body = %q, want loopback hint", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "local IP") {
+		t.Fatalf("body = %q, want local IP hint", rec.Body.String())
 	}
+}
+
+// TestIsAllowedProxyUpstream 反代上游白名单：回环与域名别名放行，
+// 公网 IP / 域名拒绝（防 SSRF）；本机接口 IP（若有）放行。
+func TestIsAllowedProxyUpstream(t *testing.T) {
+	if !isAllowedProxyUpstream("127.0.0.1") || !isAllowedProxyUpstream("::1") || !isAllowedProxyUpstream("localhost") {
+		t.Fatal("回环/locahost 应放行")
+	}
+	for _, bad := range []string{"8.8.8.8", "1.1.1.1", "example.com", "", "0.0.0.0"} {
+		if isAllowedProxyUpstream(bad) {
+			t.Fatalf("%q 应拒绝", bad)
+		}
+	}
+	// 动态取一个本机非回环接口 IP（测试环境网络各异，存在才断言）
+	if ifIP := firstNonLoopbackInterfaceIP(t); ifIP != "" {
+		if !isAllowedProxyUpstream(ifIP) {
+			t.Fatalf("本机接口 IP %q 应放行", ifIP)
+		}
+	}
+}
+
+func firstNonLoopbackInterfaceIP(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil && !ip.IsLoopback() {
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 func TestRewriteAdguardAbsolutePaths_InjectsBaseAndHistoryPatch(t *testing.T) {

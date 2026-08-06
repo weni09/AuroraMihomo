@@ -48,18 +48,37 @@ func (s *AdGuardService) SetCredentials(ctx context.Context, username, password 
 	return nil
 }
 
-// SetWebPort 校验端口、写 AGH yaml（强制 127.0.0.1）、落库 web_addr；
-// 若进程在跑则 Restart 使新端口生效。
+// SetWebPort 只改端口，保留现有监听 host（以 yaml 为准）；若进程在跑则 Restart。
 func (s *AdGuardService) SetWebPort(ctx context.Context, port int) error {
+	host, _, err := adguard.ReadWebListen(s.workDir)
+	if err != nil || strings.TrimSpace(host) == "" {
+		host = "127.0.0.1"
+	}
+	// 注意：不以 settings 为准——yaml 是监听地址的唯一事实来源
+	// （用户可能直接改过 yaml 而 settings 未同步，反代/SSO 读的都是 yaml）。
+	return s.SetWebListen(ctx, host, port)
+}
+
+// SetWebListen 设置 Web 管理监听地址（host + port）。
+//
+// host 空 → 127.0.0.1（安全默认）；允许 0.0.0.0 / 具体网卡 IP。
+// 服务化后 AGH 可独立于面板对外提供管理面，不再强制回环。
+// 若进程在跑则 Restart 使新监听生效。
+func (s *AdGuardService) SetWebListen(ctx context.Context, host string, port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("web 端口无效: %d（须为 1-65535）", port)
 	}
-	if err := adguard.SetWebPort(s.workDir, port); err != nil {
+	norm, err := adguard.NormalizeWebHost(host)
+	if err != nil {
 		return err
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	if err := adguard.SetWebListen(s.workDir, norm, port); err != nil {
+		return err
+	}
+	addr := fmt.Sprintf("%s:%d", norm, port)
 	s.webAddr = addr
 	if s.mgr != nil {
+		// Manager 回显 / 探活用完整地址；反代上游另经 LocalProxyUpstream 归一
 		s.mgr.SetWebAddr(addr)
 	}
 	if s.db != nil {
@@ -69,7 +88,7 @@ func (s *AdGuardService) SetWebPort(ctx context.Context, port int) error {
 	}
 	if s.mgr != nil && s.mgr.Status().Running {
 		if err := s.Restart(ctx); err != nil {
-			return fmt.Errorf("端口已写入，但重启失败: %w", err)
+			return fmt.Errorf("监听地址已写入，但重启失败: %w", err)
 		}
 	}
 	return nil

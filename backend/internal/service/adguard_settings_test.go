@@ -187,3 +187,33 @@ func TestSetAutoUpdateSettings_InvalidCron(t *testing.T) {
 		t.Fatal("非法 cron 应失败")
 	}
 }
+
+func TestSetWebListen_AllInterfaces(t *testing.T) {
+	svc, _, workDir := newAdGuardSettingsTestSvc(t)
+	ctx := context.Background()
+	if err := svc.SetWebListen(ctx, "0.0.0.0", 3000); err != nil {
+		t.Fatalf("SetWebListen: %v", err)
+	}
+	host, port, err := adguard.ReadWebListen(workDir)
+	if err != nil || host != "0.0.0.0" || port != 3000 {
+		t.Fatalf("yaml listen=%s:%d err=%v", host, port, err)
+	}
+	if v, _ := svc.db.GetSetting(settingAdGuardWebAddr); v != "0.0.0.0:3000" {
+		t.Fatalf("setting web_addr=%q", v)
+	}
+	st, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.WebAddr != "0.0.0.0:3000" {
+		t.Fatalf("Status.WebAddr=%q", st.WebAddr)
+	}
+	// 只改端口应保留 host
+	if err := svc.SetWebPort(ctx, 3010); err != nil {
+		t.Fatalf("SetWebPort: %v", err)
+	}
+	host, port, err = adguard.ReadWebListen(workDir)
+	if err != nil || host != "0.0.0.0" || port != 3010 {
+		t.Fatalf("after SetWebPort listen=%s:%d err=%v", host, port, err)
+	}
+}

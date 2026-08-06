@@ -228,12 +228,15 @@ export const useAdGuardStore = defineStore('adguard', {
       }
     },
 
-    /** Web 管理端口：PUT /adguard/web-port；运行中后端会重启 */
-    async setWebPort(port: number) {
+    /** Web 管理监听：PUT /adguard/web-port；host 可选（空则只改端口） */
+    async setWebPort(port: number, host?: string) {
       this.actionLoading = true
       try {
-        const res = await api.put<Result>('/adguard/web-port', { port })
-        const text = res.data?.message || `Web 端口已设置为 ${port}`
+        const body: { port: number; host?: string } = { port }
+        const h = host?.trim()
+        if (h) body.host = h
+        const res = await api.put<Result>('/adguard/web-port', body)
+        const text = res.data?.message || `Web 监听已设置为 ${h ? h + ':' : ''}${port}`
         if (res.data?.success === false) {
           useNotifyStore().error(text)
         } else {

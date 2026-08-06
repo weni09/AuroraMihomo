@@ -170,97 +170,239 @@ func SetDNSPort(workDir string, port int) error {
 // 优先解析现代 AGH 的 http.address（如 "127.0.0.1:3000"），
 // 其次 http.port；均缺失时默认 3000。
 func ReadWebPort(workDir string) (int, error) {
+	_, port, err := ReadWebListen(workDir)
+	return port, err
+}
+
+// ReadWebListen 读取 Web 监听 host+port。
+// host 缺省为 127.0.0.1；port 缺省为 3000。
+func ReadWebListen(workDir string) (host string, port int, err error) {
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	httpSec := asMap(m["http"])
 	if httpSec == nil {
-		return defaultWebPort, nil
+		return localhostBind, defaultWebPort, nil
 	}
 	if addr, ok := httpSec["address"].(string); ok {
-		if p := portFromAddress(addr); p > 0 {
-			return p, nil
+		h, p := splitHostPort(addr)
+		if p > 0 {
+			if h == "" {
+				h = localhostBind
+			}
+			return h, p, nil
+		}
+		if h != "" {
+			// 仅 host、无端口
+			if p2, ok := asInt(httpSec["port"]); ok && p2 > 0 {
+				return h, p2, nil
+			}
+			return h, defaultWebPort, nil
 		}
 	}
+	port = defaultWebPort
 	if p, ok := asInt(httpSec["port"]); ok && p > 0 {
-		return p, nil
+		port = p
 	}
-	return defaultWebPort, nil
+	// 兼容旧 bind_host
+	if bh, ok := m["bind_host"].(string); ok && strings.TrimSpace(bh) != "" {
+		return strings.TrimSpace(bh), port, nil
+	}
+	return localhostBind, port, nil
 }
 
 // portFromAddress 从 "host:port" / ":port" / "port" 中抽出端口。
 func portFromAddress(addr string) int {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		return 0
-	}
-	// net.SplitHostPort 要求带括号的 IPv6；纯数字则直接当端口
-	if p, err := strconv.Atoi(addr); err == nil && p > 0 && p <= 65535 {
-		return p
-	}
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		// 可能是 "0.0.0.0" 无端口
-		_ = host
-		return 0
-	}
-	p, err := strconv.Atoi(portStr)
-	if err != nil || p <= 0 || p > 65535 {
-		return 0
-	}
+	_, p := splitHostPort(addr)
 	return p
 }
 
-// EnsureBindLocalhost 将顶层 bind_host 与 http.address 固定到回环。
+// splitHostPort 解析 "host:port" / "[::1]:port" / ":port" / "port"。
+// host 可能为空（仅端口时）。
+func splitHostPort(addr string) (host string, port int) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", 0
+	}
+	if p, err := strconv.Atoi(addr); err == nil && p > 0 && p <= 65535 {
+		return "", p
+	}
+	h, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 可能是纯 host（无端口）
+		if ip := net.ParseIP(addr); ip != nil {
+			return addr, 0
+		}
+		// 宽松：看起来像 host 名则当 host
+		if !strings.Contains(addr, ":") {
+			return addr, 0
+		}
+		return "", 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p <= 0 || p > 65535 {
+		return h, 0
+	}
+	return h, p
+}
+
+// NormalizeWebHost 规范化 Web 监听地址主机部分。
+// 空串 → 127.0.0.1（安全默认）；允许 0.0.0.0 / :: / 回环 / 单播 IP。
+// IPv6 返回规范带括号形式（"[::]"/"[::1]"），供 SetWebListen 拼 "host:port"。
+// 拒绝空格、路径字符与明显非法值。
+func NormalizeWebHost(host string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return localhostBind, nil
+	}
+	// 去掉误传的 scheme / 路径
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "http://"), "https://")
+	if i := strings.IndexAny(host, "/#?"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return localhostBind, nil
+	}
+	// 剥掉可能误传的 IPv6 括号，统一校验与输出
+	bracketed := false
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		bracketed = true
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	// 若误带端口，只取 host
+	if h, p := splitHostPort(host); p > 0 && h != "" {
+		host = h
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			bracketed = true
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		}
+	}
+	switch strings.ToLower(host) {
+	case "localhost":
+		return localhostBind, nil
+	case "*", "any":
+		return "0.0.0.0", nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("Web 监听地址无效: %q（请用 127.0.0.1、0.0.0.0 或具体 IP）", host)
+	}
+	_ = bracketed
+	if ip.To4() == nil {
+		// IPv6 字面量必须带括号，否则 "::3000" 是非法地址
+		return "[" + host + "]", nil
+	}
+	return host, nil
+}
+
+// LocalProxyUpstream 根据 AGH 对外监听地址，返回面板反代应连接的本机上游。
+// 0.0.0.0/::/空 → 127.0.0.1:port；其余 host 原样（绑定单网卡 IP 时只能连该 IP）。
+func LocalProxyUpstream(host string, port int) string {
+	if port <= 0 {
+		port = defaultWebPort
+	}
+	host = strings.TrimSpace(host)
+	// 剥 IPv6 括号再判断通配
+	bare := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if host == "" || bare == "0.0.0.0" || bare == "::" {
+		host = localhostBind
+	}
+	// IPv6 字面量加括号（可能来自 ReadWebListen 已剥括号的 host）
+	if ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); ip != nil && ip.To4() == nil {
+		return fmt.Sprintf("[%s]:%d", strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// EnsureWebListenPresent 保证 http.address 存在；已有配置不改 host。
 //
-// - bind_host: 127.0.0.1
-// - http.address: 127.0.0.1:<port>，port 优先取现有 address / http.port，否则 3000
-//
-// 文件不存在时创建最小安全配置。启动前必须调用，防止 AGH 默认 0.0.0.0 暴露。
-func EnsureBindLocalhost(workDir string) error {
+// 与旧 EnsureBindLocalhost 的区别：不再每次启动把监听打回 127.0.0.1——
+// 服务化后用户可把 Web 绑到 0.0.0.0/局域网 IP，启动路径必须保留该选择。
+// 仅在完全缺失 address 时写入安全默认 127.0.0.1:3000。
+func EnsureWebListenPresent(workDir string) error {
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {
 		return err
 	}
-	m["bind_host"] = localhostBind
-
 	httpSec := asMap(m["http"])
 	if httpSec == nil {
 		httpSec = map[string]any{}
 	}
-	port := defaultWebPort
-	if addr, ok := httpSec["address"].(string); ok {
-		if p := portFromAddress(addr); p > 0 {
-			port = p
+	if addr, ok := httpSec["address"].(string); ok && strings.TrimSpace(addr) != "" {
+		// 已有监听：同步废弃 bind_host 与 address 的 host 一致（不改用户 host）
+		h, p := splitHostPort(addr)
+		if h != "" {
+			m["bind_host"] = h
 		}
-	} else if p, ok := asInt(httpSec["port"]); ok && p > 0 {
+		if p <= 0 {
+			if p2, ok := asInt(httpSec["port"]); ok && p2 > 0 {
+				p = p2
+			} else {
+				p = defaultWebPort
+			}
+			if h == "" {
+				h = localhostBind
+			}
+			httpSec["address"] = fmt.Sprintf("%s:%d", h, p)
+			m["http"] = httpSec
+		}
+		return saveConfigMap(workDir, m)
+	}
+	port := defaultWebPort
+	if p, ok := asInt(httpSec["port"]); ok && p > 0 {
 		port = p
 	}
-	httpSec["address"] = fmt.Sprintf("%s:%d", localhostBind, port)
+	host := localhostBind
+	if bh, ok := m["bind_host"].(string); ok && strings.TrimSpace(bh) != "" {
+		if h, err := NormalizeWebHost(bh); err == nil {
+			host = h
+		}
+	}
+	httpSec["address"] = fmt.Sprintf("%s:%d", host, port)
 	m["http"] = httpSec
-
+	m["bind_host"] = host
 	return saveConfigMap(workDir, m)
 }
 
-// SetWebPort 将 Web 管理端口写为 127.0.0.1:<port>（强制回环）。
-// 同时设置 bind_host=127.0.0.1。port 须在 1–65535。
-func SetWebPort(workDir string, port int) error {
+// EnsureBindLocalhost 历史名：现仅保证 http.address 存在，不再强制回环。
+// 保留导出名以免外部调用方编译失败；新代码请用 EnsureWebListenPresent。
+func EnsureBindLocalhost(workDir string) error {
+	return EnsureWebListenPresent(workDir)
+}
+
+// SetWebListen 写入 Web 管理监听 host:port（服务化后可绑 0.0.0.0 / 局域网 IP）。
+// host 空则 127.0.0.1。同步旧字段 bind_host。
+func SetWebListen(workDir, host string, port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("web 端口无效: %d（须为 1-65535）", port)
+	}
+	host, err := NormalizeWebHost(host)
+	if err != nil {
+		return err
 	}
 	m, _, err := loadConfigMap(workDir)
 	if err != nil {
 		return err
 	}
-	m["bind_host"] = localhostBind
+	m["bind_host"] = host
 	httpSec := asMap(m["http"])
 	if httpSec == nil {
 		httpSec = map[string]any{}
 	}
-	httpSec["address"] = fmt.Sprintf("%s:%d", localhostBind, port)
+	httpSec["address"] = fmt.Sprintf("%s:%d", host, port)
 	m["http"] = httpSec
 	return saveConfigMap(workDir, m)
+}
+
+// SetWebPort 只改端口，保留现有 host（无配置时默认 127.0.0.1）。
+func SetWebPort(workDir string, port int) error {
+	host, _, err := ReadWebListen(workDir)
+	if err != nil {
+		host = localhostBind
+	}
+	return SetWebListen(workDir, host, port)
 }
 
 // PatchUpstreamDNS 仅改写 dns.upstream_dns，保留其它键。

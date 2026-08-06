@@ -60,7 +60,8 @@ type AdGuardUninstallReq struct {
 }
 
 type AdGuardWebPortReq struct {
-	Port int `json:"port"`
+	Port int    `json:"port"`
+	Host string `json:"host,optional"`
 }
 
 type AdGuardWiringApplyReq struct {

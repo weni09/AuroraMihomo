@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"auroramihomo/backend/internal/auth"
@@ -71,14 +72,24 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, ver *auth.PasswordVer, webA
 		}
 		webAddr = strings.TrimPrefix(webAddr, "http://")
 		webAddr = strings.TrimPrefix(webAddr, "https://")
+		// 统一归一：fallback 路径可能直接拿到 Status().WebAddr（如 "0.0.0.0:3000"），
+		// dial 0.0.0.0 依赖平台行为，归一成本机可达上游（通配 → 127.0.0.1）。
+		if host, port, err := net.SplitHostPort(webAddr); err == nil {
+			if p, e := strconv.Atoi(port); e == nil {
+				webAddr = LocalProxyUpstream(host, p)
+			}
+		}
 
 		target, err := url.Parse("http://" + webAddr)
 		if err != nil || target.Host == "" {
 			http.Error(w, "invalid upstream", http.StatusBadGateway)
 			return
 		}
-		if !isLoopbackHost(target.Hostname()) {
-			http.Error(w, "upstream must be loopback", http.StatusBadGateway)
+		// 上游须为本机可达 IP 字面量（回环 / 本机接口 IP）。
+		// 服务化后 AGH 可绑 0.0.0.0 或网卡 IP；0.0.0.0 已在 resolver 侧归一成 127.0.0.1。
+		// 拒绝非 IP 主机名与本机接口之外的 IP，防止 yaml 被改写成外网地址时变成 SSRF。
+		if !isAllowedProxyUpstream(target.Hostname()) {
+			http.Error(w, "upstream must be a local IP address", http.StatusBadGateway)
 			return
 		}
 
@@ -221,6 +232,44 @@ func isLoopbackHost(host string) bool {
 		return false
 	}
 	return ip.IsLoopback()
+}
+
+// isAllowedProxyUpstream 反代上游白名单：localhost / 回环 / 本机接口 IP。
+// 绑网卡 IP 时必须 dial 该 IP（127.0.0.1 连不上）；禁止域名与外网 IP，防 SSRF。
+func isAllowedProxyUpstream(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if isLoopbackHost(host) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return isLocalInterfaceIP(ip)
+}
+
+// isLocalInterfaceIP 判断 IP 是否属于本机任一网卡接口。
+func isLocalInterfaceIP(ip net.IP) bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		var ifIP net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ifIP = v.IP
+		case *net.IPAddr:
+			ifIP = v.IP
+		}
+		if ifIP != nil && ifIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripAdguardPrefix(path string) string {

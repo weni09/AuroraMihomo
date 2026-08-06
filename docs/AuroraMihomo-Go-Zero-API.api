@@ -695,9 +695,12 @@ type AdGuardDNSModeReq {
 	Mode int `json:"mode"`
 }
 
-// AdGuardWebPortReq 设置 Web 管理端口（强制绑定 127.0.0.1）。
+// AdGuardWebPortReq 设置 Web 管理监听。
+// Host 可选：空=保留原 host（仅改端口）或默认 127.0.0.1；允许 0.0.0.0 / 具体 IP。
+// 服务化后可非回环对外暴露 AGH 管理面；面板反代仍连本机可达上游。
 type AdGuardWebPortReq {
-	Port int `json:"port"`
+	Port int    `json:"port"`
+	Host string `json:"host,optional"`
 }
 
 // AdGuardDNSPortReq 设置 AdGuard DNS 监听端口（重定向模式的目标端口，勿用 53）。

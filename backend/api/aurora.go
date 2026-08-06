@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -392,20 +394,27 @@ func main() {
 
 	fmt.Printf("Starting server at %s:%d\n", c.Host, c.Port)
 	// 同源 /adguard-ui 反代：用登录 cookie 或 Bearer 鉴权，转发到 AdGuard Web UI。
-	// 上游优先读 work-dir 里的 web 端口，且只允许回环地址，避免误反代到外网。
+	// 上游连本机可达地址：yaml 绑 0.0.0.0 时用 127.0.0.1:port；绑具体 IP 时用该 IP。
+	// ProxyHandler 仍校验上游必须是本机回环或本机监听可达地址（见 LocalProxyUpstream）。
 	aghProxy := adguard.NewProxyHandler(svcCtx.AdGuardManager, svcCtx.Config.Auth.AccessSecret, svcCtx.PasswordVer, func() string {
 		if svcCtx.AdGuardManager == nil {
 			return "127.0.0.1:3000"
 		}
 		st := svcCtx.AdGuardManager.Status()
 		if st.WorkDir != "" {
-			if port, err := adguard.ReadWebPort(st.WorkDir); err == nil && port > 0 {
-				return fmt.Sprintf("127.0.0.1:%d", port)
+			if host, port, err := adguard.ReadWebListen(st.WorkDir); err == nil && port > 0 {
+				return adguard.LocalProxyUpstream(host, port)
 			}
 		}
 		addr := strings.TrimSpace(st.WebAddr)
 		if addr == "" {
 			return "127.0.0.1:3000"
+		}
+		// WebAddr 可能是 0.0.0.0:3000，归一到可 dial 的上游
+		if host, port, err := net.SplitHostPort(addr); err == nil {
+			if p, e := strconv.Atoi(port); e == nil {
+				return adguard.LocalProxyUpstream(host, p)
+			}
 		}
 		return addr
 	}, svcCtx.AdGuardSSO)

@@ -157,11 +157,11 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	if dto.WorkDir == "" {
 		dto.WorkDir = s.workDir
 	}
-	// Web 地址优先 settings / yaml 端口，保证改端口后 Status 与反代一致
+	// Web 地址优先 settings / yaml 完整 host:port（可非回环）
 	if v := strings.TrimSpace(s.getSetting(settingAdGuardWebAddr, "")); v != "" {
 		dto.WebAddr = v
-	} else if port, err := adguard.ReadWebPort(s.workDir); err == nil && port > 0 {
-		dto.WebAddr = fmt.Sprintf("127.0.0.1:%d", port)
+	} else if host, port, err := adguard.ReadWebListen(s.workDir); err == nil && port > 0 {
+		dto.WebAddr = fmt.Sprintf("%s:%d", host, port)
 	} else if dto.WebAddr == "" {
 		dto.WebAddr = s.webAddr
 	}
@@ -218,9 +218,9 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 		_ = s.db.SetSetting(settingAdGuardVersion, agh.LatestVersion)
 		s.mgr.SetVersion(agh.LatestVersion)
 	}
-	// 首次安装确保 bind 回环，避免 AGH 默认暴露到局域网
-	if err := adguard.EnsureBindLocalhost(s.workDir); err != nil {
-		s.logger.Errorf("确保 AdGuard bind_host=127.0.0.1 失败: %v", err)
+	// 首次安装保证 http.address 存在；不强制回环（用户可在设置中改监听地址）
+	if err := adguard.EnsureWebListenPresent(s.workDir); err != nil {
+		s.logger.Errorf("确保 AdGuard Web 监听配置失败: %v", err)
 	}
 	if port, err := adguard.ReadDNSPort(s.workDir); err == nil && port > 0 {
 		_ = s.db.SetSetting(settingAdGuardDNSPort, strconv.Itoa(port))
@@ -317,8 +317,8 @@ func (s *AdGuardService) Start(ctx context.Context) error {
 	if !s.ComponentEnabled() {
 		return errors.New("AdGuard 组件未启用，请先在系统设置中开启组件后再启动")
 	}
-	if err := adguard.EnsureBindLocalhost(s.workDir); err != nil {
-		s.logger.Errorf("启动前确保 bind_host 失败: %v", err)
+	if err := adguard.EnsureWebListenPresent(s.workDir); err != nil {
+		s.logger.Errorf("启动前确保 Web 监听配置失败: %v", err)
 	}
 	if err := s.mgr.Start(ctx); err != nil {
 		return err

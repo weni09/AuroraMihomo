@@ -24,6 +24,7 @@ const store = useAdGuardStore()
 const settings = useSettingsStore()
 const notify = useNotifyStore()
 
+const webHostInput = ref('127.0.0.1')
 const webPortInput = ref('3000')
 const dnsPortDraft = ref('5353')
 const cdnText = ref('')
@@ -73,7 +74,21 @@ function parsePortFromAddr(addr: string): string {
   return '3000'
 }
 
+function parseHostFromAddr(addr: string): string {
+  const raw = String(addr || '').trim().replace(/^https?:\/\//, '')
+  if (!raw) return '127.0.0.1'
+  // [ipv6]:port
+  const m6 = raw.match(/^\[([^\]]+)\]:\d+$/)
+  if (m6?.[1]) return m6[1]
+  const m = raw.match(/^(.*):(\d+)\s*$/)
+  if (m?.[1]) return m[1]
+  // bare host
+  if (!/^\d+$/.test(raw)) return raw
+  return '127.0.0.1'
+}
+
 function syncFromStore() {
+  webHostInput.value = parseHostFromAddr(store.status.webAddr)
   webPortInput.value = parsePortFromAddr(store.status.webAddr)
   const dp = store.status.dnsPort
   dnsPortDraft.value = dp && dp > 0 ? String(dp) : '5353'
@@ -115,7 +130,8 @@ async function saveWebPort() {
     notify.error('Web 端口须为 1–65535 的整数')
     return
   }
-  await store.setWebPort(port)
+  const host = String(webHostInput.value || '').trim() || '127.0.0.1'
+  await store.setWebPort(port, host)
 }
 
 
@@ -268,14 +284,32 @@ async function saveAutoUpdate() {
         </p>
       </section>
 
-      <!-- Web 端口 -->
+      <!-- Web 监听 -->
       <section class="space-y-3" data-testid="adguard-settings-webport">
-        <h3 class="text-sm font-semibold text-fg">网页管理端口</h3>
+        <h3 class="text-sm font-semibold text-fg">网页管理监听</h3>
         <p class="text-xs text-fg-subtle">
-          仅绑定回环 <code class="font-mono">127.0.0.1</code>，外网经面板
-          <code class="font-mono">/adguard-ui/</code> 反代访问。改端口后若在运行会自动重启。
+          默认 <code class="font-mono">127.0.0.1</code>（仅本机，经面板
+          <code class="font-mono">/adguard-ui/</code> 反代）。服务化后可改为
+          <code class="font-mono">0.0.0.0</code> 或网卡 IP，让 AGH 管理面在面板之外仍可直连。
+          改动后若在运行会自动重启。
         </p>
         <div class="flex flex-wrap items-end gap-2">
+          <div class="space-y-1.5 min-w-[10rem]">
+            <Label for="agh-web-host">监听地址</Label>
+            <Input
+              id="agh-web-host"
+              v-model="webHostInput"
+              placeholder="127.0.0.1"
+              class="font-mono w-40"
+              list="agh-web-host-presets"
+              :disabled="busy"
+              data-testid="agh-web-host"
+            />
+            <datalist id="agh-web-host-presets">
+              <option value="127.0.0.1" />
+              <option value="0.0.0.0" />
+            </datalist>
+          </div>
           <div class="space-y-1.5 min-w-[8rem]">
             <Label for="agh-web-port">端口</Label>
             <Input
@@ -288,8 +322,11 @@ async function saveAutoUpdate() {
               :disabled="busy"
             />
           </div>
-          <Button size="sm" :disabled="busy" @click="saveWebPort">保存端口</Button>
+          <Button size="sm" :disabled="busy" @click="saveWebPort">保存监听</Button>
         </div>
+        <p class="text-xs text-fg-subtle">
+          安全提示：绑 <code class="font-mono">0.0.0.0</code> 会把 AGH 登录页暴露到可达网络，请设强密码或继续只用面板反代。
+        </p>
       </section>
 
       <!-- DNS 端口（取代原「服务模式」） -->

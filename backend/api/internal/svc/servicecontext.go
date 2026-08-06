@@ -316,8 +316,9 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	aghSvc := service.NewAdGuardService(db, upd, aghMgr, transparentSvc, cfgSvc, aghWorkDir, aghWebAddr)
 	// 免密桥：与反代共用 web 地址解析；用户名从 settings/yaml 读取。
 	aghSSO := adguard.NewSessionBridge(func() string {
-		if port, err := adguard.ReadWebPort(aghWorkDir); err == nil && port > 0 {
-			return fmt.Sprintf("127.0.0.1:%d", port)
+		// SSO 登录请求与反代同源：0.0.0.0 → 127.0.0.1，单网卡 IP 则连该 IP
+		if host, port, err := adguard.ReadWebListen(aghWorkDir); err == nil && port > 0 {
+			return adguard.LocalProxyUpstream(host, port)
 		}
 		if a := strings.TrimSpace(aghMgr.Status().WebAddr); a != "" {
 			return a

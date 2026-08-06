@@ -202,8 +202,9 @@ func (m *Manager) prepareBootstrapLocked() {
 		m.pendingInitialPass = initPass
 		m.mu.Unlock()
 	}
-	if err := EnsureBindLocalhost(workDir); err != nil {
-		m.setLastErr("ensure bind localhost: " + err.Error())
+	// 只保证 http.address 存在，不强制回环——用户可能绑 0.0.0.0/局域网 IP
+	if err := EnsureWebListenPresent(workDir); err != nil {
+		m.setLastErr("ensure web listen: " + err.Error())
 	}
 	// 存量 yaml 可能仍含裸 8.8.8.8 bootstrap
 	_ = SanitizePollutionProneDNS(workDir)
@@ -475,33 +476,29 @@ func (m *Manager) webPortOpen() bool {
 	addr := strings.TrimSpace(m.cfg.WebAddr)
 	workDir := m.cfg.WorkDir
 	m.mu.RUnlock()
-	// 优先读 yaml 的 http.address：面板重启后 cfg.WebAddr 可能是旧值
-	// （面板 down 期间用户在 AGH 侧改过端口），探测必须用真实端口。
+	// 优先读 yaml 的 http.address：面板重启后 cfg.WebAddr 可能是旧值。
+	// 探测连本机可达上游（0.0.0.0 → 127.0.0.1），不要求监听本身是回环。
 	if workDir != "" {
-		if port, err := ReadWebPort(workDir); err == nil && port > 0 {
-			addr = fmt.Sprintf("%s:%d", localhostBind, port)
+		if host, port, err := ReadWebListen(workDir); err == nil && port > 0 {
+			addr = LocalProxyUpstream(host, port)
 		}
 	}
 	addr = strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
 	if addr == "" {
 		addr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
 	}
-	// 只认回环，避免误把局域网其它服务当成 AGH
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		if host != "localhost" {
-			return false
-		}
+	// 探测目标归一：通配监听改为回环
+	dialHost := host
+	if dialHost == "" || dialHost == "0.0.0.0" || dialHost == "::" || dialHost == "[::]" {
+		dialHost = localhostBind
 	}
-	// noctx 要求 DialContext 而非 DialTimeout（后者默认绑定 Background，
-	// 无法感知上层取消）；这里本就无法用上层 ctx（Start/Status 路径都可能
-	// 同步调用），显式 Background + 400ms 超时与旧行为等价。
+	// noctx 要求 DialContext 而非 DialTimeout；显式 Background + 400ms 超时。
 	d := net.Dialer{Timeout: 400 * time.Millisecond}
-	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
+	conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(dialHost, port))
 	if err != nil {
 		return false
 	}

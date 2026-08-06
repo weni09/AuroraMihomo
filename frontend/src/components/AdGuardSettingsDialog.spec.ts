@@ -131,6 +131,28 @@ describe('AdGuardSettingsDialog', () => {
     wrapper.unmount()
   })
 
+  it('Web 监听区展示监听地址输入框，保存时带 host', async () => {
+    const wrapper = mount(AdGuardSettingsDialog, {
+      props: { open: true },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await nextTick()
+
+    const hostInput = body().find('[data-testid="agh-web-host"]')
+    expect(hostInput.exists()).toBe(true)
+    // 默认从 status.webAddr 解析出 host
+    expect((hostInput.element as HTMLInputElement).value).toBe('127.0.0.1')
+
+    // 改 host 为 0.0.0.0 后保存 → PUT /adguard/web-port 带 host
+    await hostInput.setValue('0.0.0.0')
+    await body().find('[data-testid="adguard-settings-webport"] button').trigger('click')
+    await flushPromises()
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/web-port', { port: 3000, host: '0.0.0.0' })
+
+    wrapper.unmount()
+  })
+
   it('exec 模式不显示系统服务文案，自启提示为面板重启拉起', async () => {
     const wrapper = mount(AdGuardSettingsDialog, {
       props: { open: true },

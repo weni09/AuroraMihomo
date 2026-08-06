@@ -1,6 +1,7 @@
 package adguard
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -138,20 +139,18 @@ func TestReadWebPort_FromAddress(t *testing.T) {
 
 func TestEnsureBindLocalhost(t *testing.T) {
 	dir := t.TempDir()
+	// 已有非回环监听：启动路径不得再打回 127.0.0.1
 	writeAGHYaml(t, dir, "bind_host: 0.0.0.0\nhttp:\n  address: 0.0.0.0:3000\ndns:\n  port: 53\n  bootstrap_dns:\n    - 8.8.8.8\n")
 	if err := EnsureBindLocalhost(dir); err != nil {
 		t.Fatalf("EnsureBindLocalhost: %v", err)
 	}
 	m := readAGHMap(t, dir)
-	if m["bind_host"] != "127.0.0.1" {
-		t.Fatalf("bind_host=%v, want 127.0.0.1", m["bind_host"])
-	}
 	httpSec, ok := m["http"].(map[string]any)
 	if !ok {
 		t.Fatalf("http 段丢失: %#v", m["http"])
 	}
-	if httpSec["address"] != "127.0.0.1:3000" {
-		t.Fatalf("http.address=%v, want 127.0.0.1:3000", httpSec["address"])
+	if httpSec["address"] != "0.0.0.0:3000" {
+		t.Fatalf("http.address=%v, want preserve 0.0.0.0:3000", httpSec["address"])
 	}
 	// 其它键必须保留
 	dns, ok := m["dns"].(map[string]any)
@@ -189,8 +188,8 @@ func TestEnsureBindLocalhost_PreserveCustomPort(t *testing.T) {
 	}
 	m := readAGHMap(t, dir)
 	httpSec := m["http"].(map[string]any)
-	if httpSec["address"] != "127.0.0.1:8088" {
-		t.Fatalf("http.address=%v, want preserve port 8088", httpSec["address"])
+	if httpSec["address"] != "192.168.1.1:8088" {
+		t.Fatalf("http.address=%v, want preserve host+port", httpSec["address"])
 	}
 }
 
@@ -331,20 +330,21 @@ func toInt(v any) (int, bool) {
 
 func TestSetWebPort(t *testing.T) {
 	dir := t.TempDir()
+	// 只改端口，保留现有 host
 	writeAGHYaml(t, dir, "bind_host: 0.0.0.0\nhttp:\n  address: 0.0.0.0:3000\n")
 	if err := SetWebPort(dir, 3456); err != nil {
 		t.Fatalf("SetWebPort: %v", err)
 	}
 	m := readAGHMap(t, dir)
-	if m["bind_host"] != "127.0.0.1" {
-		t.Fatalf("bind_host=%v", m["bind_host"])
+	if m["bind_host"] != "0.0.0.0" {
+		t.Fatalf("bind_host=%v, want preserve 0.0.0.0", m["bind_host"])
 	}
 	httpSec, ok := m["http"].(map[string]any)
 	if !ok {
 		t.Fatal("http section missing")
 	}
-	if httpSec["address"] != "127.0.0.1:3456" {
-		t.Fatalf("http.address=%v, want 127.0.0.1:3456", httpSec["address"])
+	if httpSec["address"] != "0.0.0.0:3456" {
+		t.Fatalf("http.address=%v, want 0.0.0.0:3456", httpSec["address"])
 	}
 	port, err := ReadWebPort(dir)
 	if err != nil || port != 3456 {
@@ -397,5 +397,53 @@ func TestPatchDNSResolvers(t *testing.T) {
 	}
 	if got := asStringList(dns["fallback_dns"]); len(got) != 1 || got[0] != "127.0.0.1:1053" {
 		t.Fatalf("fallback should keep: %v", got)
+	}
+}
+
+func TestSetWebListen_AllInterfaces(t *testing.T) {
+	dir := t.TempDir()
+	writeAGHYaml(t, dir, "http:\n  address: 127.0.0.1:3000\n")
+	if err := SetWebListen(dir, "0.0.0.0", 3000); err != nil {
+		t.Fatalf("SetWebListen: %v", err)
+	}
+	host, port, err := ReadWebListen(dir)
+	if err != nil || host != "0.0.0.0" || port != 3000 {
+		t.Fatalf("ReadWebListen=%s:%d err=%v", host, port, err)
+	}
+	if up := LocalProxyUpstream(host, port); up != "127.0.0.1:3000" {
+		t.Fatalf("LocalProxyUpstream=%q", up)
+	}
+}
+
+func TestNormalizeWebHost(t *testing.T) {
+	h, err := NormalizeWebHost("")
+	if err != nil || h != "127.0.0.1" {
+		t.Fatalf("empty -> %q err=%v", h, err)
+	}
+	h, err = NormalizeWebHost("*")
+	if err != nil || h != "0.0.0.0" {
+		t.Fatalf("* -> %q err=%v", h, err)
+	}
+	if _, err := NormalizeWebHost("evil.example"); err == nil {
+		t.Fatal("域名应拒绝")
+	}
+}
+
+func TestNormalizeWebHost_IPv6(t *testing.T) {
+	h, err := NormalizeWebHost("::")
+	if err != nil || h != "[::]" {
+		t.Fatalf(":: -> %q err=%v", h, err)
+	}
+	h, err = NormalizeWebHost("[::1]")
+	if err != nil || h != "[::1]" {
+		t.Fatalf("[::1] -> %q err=%v", h, err)
+	}
+	// 拼出的监听地址必须可被 net.SplitHostPort 解析
+	if _, _, e := net.SplitHostPort(h + ":3000"); e != nil {
+		t.Fatalf("监听地址 %q:3000 无法解析: %v", h, e)
+	}
+	// 通配 IPv6 归一为回环上游
+	if up := LocalProxyUpstream("::", 3000); up != "127.0.0.1:3000" {
+		t.Fatalf("LocalProxyUpstream(::)=%q", up)
 	}
 }
