@@ -36,6 +36,12 @@ type Status struct {
 
 // Manager 管理 AdGuard Home 常驻子进程的启停，对标 mihomo.ProcessManager 的
 // opMu/mu 分离与「不绑定请求 ctx」语义。
+//
+// 有两种运行形态：
+//   - 服务模式（controller 非 nil）：进程由 systemd/OpenRC 看护，面板只做
+//     控制面调用；面板升级/重启/崩溃期间 DNS 过滤不随面板进程中断。
+//   - exec 模式（controller 为 nil，Windows 等）：面板 spawn 子进程并负责
+//     生命周期，与历史行为一致。
 type Manager struct {
 	// opMu 串行化 Start/Stop/Restart，避免交错产生孤儿进程
 	opMu sync.Mutex
@@ -47,6 +53,9 @@ type Manager struct {
 	exited  chan struct{} // 进程 Wait 完成时关闭，供 Stop 等待
 	version string
 	lastErr string
+	// controller 系统服务管理器（systemd/OpenRC）；nil 回落 exec 子进程。
+	// 构造后经 SetController 注入一次，运行期不变。
+	controller ServiceController
 
 	// testForceRunning 仅供同包单测模拟 Running，不改变真实进程状态。
 	testForceRunning bool
@@ -56,6 +65,17 @@ type Manager struct {
 
 func NewManager(cfg Config) *Manager {
 	return &Manager{cfg: cfg}
+}
+
+// SetController 注入系统服务控制器（nil 清除）。服务模式下 Start/Stop/Restart
+// 走系统服务管理器，进程存活与崩溃重启由 systemd/OpenRC 负责。
+func (m *Manager) SetController(c ServiceController) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.controller = c
+	m.mu.Unlock()
 }
 
 // SetWebAddr 更新 Status/反代回显用的 Web 地址（如 127.0.0.1:3000）。
@@ -84,14 +104,72 @@ func (m *Manager) setLastErr(msg string) {
 // Start 拉起 AdGuardHome --work-dir <WorkDir>。
 // 刻意不用 CommandContext：常驻子进程生命周期由 Stop/Restart 显式管理，
 // 绝不能随发起启动的那次请求 ctx 取消而被杀掉。
+// 服务模式下委托系统服务管理器（systemctl start 对已在运行的服务是 no-op）。
 func (m *Manager) Start(ctx context.Context) error {
-	_ = ctx
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
-	return m.startLocked()
+	return m.startLocked(ctx)
 }
 
-func (m *Manager) startLocked() error {
+// webAddrForBootstrap 归一化 Web 地址（去 scheme、默认回环 3000），
+// 供引导写 yaml http.address 使用；Status 回显仍用 cfg.WebAddr 原值。
+func (m *Manager) webAddrForBootstrap() string {
+	webAddr := strings.TrimSpace(m.cfg.WebAddr)
+	if webAddr == "" {
+		webAddr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(webAddr, "http://"), "https://")
+}
+
+// prepareBootstrapLocked 启动前写入完整引导配置，跳过官方 install.html 向导。
+// 服务模式与 exec 模式共用：即使进程由系统服务拉起，首次引导的随机口令生成、
+// 回环绑定与防污染 DNS 清洗仍是面板的职责（口令需要落库免密）。
+func (m *Manager) prepareBootstrapLocked() {
+	workDir := m.cfg.WorkDir
+	if workDir == "" {
+		return
+	}
+	dnsPort := defaultDNSPort
+	if p, err := ReadDNSPort(workDir); err == nil && p > 0 {
+		dnsPort = p
+	}
+	initPass, err := EnsureBootstrapConfig(workDir, m.webAddrForBootstrap(), dnsPort, "admin", "")
+	if err != nil {
+		m.setLastErr("bootstrap config: " + err.Error())
+		// 不直接 return：仍尝试启动，便于看 AGH 自身日志
+		return
+	}
+	if initPass != "" {
+		m.mu.Lock()
+		m.pendingInitialPass = initPass
+		m.mu.Unlock()
+	}
+	if err := EnsureBindLocalhost(workDir); err != nil {
+		m.setLastErr("ensure bind localhost: " + err.Error())
+	}
+	// 存量 yaml 可能仍含裸 8.8.8.8 bootstrap
+	_ = SanitizePollutionProneDNS(workDir)
+}
+
+func (m *Manager) startLocked(ctx context.Context) error {
+	m.mu.RLock()
+	ctrl := m.controller
+	m.mu.RUnlock()
+	if ctrl != nil {
+		// 服务模式：不 spawn 进程、不做 3s 探活——进程存活性由
+		// systemd Restart=always / supervise-daemon 负责，Start 返回即成功。
+		// 注意绝不能在此直接 kill（Restart=always 会 3 秒复活）。
+		m.prepareBootstrapLocked()
+		if err := ctrl.Start(ctx); err != nil {
+			m.setLastErr("service start: " + err.Error())
+			return fmt.Errorf("service start: %w", err)
+		}
+		m.mu.Lock()
+		m.lastErr = ""
+		m.mu.Unlock()
+		return nil
+	}
+
 	m.mu.RLock()
 	alive := m.isProcessAliveLocked()
 	m.mu.RUnlock()
@@ -140,35 +218,9 @@ func (m *Manager) startLocked() error {
 			workDir = abs
 		}
 	}
-	webAddr := strings.TrimSpace(m.cfg.WebAddr)
-	if webAddr == "" {
-		webAddr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
-	}
-	webAddr = strings.TrimPrefix(strings.TrimPrefix(webAddr, "http://"), "https://")
 
 	// 启动前写入完整引导配置，跳过官方 install.html 向导。
-	if workDir != "" {
-		dnsPort := defaultDNSPort
-		if p, err := ReadDNSPort(workDir); err == nil && p > 0 {
-			dnsPort = p
-		}
-		initPass, err := EnsureBootstrapConfig(workDir, webAddr, dnsPort, "admin", "")
-		if err != nil {
-			m.setLastErr("bootstrap config: " + err.Error())
-			// 不直接 return：仍尝试启动，便于看 AGH 自身日志
-		} else {
-			if initPass != "" {
-				m.mu.Lock()
-				m.pendingInitialPass = initPass
-				m.mu.Unlock()
-			}
-			if err := EnsureBindLocalhost(workDir); err != nil {
-				m.setLastErr("ensure bind localhost: " + err.Error())
-			}
-			// 存量 yaml 可能仍含裸 8.8.8.8 bootstrap
-			_ = SanitizePollutionProneDNS(workDir)
-		}
-	}
+	m.prepareBootstrapLocked()
 
 	cfgFile := ""
 	if workDir != "" {
@@ -181,7 +233,9 @@ func (m *Manager) startLocked() error {
 	if cfgFile != "" {
 		args = append(args, "--config", cfgFile)
 	}
-	args = append(args, "--web-addr", webAddr, "--no-check-update")
+	// 刻意不传 --web-addr：yaml 的 http.address 是唯一事实来源（见
+	// svc_unit_templates.go 的 D2 设计），命令行覆盖会造成改端口后的双来源漂移。
+	args = append(args, "--no-check-update")
 
 	//nolint:noctx // 常驻进程不应绑定请求级 context
 	cmd := exec.Command(binPath, args...)
@@ -282,6 +336,19 @@ func (m *Manager) Stop(ctx context.Context) error {
 }
 
 func (m *Manager) stopLocked(ctx context.Context) error {
+	m.mu.RLock()
+	ctrl := m.controller
+	m.mu.RUnlock()
+	if ctrl != nil {
+		// 服务模式：systemctl stop 不 disable——用户临时停 ≠ 取消开机自启。
+		// 必须走服务管理器而不是杀 PID：Restart=always 会把 kill 变成复活。
+		if err := ctrl.Stop(ctx); err != nil {
+			m.setLastErr("service stop: " + err.Error())
+			return fmt.Errorf("service stop: %w", err)
+		}
+		return nil
+	}
+
 	m.mu.Lock()
 	if m.cmd == nil || m.cmd.Process == nil {
 		m.mu.Unlock()
@@ -337,7 +404,7 @@ func (m *Manager) Restart(ctx context.Context) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	_ = m.stopLocked(ctx)
-	return m.startLocked()
+	return m.startLocked(ctx)
 }
 
 // webPortOpen 探测 Web 管理口是否已在监听（默认 127.0.0.1:3000）。
@@ -348,7 +415,15 @@ func (m *Manager) webPortOpen() bool {
 	}
 	m.mu.RLock()
 	addr := strings.TrimSpace(m.cfg.WebAddr)
+	workDir := m.cfg.WorkDir
 	m.mu.RUnlock()
+	// 优先读 yaml 的 http.address：面板重启后 cfg.WebAddr 可能是旧值
+	// （面板 down 期间用户在 AGH 侧改过端口），探测必须用真实端口。
+	if workDir != "" {
+		if port, err := ReadWebPort(workDir); err == nil && port > 0 {
+			addr = fmt.Sprintf("%s:%d", localhostBind, port)
+		}
+	}
 	addr = strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
 	if addr == "" {
 		addr = fmt.Sprintf("%s:%d", localhostBind, defaultWebPort)
@@ -396,7 +471,14 @@ func (m *Manager) Status() Status {
 		st.Running = true
 		st.PID = m.cmd.Process.Pid
 	}
+	ctrl := m.controller
 	m.mu.RUnlock()
+
+	// 服务模式：进程由系统服务看护，Manager 无 cmd 句柄，
+	// 以 systemctl is-active 为准（Active 的 exec 开销毫秒级，放锁外）。
+	if !st.Running && ctrl != nil && ctrl.Active(context.Background()) {
+		st.Running = true
+	}
 
 	// 端口探测不能持 mu（Dial 可能数百 ms）。子进程未登记但 Web 已监听时仍报运行中，
 	// 避免界面误显示「已停止」而 :3000 其实可达。
