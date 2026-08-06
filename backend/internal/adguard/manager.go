@@ -112,6 +112,22 @@ func (m *Manager) ServiceEnabled(ctx context.Context) bool {
 	return ctrl.IsEnabled(ctx)
 }
 
+// ManagedBy 返回运行形态标识供前端展示：
+// "systemd" / "openrc"（系统服务看护）或 "process"（面板托管子进程）。
+func (m *Manager) ManagedBy() string {
+	if m == nil || !m.ServiceMode() {
+		return "process"
+	}
+	switch m.Controller().(type) {
+	case *systemdController:
+		return "systemd"
+	case *openrcController:
+		return "openrc"
+	default:
+		return "process"
+	}
+}
+
 // ConfigFilePath 返回 AGH yaml 路径（work-dir 下固定名），供注册服务单元用。
 func (m *Manager) ConfigFilePath() string {
 	if m == nil || m.cfg.WorkDir == "" {

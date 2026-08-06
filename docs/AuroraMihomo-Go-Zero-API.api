@@ -655,24 +655,30 @@ type AdGuardStatusResp {
 	EntryPath        string   `json:"entryPath"`
 	ComponentEnabled bool     `json:"componentEnabled"`
 	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
-CdnProviders     []string `json:"cdnProviders,optional"`
-		AutoUpdate       bool     `json:"autoUpdate"`
-		AutoUpdateCron   string   `json:"autoUpdateCron,optional"` // 5/6 段 cron；空则默认每天 4 点
-		Username         string   `json:"username,optional"`
-		DesiredRunning   bool     `json:"desiredRunning"` // 用户期望运行；面板重启后据此自启
-	}
+	CdnProviders     []string `json:"cdnProviders,optional"`
+	AutoUpdate       bool     `json:"autoUpdate"`
+	AutoUpdateCron   string   `json:"autoUpdateCron,optional"` // 5/6 段 cron；空则默认每天 4 点
+	Username         string   `json:"username,optional"`
+	DesiredRunning   bool     `json:"desiredRunning"` // 用户期望运行；面板重启后据此自启
+	ManagedBy        string   `json:"managedBy,optional"` // 运行形态: process / systemd / openrc
+}
 
-	// AdGuardCredentialsReq 设置 AGH 管理员账号；不落库明文密码。
-	type AdGuardCredentialsReq {
-		Username string `json:"username,optional"`
-		Password string `json:"password"`
-	}
+// AdGuardBootReq 开机自启开关（服务模式下驱动 systemctl enable/disable）。
+type AdGuardBootReq {
+	Enabled bool `json:"enabled"`
+}
 
-	// AdGuardAutoUpdateReq AdGuard 独立自动更新开关与 cron。
-	type AdGuardAutoUpdateReq {
-		Enabled *bool  `json:"enabled,optional"`
-		Cron    string `json:"cron,optional"`
-	}
+// AdGuardCredentialsReq 设置 AGH 管理员账号；不落库明文密码。
+type AdGuardCredentialsReq {
+	Username string `json:"username,optional"`
+	Password string `json:"password"`
+}
+
+// AdGuardAutoUpdateReq AdGuard 独立自动更新开关与 cron。
+type AdGuardAutoUpdateReq {
+	Enabled *bool  `json:"enabled,optional"`
+	Cron    string `json:"cron,optional"`
+}
 
 // AdGuardComponentReq 产品化组件总开关（关则停进程并隐藏菜单，文件保留）。
 type AdGuardComponentReq {
@@ -793,6 +799,9 @@ service aurora-api {
 
 	@handler adGuardRestart
 	post /api/v1/adguard/restart returns (Result)
+
+	@handler adGuardSetBoot
+	put /api/v1/adguard/boot (AdGuardBootReq) returns (Result)
 
 	@handler adGuardSetComponent
 	put /api/v1/adguard/component (AdGuardComponentReq) returns (Result)

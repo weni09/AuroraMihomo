@@ -18,6 +18,16 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 		[]rest.Route{
 			{
 				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/auto-update",
+				Handler: protected.AdGuardSetAutoUpdateHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
+				Path:    "/api/v1/adguard/boot",
+				Handler: protected.AdGuardSetBootHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/cdn",
 				Handler: protected.AdGuardSetCDNHandler(serverCtx),
 			},
@@ -25,11 +35,6 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodGet,
 				Path:    "/api/v1/adguard/check-update",
 				Handler: protected.AdGuardCheckUpdateHandler(serverCtx),
-			},
-			{
-				Method:  http.MethodPut,
-				Path:    "/api/v1/adguard/auto-update",
-				Handler: protected.AdGuardSetAutoUpdateHandler(serverCtx),
 			},
 			{
 				Method:  http.MethodPut,
@@ -42,6 +47,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: protected.AdGuardSetCredentialsHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/adguard/dns-entry-preset",
+				Handler: protected.AdGuardApplyEntryDNSPresetHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/dns-mode",
 				Handler: protected.AdGuardSetDNSModeHandler(serverCtx),
@@ -50,11 +60,6 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodPut,
 				Path:    "/api/v1/adguard/dns-port",
 				Handler: protected.AdGuardSetDNSPortHandler(serverCtx),
-			},
-			{
-				Method:  http.MethodPost,
-				Path:    "/api/v1/adguard/dns-entry-preset",
-				Handler: protected.AdGuardApplyEntryDNSPresetHandler(serverCtx),
 			},
 			{
 				Method:  http.MethodPost,

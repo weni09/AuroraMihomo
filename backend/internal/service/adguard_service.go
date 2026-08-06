@@ -50,6 +50,9 @@ type AdGuardStatusDTO struct {
 	// DesiredRunning 用户期望的运行态（enabled_at_boot）。
 	// 面板重启后据此决定是否自启；与实时 Running 可能短暂不一致。
 	DesiredRunning bool `json:"desiredRunning"`
+	// ManagedBy 运行形态："process"（面板托管子进程）/ "systemd" / "openrc"。
+	// 服务模式下进程由系统服务看护，面板退出后 DNS 仍常驻。
+	ManagedBy string `json:"managedBy"`
 }
 
 // AdGuardService 编排 AdGuard 安装/启停与 DNS 一键对接。
@@ -167,6 +170,7 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 	dto.AutoUpdateCron = s.AutoUpdateCron()
 	dto.Username = s.AdminUsername()
 	dto.DesiredRunning = s.DesiredRunning()
+	dto.ManagedBy = s.mgr.ManagedBy()
 	// 版本优先 settings（安装时记下的 tag），进程 Status 可能尚未探测
 	if v := s.getSetting(settingAdGuardVersion, ""); v != "" && dto.Version == "" {
 		dto.Version = v

@@ -231,7 +231,11 @@ function syncPageChrome() {
   // 副标题：对接文案 / 期望运行 / 错误；运行态用 badge 表达，避免再占一行页面工具条
   let subtitle = store.status.wiringLabel || ''
   if (!running.value && desiredRunning.value) {
-    subtitle = '期望运行 · 面板将自启或启动中'
+    // 服务模式下进程由系统服务看护，自启不依赖面板进程
+    subtitle =
+      store.status.managedBy !== 'process'
+        ? '期望运行 · 由系统服务开机自启'
+        : '期望运行 · 面板将自启或启动中'
   }
   if (store.status.lastError && !running.value) {
     subtitle = store.status.lastError

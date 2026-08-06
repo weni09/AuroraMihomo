@@ -31,6 +31,7 @@ function statusPayload(partial: Record<string, unknown> = {}) {
     autoUpdate: false,
     autoUpdateCron: '0 0 4 * * *',
     username: 'admin',
+    managedBy: 'process',
     ...partial,
   }
 }
@@ -88,6 +89,58 @@ describe('AdGuardSettingsDialog', () => {
     expect(body().find('[data-testid="adguard-egress-note"]').text()).toContain(
       '下载出网遵循系统设置',
     )
+
+    wrapper.unmount()
+  })
+
+  it('服务模式展示系统服务看护文案，自启开关切换走 /adguard/boot', async () => {
+    mockedApi.get.mockImplementation(async (url: string) => {
+      if (url === '/adguard/status') {
+        return { data: statusPayload({ managedBy: 'systemd', desiredRunning: true }) }
+      }
+      if (url === '/settings/update') {
+        return {
+          data: {
+            useMihomoProxy: true,
+            mihomoProxyUrl: 'http://127.0.0.1:7890',
+            cdnProviders: [],
+          },
+        }
+      }
+      return { data: {} }
+    })
+    const wrapper = mount(AdGuardSettingsDialog, {
+      props: { open: true },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await nextTick()
+
+    // 服务模式下展示系统服务看护说明与「停止不清自启」语义提示
+    expect(body().find('[data-testid="agh-managed-by"]').text()).toContain('systemd 服务看护')
+    expect(body().text()).toContain('由系统服务随开机自启')
+    expect(body().text()).toContain('手动「停止」只临时停止')
+
+    // 点击自启开关 → PUT /adguard/boot（服务模式驱动 systemctl enable/disable）
+    const sw = body().find('[data-testid="agh-boot-switch"] [role="switch"]')
+    expect(sw.exists()).toBe(true)
+    await sw.trigger('click')
+    await flushPromises()
+    expect(mockedApi.put).toHaveBeenCalledWith('/adguard/boot', { enabled: false })
+
+    wrapper.unmount()
+  })
+
+  it('exec 模式不显示系统服务文案，自启提示为面板重启拉起', async () => {
+    const wrapper = mount(AdGuardSettingsDialog, {
+      props: { open: true },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    await nextTick()
+
+    expect(body().find('[data-testid="agh-managed-by"]').exists()).toBe(false)
+    expect(body().text()).toContain('面板重启时自动拉起')
 
     wrapper.unmount()
   })

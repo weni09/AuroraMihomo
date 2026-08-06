@@ -8,6 +8,10 @@ type AdGuardAutoUpdateReq struct {
 	Cron    string `json:"cron,optional"`
 }
 
+type AdGuardBootReq struct {
+	Enabled bool `json:"enabled"`
+}
+
 type AdGuardCDNReq struct {
 	Providers []string `json:"providers,optional"`
 }
@@ -45,9 +49,10 @@ type AdGuardStatusResp struct {
 	DnsMode          int      `json:"dnsMode"` // 0 未托管 / 1 绑定53 / 2 重定向
 	CdnProviders     []string `json:"cdnProviders,optional"`
 	AutoUpdate       bool     `json:"autoUpdate"`
-	AutoUpdateCron   string   `json:"autoUpdateCron,optional"`
+	AutoUpdateCron   string   `json:"autoUpdateCron,optional"` // 5/6 段 cron；空则默认每天 4 点
 	Username         string   `json:"username,optional"`
-	DesiredRunning   bool     `json:"desiredRunning"`
+	DesiredRunning   bool     `json:"desiredRunning"`     // 用户期望运行；面板重启后据此自启
+	ManagedBy        string   `json:"managedBy,optional"` // 运行形态: process / systemd / openrc
 }
 
 type AdGuardUninstallReq struct {

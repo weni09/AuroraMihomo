@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import { Play, Power, RefreshCw, Download } from 'lucide-vue-next'
 
 /**
@@ -36,6 +37,30 @@ const running = computed(() => store.status.running)
 const version = computed(() => store.status.version || '未知')
 const pid = computed(() => store.status.pid || 0)
 const webAddr = computed(() => store.status.webAddr || '127.0.0.1:3000')
+
+/** 运行形态文案：服务模式下进程由系统服务看护，面板退出不影响 DNS */
+const managedByLabel = computed(() => {
+  switch (store.status.managedBy) {
+    case 'systemd':
+      return '由 systemd 服务看护：面板退出后 DNS 过滤仍常驻'
+    case 'openrc':
+      return '由 OpenRC 服务看护：面板退出后 DNS 过滤仍常驻'
+    default:
+      return ''
+  }
+})
+
+/** 开机自启开关的语义提示：exec 模式与系统服务模式不同 */
+const bootHint = computed(() => {
+  if (store.status.managedBy === 'process') {
+    return '开启后，面板重启时自动拉起 AdGuard'
+  }
+  return '开启后由系统服务随开机自启；手动「停止」只临时停止，不会关闭自启'
+})
+
+function onToggleBoot(enabled: boolean) {
+  void store.setBoot(enabled)
+}
 
 const useMihomoProxy = computed(() => settings.settings?.useMihomoProxy !== false)
 const mihomoProxyUrl = computed(() => settings.settings?.mihomoProxyUrl || '')
@@ -225,6 +250,22 @@ async function saveAutoUpdate() {
             </Button>
           </template>
         </div>
+        <!-- 运行形态：服务模式下进程由系统服务看护，面板退出后 DNS 仍常驻 -->
+        <p v-if="managedByLabel" class="text-xs text-fg-subtle" data-testid="agh-managed-by">
+          {{ managedByLabel }}
+        </p>
+        <!-- 开机自启：服务模式驱动 systemctl enable/disable，exec 模式写面板自启 -->
+        <label class="flex items-center gap-3" data-testid="agh-boot-switch">
+          <Switch
+            :model-value="store.status.desiredRunning === true"
+            :disabled="busy || !store.status.installed"
+            @update:model-value="onToggleBoot"
+          />
+          <span class="text-sm font-medium">开机自启</span>
+        </label>
+        <p class="text-xs text-fg-subtle">
+          {{ bootHint }}
+        </p>
       </section>
 
       <!-- Web 端口 -->

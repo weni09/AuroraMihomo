@@ -31,6 +31,8 @@ export interface AdGuardStatus {
   username: string
   /** 用户期望运行；面板重启后据此自启 */
   desiredRunning: boolean
+  /** 运行形态："process"（面板托管子进程）/ "systemd" / "openrc"（系统服务看护） */
+  managedBy: string
 }
 
 /** 一键对接向导勾选项 */
@@ -72,6 +74,7 @@ const emptyStatus = (): AdGuardStatus => ({
   autoUpdateCron: '0 0 4 * * *',
   username: 'admin',
   desiredRunning: false,
+  managedBy: 'process',
 })
 
 export const useAdGuardStore = defineStore('adguard', {
@@ -110,6 +113,7 @@ export const useAdGuardStore = defineStore('adguard', {
           autoUpdateCron: (res.data?.autoUpdateCron || '').trim() || '0 0 4 * * *',
           username: res.data?.username?.trim() || 'admin',
           desiredRunning: res.data?.desiredRunning === true,
+          managedBy: res.data?.managedBy || 'process',
         }
       } catch (error) {
         // 失败时保留上一次成功的 status，避免手机弱网把「已启用/运行中」打成
@@ -181,6 +185,25 @@ export const useAdGuardStore = defineStore('adguard', {
     },
     async restart() {
       await this.runAction('/adguard/restart', 'AdGuard Home 已重启')
+    },
+    /** 开机自启开关：服务模式下驱动 systemctl enable/disable；不启停进程 */
+    async setBoot(enabled: boolean) {
+      this.actionLoading = true
+      try {
+        const res = await api.put<Result>('/adguard/boot', { enabled })
+        const text = res.data?.message || (enabled ? '已开启开机自启' : '已关闭开机自启')
+        if (res.data?.success === false) {
+          useNotifyStore().error(text)
+        } else {
+          useNotifyStore().success(text)
+        }
+        await this.fetchStatus()
+      } catch (error) {
+        console.error(error)
+        await this.fetchStatus()
+      } finally {
+        this.actionLoading = false
+      }
     },
     /** 与设置页共用更新入口 */
     async update() {
