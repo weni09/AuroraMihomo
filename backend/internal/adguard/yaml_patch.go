@@ -212,12 +212,6 @@ func ReadWebListen(workDir string) (host string, port int, err error) {
 	return localhostBind, port, nil
 }
 
-// portFromAddress 从 "host:port" / ":port" / "port" 中抽出端口。
-func portFromAddress(addr string) int {
-	_, p := splitHostPort(addr)
-	return p
-}
-
 // splitHostPort 解析 "host:port" / "[::1]:port" / ":port" / "port"。
 // host 可能为空（仅端口时）。
 func splitHostPort(addr string) (host string, port int) {
@@ -287,7 +281,7 @@ func NormalizeWebHost(host string) (string, error) {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
-		return "", fmt.Errorf("Web 监听地址无效: %q（请用 127.0.0.1、0.0.0.0 或具体 IP）", host)
+		return "", fmt.Errorf("web 监听地址无效: %q（请用 127.0.0.1、0.0.0.0 或具体 IP）", host)
 	}
 	_ = bracketed
 	if ip.To4() == nil {
