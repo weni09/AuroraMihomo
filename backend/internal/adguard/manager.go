@@ -78,6 +78,48 @@ func (m *Manager) SetController(c ServiceController) {
 	m.mu.Unlock()
 }
 
+// Controller 返回当前服务控制器（nil 表示 exec 子进程模式）。
+func (m *Manager) Controller() ServiceController {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.controller
+}
+
+// ServiceMode 是否处于服务模式（进程由系统服务管理器看护）。
+func (m *Manager) ServiceMode() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.controller != nil
+}
+
+// ServiceEnabled 服务是否已注册开机自启（服务模式下读系统真实状态）。
+func (m *Manager) ServiceEnabled(ctx context.Context) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	ctrl := m.controller
+	m.mu.RUnlock()
+	if ctrl == nil {
+		return false
+	}
+	return ctrl.IsEnabled(ctx)
+}
+
+// ConfigFilePath 返回 AGH yaml 路径（work-dir 下固定名），供注册服务单元用。
+func (m *Manager) ConfigFilePath() string {
+	if m == nil || m.cfg.WorkDir == "" {
+		return ""
+	}
+	return filepath.Join(m.cfg.WorkDir, aghConfigFile)
+}
+
 // SetWebAddr 更新 Status/反代回显用的 Web 地址（如 127.0.0.1:3000）。
 func (m *Manager) SetWebAddr(addr string) {
 	m.mu.Lock()

@@ -198,6 +198,7 @@ func (s *AdGuardService) Status(ctx context.Context) (*AdGuardStatusDTO, error) 
 }
 
 // Install 下载安装最新 AdGuardHome 并记录版本 tag。
+// 服务模式下额外注册系统服务单元（写一次，此后改端口/更新不再动它）。
 func (s *AdGuardService) Install(ctx context.Context) error {
 	if s.updater == nil {
 		return errors.New("更新器未初始化，无法安装 AdGuard Home")
@@ -220,7 +221,34 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	if port, err := adguard.ReadDNSPort(s.workDir); err == nil && port > 0 {
 		_ = s.db.SetSetting(settingAdGuardDNSPort, strconv.Itoa(port))
 	}
+	// 服务模式：注册系统服务单元。失败不阻塞安装（二进制已就位），
+	// 记日志并提示——unit 注册失败意味着进程仍只能由面板托管。
+	s.registerServiceIfNeeded(ctx)
 	return nil
+}
+
+// registerServiceIfNeeded 服务模式下注册系统服务单元（幂等；失败仅记日志，
+// 不阻塞安装）。unit 内容只含安装期不变的路径参数，此后改端口/更新不再动它。
+func (s *AdGuardService) registerServiceIfNeeded(ctx context.Context) {
+	c := s.serviceController()
+	if c == nil {
+		return
+	}
+	if s.updater == nil {
+		s.logger.Errorf("注册 AdGuard 系统服务失败: 更新器未初始化")
+		return
+	}
+	if err := c.Install(ctx, s.updater.AdGuardBinaryPath(), s.workDir, s.mgr.ConfigFilePath()); err != nil {
+		s.logger.Errorf("注册 AdGuard 系统服务失败（可重试安装或手动检查 systemd）: %v", err)
+	}
+}
+
+// serviceController 返回注入到进程 Manager 的系统服务控制器（nil 为 exec 模式）。
+func (s *AdGuardService) serviceController() adguard.ServiceController {
+	if s == nil || s.mgr == nil {
+		return nil
+	}
+	return s.mgr.Controller()
 }
 
 // 面板开机自启：首次尝试前等待、失败后有限次重试（指数退避）。
@@ -332,13 +360,34 @@ func (s *AdGuardService) startWithBootRetry(ctx context.Context, initialDelay ti
 	return fmt.Errorf("开机自启 %d 次均失败: %w", maxAttempts, lastErr)
 }
 
-// Stop 用户主动停止：停进程并清除「期望运行」，面板重启后不再自启。
+// Stop 用户主动停止。
+// exec 模式：停进程并清除「期望运行」，面板重启后不再自启。
+// 服务模式：systemctl stop 已保留 enable——用户临时停 ≠ 取消开机自启，
+// settings 不动（DesiredRunning 读系统真实状态）。
 func (s *AdGuardService) Stop(ctx context.Context) error {
 	if err := s.mgr.Stop(ctx); err != nil {
 		return err
 	}
+	if s.serviceController() != nil {
+		return nil
+	}
 	if err := s.setDesiredRunning(false); err != nil {
 		s.logger.Errorf("清除 AdGuard 期望运行状态失败: %v", err)
+	}
+	return nil
+}
+
+// SetBootEnabled 控制「开机自启」，不启停进程。
+// 服务模式：驱动 systemctl enable/disable / rc-update（系统真实状态）。
+// exec 模式：写 settings（面板重启后据此决定是否拉起）。
+func (s *AdGuardService) SetBootEnabled(ctx context.Context, enabled bool) error {
+	if c := s.serviceController(); c != nil {
+		if err := c.SetBootEnabled(ctx, enabled); err != nil {
+			return err
+		}
+	}
+	if err := s.setDesiredRunning(enabled); err != nil {
+		return err
 	}
 	return nil
 }
@@ -566,10 +615,11 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 // 顺序：
 //  1. wiring=on 时 WiringRollback（失败则中止，不删文件）
 //  2. Stop
-//  3. 删除二进制与 .bak
-//  4. RemoveAll workDir
-//  5. 清除 adguard.* settings
-//  6. 强制 component_enabled=false
+//  3. 服务模式注销系统服务（stop + disable + 删 unit）——必须在删二进制前
+//  4. 删除二进制与 .bak
+//  5. RemoveAll workDir
+//  6. 清除 adguard.* settings
+//  7. 强制 component_enabled=false
 func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
 	if !confirm {
 		return errors.New("请确认卸载（confirm=true）")
@@ -587,7 +637,15 @@ func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
 		return fmt.Errorf("卸载时停止 AdGuard 失败: %w", err)
 	}
 
-	// 3. 删除二进制与备份
+	// 3. 服务模式：注销系统服务。disable 必须先于删二进制，
+	// 否则开机按残留 enable 拉起已不存在的二进制。
+	if c := s.serviceController(); c != nil {
+		if err := c.Uninstall(ctx); err != nil {
+			return fmt.Errorf("注销 AdGuard 系统服务失败: %w", err)
+		}
+	}
+
+	// 4. 删除二进制与备份
 	if s.updater != nil {
 		bin := s.updater.AdGuardBinaryPath()
 		if bin != "" {
@@ -600,19 +658,19 @@ func (s *AdGuardService) Uninstall(ctx context.Context, confirm bool) error {
 		}
 	}
 
-	// 4. 删除工作目录（配置、日志等）
+	// 5. 删除工作目录（配置、日志等）
 	if s.workDir != "" {
 		if err := os.RemoveAll(s.workDir); err != nil {
 			return fmt.Errorf("删除 AdGuard 工作目录失败: %w", err)
 		}
 	}
 
-	// 5. 清除 adguard.* settings
+	// 6. 清除 adguard.* settings
 	if err := s.clearAdGuardSettings(); err != nil {
 		return err
 	}
 
-	// 6. 强制关闭组件
+	// 7. 强制关闭组件
 	if s.db == nil {
 		return errors.New("数据库未初始化")
 	}
@@ -673,7 +731,12 @@ func (s *AdGuardService) clearAdGuardSettings() error {
 
 // ShouldStartAtBoot 需组件开启、用户期望运行（enabled_at_boot）且二进制存在。
 // 发版/面板重启后据此决定是否拉起 AdGuard，与用户上次点「启动/停止」对齐。
+// 服务模式下恒 false：开机自启由 systemctl enable / rc-update 负责，
+// 面板不再拉起，避免面板重启后与系统服务双重拉起竞争。
 func (s *AdGuardService) ShouldStartAtBoot() bool {
+	if s.mgr != nil && s.mgr.ServiceMode() {
+		return false
+	}
 	if !s.ComponentEnabled() {
 		return false
 	}
@@ -685,7 +748,12 @@ func (s *AdGuardService) ShouldStartAtBoot() bool {
 }
 
 // DesiredRunning 读取用户期望的运行态（settings: adguard.enabled_at_boot）。
+// 服务模式下以系统真实 enable 状态为准（settings 可能滞后，或用户
+// 在 systemctl 侧直接改过）。
 func (s *AdGuardService) DesiredRunning() bool {
+	if s.mgr != nil && s.mgr.ServiceMode() {
+		return s.mgr.ServiceEnabled(context.Background())
+	}
 	v := strings.TrimSpace(s.getSetting(settingAdGuardBoot, ""))
 	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") || v == "yes"
 }
