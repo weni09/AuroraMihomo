@@ -410,6 +410,22 @@ type Subscription struct {
 	Traffic      *TrafficInfo       `json:"traffic"`
 }
 
+type SystemStats struct {
+	CPUPercent    float64 `json:"cpuPercent"`
+	MemTotal      uint64  `json:"memTotal"`
+	MemUsed       uint64  `json:"memUsed"`
+	MemPercent    float64 `json:"memPercent"`
+	NetUpRate     uint64  `json:"netUpRate"`
+	NetDownRate   uint64  `json:"netDownRate"`
+	NetUpTotal    uint64  `json:"netUpTotal"`
+	NetDownTotal  uint64  `json:"netDownTotal"`
+	DiskTotal     uint64  `json:"diskTotal"`
+	DiskUsed      uint64  `json:"diskUsed"`
+	DiskPercent   float64 `json:"diskPercent"`
+	DiskPath      string  `json:"diskPath,optional"`
+	UptimeSeconds uint64  `json:"uptimeSeconds"`
+}
+
 type TaskItem struct {
 	Id      int64  `json:"id"`
 	Name    string `json:"name"`
@@ -514,31 +530,35 @@ type UpdateBaseConfigReq struct {
 }
 
 type UpdateSettings struct {
-	AutoUpdateEnabled bool     `json:"autoUpdateEnabled"`
-	AutoUpdateCron    string   `json:"autoUpdateCron"`
-	CDNProviders      []string `json:"cdnProviders"`
-	UseMihomoProxy    bool     `json:"useMihomoProxy"`
-	MihomoProxyUrl    string   `json:"mihomoProxyUrl"`
-	MihomoPath        string   `json:"mihomoPath"`
-	ZashboardDir      string   `json:"zashboardDir"`
-	MihomoPresent     bool     `json:"mihomoPresent"`
-	ZashboardPresent  bool     `json:"zashboardPresent"`
-	MihomoVersion     string   `json:"mihomoVersion"`
-	ZashboardVersion  string   `json:"zashboardVersion"`
-	DefaultCDN        []string `json:"defaultCDN"`
-	LogRetentionDays  int      `json:"logRetentionDays"`
-	LogCleanupCron    string   `json:"logCleanupCron"`
-	LogCleanupEnabled bool     `json:"logCleanupEnabled"`
+	AutoUpdateEnabled  bool     `json:"autoUpdateEnabled"`
+	AutoUpdateCron     string   `json:"autoUpdateCron"`
+	CDNProviders       []string `json:"cdnProviders"`
+	UseMihomoProxy     bool     `json:"useMihomoProxy"`
+	MihomoProxyUrl     string   `json:"mihomoProxyUrl"`
+	MihomoPath         string   `json:"mihomoPath"`
+	ZashboardDir       string   `json:"zashboardDir"`
+	MihomoPresent      bool     `json:"mihomoPresent"`
+	ZashboardPresent   bool     `json:"zashboardPresent"`
+	MihomoVersion      string   `json:"mihomoVersion"`
+	ZashboardVersion   string   `json:"zashboardVersion"`
+	DefaultCDN         []string `json:"defaultCDN"`
+	LogRetentionDays   int      `json:"logRetentionDays"`
+	LogCleanupCron     string   `json:"logCleanupCron"`
+	LogCleanupEnabled  bool     `json:"logCleanupEnabled"`
+	MonitorEnabled     bool     `json:"monitorEnabled"`
+	MonitorIntervalSec int      `json:"monitorIntervalSec"`
 }
 
 type UpdateSettingsReq struct {
-	AutoUpdateEnabled *bool    `json:"autoUpdateEnabled,optional"`
-	AutoUpdateCron    string   `json:"autoUpdateCron,optional"`
-	CDNProviders      []string `json:"cdnProviders,optional"`
-	UseMihomoProxy    *bool    `json:"useMihomoProxy,optional"`
-	LogRetentionDays  *int     `json:"logRetentionDays,optional"`
-	LogCleanupCron    string   `json:"logCleanupCron,optional"`
-	LogCleanupEnabled *bool    `json:"logCleanupEnabled,optional"`
+	AutoUpdateEnabled  *bool    `json:"autoUpdateEnabled,optional"`
+	AutoUpdateCron     string   `json:"autoUpdateCron,optional"`
+	CDNProviders       []string `json:"cdnProviders,optional"`
+	UseMihomoProxy     *bool    `json:"useMihomoProxy,optional"`
+	LogRetentionDays   *int     `json:"logRetentionDays,optional"`
+	LogCleanupCron     string   `json:"logCleanupCron,optional"`
+	LogCleanupEnabled  *bool    `json:"logCleanupEnabled,optional"`
+	MonitorEnabled     *bool    `json:"monitorEnabled,optional"`
+	MonitorIntervalSec *int     `json:"monitorIntervalSec,optional"`
 }
 
 type UpdateSubscriptionReq struct {

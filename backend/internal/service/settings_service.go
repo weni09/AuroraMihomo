@@ -50,7 +50,19 @@ const (
 	settingRemoteSourceCron = "remote.source.cron"
 	// settingRemoteSourceEnabled 是否启用远程拉取的定时任务
 	settingRemoteSourceEnabled = "remote.source.cron_enabled"
+	// settingMonitorEnabled 服务器资源监控总开关（控制台资源卡片）。
+	// settingMonitorIntervalSec 为卡片的刷新间隔（秒），取值见 MonitorIntervalOptions。
+	settingMonitorEnabled     = "monitor.enabled"
+	settingMonitorIntervalSec = "monitor.interval_sec"
 )
+
+// MonitorIntervalOptions 是允许的刷新间隔（秒）。
+// 前端设置页的下拉框必须与此保持一致：新增档位要两边同步改。
+var MonitorIntervalOptions = []int{1, 3, 5, 10, 30}
+
+// defaultMonitorIntervalSec 是资源卡片的默认刷新间隔。
+// 取 3s：比旧版 60s 有实时感，又不会像 1s 那样放大网络与采样开销。
+const defaultMonitorIntervalSec = 3
 
 // 远程拉取的默认调度：每小时的第 0 分 0 秒。
 const defaultRemoteSourceCron = "0 0 * * * *"
@@ -167,6 +179,11 @@ type UpdateSettingsInput struct {
 	LogCleanupCron string `json:"logCleanupCron,optional"`
 	// LogCleanupEnabled 是否启用定时清理，nil 表示不修改
 	LogCleanupEnabled *bool `json:"logCleanupEnabled,optional"`
+	// MonitorEnabled 服务器资源监控总开关，nil 表示不修改
+	MonitorEnabled *bool `json:"monitorEnabled,optional"`
+	// MonitorIntervalSec 资源卡片刷新间隔（秒），nil 表示不修改。
+	// 只接受 MonitorIntervalOptions 内的档位，其余值回退默认 3s。
+	MonitorIntervalSec *int `json:"monitorIntervalSec,optional"`
 }
 
 // Get 返回运行期设置，并补上需要实时探测的 mihomo 版本。
@@ -275,6 +292,22 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 		}
 	}
 
+	// 资源监控设置：纯展示配置（前端轮询节奏），无调度任务可重装，落库即生效
+	if in.MonitorEnabled != nil {
+		if err := s.db.SetSetting(settingMonitorEnabled, boolToStr(*in.MonitorEnabled)); err != nil {
+			return updater.RuntimeSettings{}, err
+		}
+	}
+	if in.MonitorIntervalSec != nil {
+		sec := *in.MonitorIntervalSec
+		if !validMonitorInterval(sec) {
+			sec = defaultMonitorIntervalSec
+		}
+		if err := s.db.SetSetting(settingMonitorIntervalSec, strconv.Itoa(sec)); err != nil {
+			return updater.RuntimeSettings{}, err
+		}
+	}
+
 	if s.reloadFn != nil {
 		if err := s.reloadFn(st.AutoUpdateEnabled, st.AutoUpdateCron); err != nil {
 			return updater.RuntimeSettings{}, err
@@ -288,6 +321,43 @@ func boolToStr(v bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// ---- 服务器资源监控 ----
+
+// MonitorEnabled 返回资源监控总开关，未设置时默认开启。
+// 默认开启：这是面板的轻量展示功能，新装用户开箱即用更符合预期。
+func (s *SettingsService) MonitorEnabled() bool {
+	v, err := s.db.GetSetting(settingMonitorEnabled)
+	if err != nil {
+		return true
+	}
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// MonitorIntervalSec 返回资源卡片的刷新间隔（秒）。
+// 未设置或值不在合法档位内时回退默认 3s：非法值只可能来自手工改库，
+// 回退到确定的默认值比「猜一个最近的档位」更可预期。
+func (s *SettingsService) MonitorIntervalSec() int {
+	v, err := s.db.GetSetting(settingMonitorIntervalSec)
+	if err != nil {
+		return defaultMonitorIntervalSec
+	}
+	n, convErr := strconv.Atoi(strings.TrimSpace(v))
+	if convErr != nil || !validMonitorInterval(n) {
+		return defaultMonitorIntervalSec
+	}
+	return n
+}
+
+// validMonitorInterval 判断间隔是否在允许的档位集合内。
+func validMonitorInterval(sec int) bool {
+	for _, opt := range MonitorIntervalOptions {
+		if sec == opt {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Merge Policy (设计 §16：用户可配置合并策略) ----

@@ -343,6 +343,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodGet,
+				Path:    "/api/v1/system/stats",
+				Handler: protected.SystemStatsHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
 				Path:    "/api/v1/system/status",
 				Handler: protected.SystemStatusHandler(serverCtx),
 			},

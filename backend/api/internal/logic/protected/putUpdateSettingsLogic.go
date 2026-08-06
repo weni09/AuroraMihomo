@@ -26,13 +26,15 @@ func NewPutUpdateSettingsLogic(ctx context.Context, svcCtx *svc.ServiceContext) 
 
 func (l *PutUpdateSettingsLogic) PutUpdateSettings(req *types.UpdateSettingsReq) (resp *types.UpdateSettings, err error) {
 	st, err := l.svcCtx.SettingsService.Update(service.UpdateSettingsInput{
-		AutoUpdateEnabled: req.AutoUpdateEnabled,
-		AutoUpdateCron:    req.AutoUpdateCron,
-		CDNProviders:      req.CDNProviders,
-		UseMihomoProxy:    req.UseMihomoProxy,
-		LogRetentionDays:  req.LogRetentionDays,
-		LogCleanupCron:    req.LogCleanupCron,
-		LogCleanupEnabled: req.LogCleanupEnabled,
+		AutoUpdateEnabled:  req.AutoUpdateEnabled,
+		AutoUpdateCron:     req.AutoUpdateCron,
+		CDNProviders:       req.CDNProviders,
+		UseMihomoProxy:     req.UseMihomoProxy,
+		LogRetentionDays:   req.LogRetentionDays,
+		LogCleanupCron:     req.LogCleanupCron,
+		LogCleanupEnabled:  req.LogCleanupEnabled,
+		MonitorEnabled:     req.MonitorEnabled,
+		MonitorIntervalSec: req.MonitorIntervalSec,
 	})
 	if err != nil {
 		return nil, err

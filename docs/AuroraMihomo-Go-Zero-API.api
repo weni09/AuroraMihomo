@@ -19,6 +19,29 @@ type Status {
 	Timezone string `json:"timezone,optional"`
 }
 
+// SystemStats 宿主服务器资源快照。网络速率为「自上次查询以来的平均速率」
+// （后端保存上次采样做差分），因此两次查询间隔越短，速率越接近瞬时值。
+type SystemStats {
+	// CPUPercent 最近采样窗口的 CPU 使用率（0-100）
+	CPUPercent float64 `json:"cpuPercent"`
+	MemTotal   uint64  `json:"memTotal"`
+	MemUsed    uint64  `json:"memUsed"`
+	MemPercent float64 `json:"memPercent"`
+	// NetUpRate / NetDownRate 上下行速率，字节/秒
+	NetUpRate   uint64 `json:"netUpRate"`
+	NetDownRate uint64 `json:"netDownRate"`
+	// NetUpTotal / NetDownTotal 自开机起的累计流量（排除 loopback）
+	NetUpTotal   uint64  `json:"netUpTotal"`
+	NetDownTotal uint64  `json:"netDownTotal"`
+	DiskTotal    uint64  `json:"diskTotal"`
+	DiskUsed     uint64  `json:"diskUsed"`
+	DiskPercent  float64 `json:"diskPercent"`
+	// DiskPath 磁盘探测目标：面板数据目录所在分区（如 / 或 C:\）
+	DiskPath string `json:"diskPath,optional"`
+	// UptimeSeconds 主机开机运行时长（秒）
+	UptimeSeconds uint64 `json:"uptimeSeconds"`
+}
+
 type Result {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
@@ -578,6 +601,10 @@ type UpdateSettings {
 	LogCleanupCron string `json:"logCleanupCron"`
 	// LogCleanupEnabled 是否启用定时清理；关闭后仅靠大小轮转限制磁盘占用
 	LogCleanupEnabled bool `json:"logCleanupEnabled"`
+	// MonitorEnabled 服务器资源监控总开关（控制台资源卡片）
+	MonitorEnabled bool `json:"monitorEnabled"`
+	// MonitorIntervalSec 资源卡片刷新间隔（秒），档位见 MonitorIntervalOptions
+	MonitorIntervalSec int `json:"monitorIntervalSec"`
 }
 
 type UpdateSettingsReq {
@@ -591,6 +618,10 @@ type UpdateSettingsReq {
 	LogCleanupCron string `json:"logCleanupCron,optional"`
 	// LogCleanupEnabled 是否启用定时清理，nil 表示不修改
 	LogCleanupEnabled *bool `json:"logCleanupEnabled,optional"`
+	// MonitorEnabled 资源监控总开关，nil 表示不修改
+	MonitorEnabled *bool `json:"monitorEnabled,optional"`
+	// MonitorIntervalSec 刷新间隔（秒），nil 表示不修改；仅接受 1/3/5/10/30
+	MonitorIntervalSec *int `json:"monitorIntervalSec,optional"`
 }
 
 // ---------- 其他 ----------
@@ -768,6 +799,9 @@ service aurora-api {
 
 	@handler systemStatus
 	get /api/v1/system/status returns (Status)
+
+	@handler systemStats
+	get /api/v1/system/stats returns (SystemStats)
 
 	@handler dashboardEntry
 	get /api/v1/dashboard/entry returns (DashboardEntryResp)

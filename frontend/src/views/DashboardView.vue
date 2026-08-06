@@ -9,6 +9,7 @@ import { useTransparentStore } from '../stores/transparent'
 import { useMihomoRealtime } from '../composables/useMihomoRealtime'
 import KernelActionBar from '../components/KernelActionBar.vue'
 import KernelLogPreview from '../components/KernelLogPreview.vue'
+import ServerStats from '../components/ServerStats.vue'
 import type { KernelLogLine } from '../components/KernelLogPreview.vue'
 import GitHubCorner from '../components/GitHubCorner.vue'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -395,6 +396,9 @@ onUnmounted(() => {
       </div>
       <KernelActionBar compact />
     </div>
+
+    <!-- 服务器资源：CPU/内存/网络上下行/磁盘/运行时长，组件内自持 60s 轮询 -->
+    <ServerStats />
 
     <div class="grid gap-4 sm:gap-6 grid-cols-1 lg:grid-cols-3">
       <!-- 设计 §3 TaskCard -->

@@ -29,6 +29,10 @@ export interface UpdateSettings {
   logCleanupCron: string
   /** 是否启用定时清理；关闭后仅靠大小轮转限制磁盘占用 */
   logCleanupEnabled: boolean
+  /** 服务器资源监控总开关（控制台资源卡片） */
+  monitorEnabled: boolean
+  /** 资源卡片刷新间隔（秒），可选 1/3/5/10/30 */
+  monitorIntervalSec: number
 }
 
 export const useSettingsStore = defineStore('settings', {
@@ -68,6 +72,8 @@ export const useSettingsStore = defineStore('settings', {
       logRetentionDays?: number
       logCleanupCron?: string
       logCleanupEnabled?: boolean
+      monitorEnabled?: boolean
+      monitorIntervalSec?: number
     }) {
       this.loading = true
       try {

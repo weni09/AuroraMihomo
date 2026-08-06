@@ -40,6 +40,9 @@ type ServiceContext struct {
 	Updater         *updater.Manager
 	SettingsService *service.SettingsService
 	RenderService   *service.RenderService
+	// MonitorService 采集宿主资源（CPU/内存/网络/磁盘/运行时长）并计算
+	// 网络速率。单例：速率差分需要跨请求保留上次采样基线。
+	MonitorService *service.MonitorService
 	// TransparentService 管理透明代理开关。开启会改动内核配置（TUN 模式）
 	// 或宿主的防火墙与策略路由（TProxy 模式），因此带强制确认与自动回滚。
 	TransparentService *service.TransparentService
@@ -405,6 +408,11 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	_ = db.UpsertTask("config_merge", "on-demand", true)
 	_ = db.UpsertTask("mihomo_reload", "on-demand", true)
 
+	// 宿主资源监控。磁盘探测目标是数据目录所在分区（与面板运行最相关）；
+	// 转绝对路径：Windows 上相对路径无法定位分区。
+	absDataDir, _ := filepath.Abs(dataDir)
+	monitorSvc := service.NewMonitorService(absDataDir)
+
 	return &ServiceContext{
 		Config:             c,
 		Database:           db,
@@ -416,6 +424,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		Updater:            upd,
 		SettingsService:    settingsService,
 		RenderService:      renderSvc,
+		MonitorService:     monitorSvc,
 		TransparentService: transparentSvc,
 		AdGuardService:     aghSvc,
 		AdGuardManager:     aghMgr,

@@ -30,6 +30,9 @@ const form = reactive({
   logRetentionDays: 7,
   logCleanupEnabled: true,
   logCleanupCron: '0 30 3 * * *',
+  // 服务器资源监控：默认开启、3s 刷新（与后端默认值一致）
+  monitorEnabled: true,
+  monitorIntervalSec: 3,
 })
 
 onMounted(async () => {
@@ -95,6 +98,8 @@ function syncForm() {
   form.logRetentionDays = store.settings.logRetentionDays || 7
   form.logCleanupEnabled = store.settings.logCleanupEnabled !== false
   form.logCleanupCron = store.settings.logCleanupCron || '0 30 3 * * *'
+  form.monitorEnabled = store.settings.monitorEnabled !== false
+  form.monitorIntervalSec = store.settings.monitorIntervalSec || 3
 }
 
 const defaultCDNText = computed(() => (store.settings?.defaultCDN || []).join(', '))
@@ -140,9 +145,13 @@ async function onSave() {
     autoUpdateCron: form.autoUpdateCron,
     cdnProviders: parseList(form.cdnText),
     useMihomoProxy: form.useMihomoProxy,
-    logRetentionDays: form.logRetentionDays,
+    // Input 是封装组件，v-model.number 修饰符不会透传，输入会是字符串，
+    // 显式转数字再提交（空值回退 7 与 syncForm 的兜底一致）
+    logRetentionDays: Number(form.logRetentionDays) || 7,
     logCleanupEnabled: form.logCleanupEnabled,
     logCleanupCron: form.logCleanupCron,
+    monitorEnabled: form.monitorEnabled,
+    monitorIntervalSec: form.monitorIntervalSec,
   })
 }
 
@@ -430,6 +439,7 @@ const sections = [
   { id: 'auto-update', title: '自动更新' },
   { id: 'transparent', title: '透明代理' },
   { id: 'network', title: '下载与更新出网' },
+  { id: 'monitor', title: '服务器资源监控' },
   { id: 'logs', title: '日志' },
   { id: 'merge-policy', title: '配置合并策略' },
 ] as const
@@ -1022,15 +1032,48 @@ const navOpen = ref(false)
           </p>
         </section>
 
+        <!-- 服务器资源监控：控制台资源卡片的开关与刷新节奏。
+             纯展示功能，关闭后控制台不再轮询（设置保存即生效）。 -->
+        <section id="monitor" class="border-t pt-5 scroll-mt-20">
+          <h2 class="text-lg font-semibold mb-3">服务器资源监控</h2>
+          <label class="flex items-center gap-3">
+            <Switch v-model="form.monitorEnabled" />
+            <span class="text-sm font-medium">启用资源监控</span>
+          </label>
+          <p class="text-xs text-fg-subtle mt-1">
+            在控制台显示 CPU / 内存 / 网络上下行 / 磁盘 / 运行时长卡片。
+            关闭后控制台不再展示与轮询。
+          </p>
+
+          <label class="block text-sm mt-4 mb-1">刷新间隔</label>
+          <Select v-model="form.monitorIntervalSec" :disabled="!form.monitorEnabled">
+            <SelectTrigger id="settings-monitor-interval" class="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem :value="1">1 秒</SelectItem>
+              <SelectItem :value="3">3 秒</SelectItem>
+              <SelectItem :value="5">5 秒</SelectItem>
+              <SelectItem :value="10">10 秒</SelectItem>
+              <SelectItem :value="30">30 秒</SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-fg-subtle mt-1">
+            资源卡片的轮询频率，默认 3 秒。越短实时性越好，代价是更频繁的
+            资源采集与网络请求；网络速率按两次采样的差计算，间隔越短越接近瞬时值。
+          </p>
+        </section>
+
         <section id="logs" class="scroll-mt-20">
           <h2 class="text-lg font-semibold mb-3">日志</h2>
           <label class="block text-sm mb-1">日志保留天数</label>
-          <input
-            v-model.number="form.logRetentionDays"
+          <Input
+            id="settings-log-retention"
+            v-model="form.logRetentionDays"
             type="number"
             min="1"
             max="365"
-            class="input-base w-32"
+            class="w-32"
           />
           <p class="text-xs text-fg-subtle mt-1">
             超过该天数的日志归档会被自动删除，范围 1~365 天，默认 7 天。
@@ -1048,10 +1091,11 @@ const navOpen = ref(false)
           </label>
 
           <label class="block text-sm mt-3 mb-1">清理时间（Cron）</label>
-          <input
+          <Input
+            id="settings-log-cron"
             v-model="form.logCleanupCron"
             :disabled="!form.logCleanupEnabled"
-            class="input-base w-full sm:w-72 font-mono text-sm disabled:opacity-50"
+            class="w-full sm:w-72 font-mono text-sm"
             placeholder="0 30 3 * * *"
           />
           <p class="text-xs text-fg-subtle mt-1">

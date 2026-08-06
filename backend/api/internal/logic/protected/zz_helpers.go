@@ -232,6 +232,9 @@ func toUpdateSettings(svcCtx *svc.ServiceContext, st updater.RuntimeSettings) *t
 		LogRetentionDays:  applog.RetentionDays(),
 		LogCleanupCron:    svcCtx.SettingsService.LogCleanupCron(),
 		LogCleanupEnabled: svcCtx.SettingsService.LogCleanupEnabled(),
+		// 资源监控设置同样不属于 updater，从 SettingsService 读生效值
+		MonitorEnabled:     svcCtx.SettingsService.MonitorEnabled(),
+		MonitorIntervalSec: svcCtx.SettingsService.MonitorIntervalSec(),
 	}
 }
 
