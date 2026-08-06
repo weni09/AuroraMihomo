@@ -205,7 +205,9 @@ func newTestAdGuardSvcServiceMode(t *testing.T) (*AdGuardService, *serviceFakeCo
 // TestAdGuardRegisterService 服务模式下注册系统服务单元，参数为安装期路径。
 func TestAdGuardRegisterService(t *testing.T) {
 	svc, ctrl := newTestAdGuardSvcServiceMode(t)
-	svc.registerServiceIfNeeded(context.Background())
+	if err := svc.registerServiceUnit(context.Background()); err != nil {
+		t.Fatalf("registerServiceUnit: %v", err)
+	}
 	if !ctrl.installed {
 		t.Fatal("服务模式应注册系统服务单元")
 	}
@@ -214,6 +216,62 @@ func TestAdGuardRegisterService(t *testing.T) {
 		ctrl.installArgs[1] != svc.workDir ||
 		ctrl.installArgs[2] != filepath.Join(svc.workDir, "AdGuardHome.yaml") {
 		t.Fatalf("注册参数异常: %v", ctrl.installArgs)
+	}
+}
+
+// TestAdGuardEnsureServiceUnitOnBoot 存量升级：已装 + 组件开 + settings 期望运行
+// → 补写 unit 并 Start（enable+start）。
+func TestAdGuardEnsureServiceUnitOnBoot(t *testing.T) {
+	svc, ctrl := newTestAdGuardSvcServiceMode(t)
+	if err := svc.db.SetSetting(settingAdGuardComponent, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.SetSetting(settingAdGuardBoot, "true"); err != nil {
+		t.Fatal(err)
+	}
+	// unit 尚未 enable：DesiredRunning 读 systemctl 会是 false，必须看 settings
+	ctrl.enabled = false
+	svc.EnsureServiceUnitOnBoot(context.Background())
+	if !ctrl.installed {
+		t.Fatal("启动补注册应写 unit")
+	}
+	if !ctrl.started {
+		t.Fatal("settings 期望运行时应 Start（enable+start）")
+	}
+}
+
+// TestAdGuardEnsureServiceUnitOnBoot_ComponentOff 组件关时只写 unit 不 start。
+func TestAdGuardEnsureServiceUnitOnBoot_ComponentOff(t *testing.T) {
+	svc, ctrl := newTestAdGuardSvcServiceMode(t)
+	_ = svc.db.SetSetting(settingAdGuardComponent, "false")
+	_ = svc.db.SetSetting(settingAdGuardBoot, "true")
+	svc.EnsureServiceUnitOnBoot(context.Background())
+	if !ctrl.installed {
+		t.Fatal("即使组件关也应补写 unit（便于日后启用）")
+	}
+	if ctrl.started {
+		t.Fatal("组件关时不应 Start")
+	}
+}
+
+// TestAdGuardSetComponentEnabled_ServiceModeDisablesBoot 关组件须 disable 系统服务，
+// 否则机器重启后 systemd 仍会拉起 AGH。
+func TestAdGuardSetComponentEnabled_ServiceModeDisablesBoot(t *testing.T) {
+	svc, ctrl := newTestAdGuardSvcServiceMode(t)
+	ctrl.enabled = true
+	_ = svc.db.SetSetting(settingAdGuardComponent, "true")
+	_ = svc.db.SetSetting(settingAdGuardBoot, "true")
+	if err := svc.SetComponentEnabled(context.Background(), false); err != nil {
+		t.Fatalf("SetComponentEnabled(false): %v", err)
+	}
+	if ctrl.enabled {
+		t.Fatal("关组件应 disable 系统服务开机自启")
+	}
+	if !ctrl.stopped {
+		t.Fatal("关组件应 Stop 进程")
+	}
+	if svc.ComponentEnabled() {
+		t.Fatal("关组件后 component_enabled 应为 false")
 	}
 }
 

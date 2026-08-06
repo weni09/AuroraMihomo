@@ -65,7 +65,8 @@ func TestSystemdUnitQuotesPath(t *testing.T) {
 }
 
 func TestOpenRCServiceNoPortArgs(t *testing.T) {
-	s := renderOpenRCService("/opt/auroramihomo/data/bin/AdGuardHome",
+	bin := "/opt/auroramihomo/data/bin/AdGuardHome"
+	s := renderOpenRCService(bin,
 		"/opt/auroramihomo/data/adguardhome",
 		"/opt/auroramihomo/data/adguardhome/AdGuardHome.yaml")
 	for _, forbidden := range []string{"--web-addr", "3000", "dns.port"} {
@@ -75,12 +76,34 @@ func TestOpenRCServiceNoPortArgs(t *testing.T) {
 	}
 	for _, want := range []string{
 		"supervisor=\"supervise-daemon\"",
+		`command="` + bin + `"`,
 		"command_args=\"",
 		"after firewall",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("init.d 缺少 %q:\n%s", want, s)
 		}
+	}
+	// 防回归：command_args 不得再含二进制路径，否则 OpenRC 会 exec 两次。
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "command_args=") && strings.Contains(line, bin) {
+			t.Fatalf("command_args 不应重复包含二进制路径:\n%s", line)
+		}
+	}
+}
+
+// TestUnitTemplatesAbsPath 相对路径写入 unit 前应压成绝对路径。
+func TestUnitTemplatesAbsPath(t *testing.T) {
+	u := renderSystemdUnit("data/bin/AdGuardHome", "data/adguardhome", "data/adguardhome/AdGuardHome.yaml")
+	if strings.Contains(u, "ExecStart=data/") || strings.Contains(u, `ExecStart="data/`) {
+		t.Fatalf("systemd unit 仍含相对路径:\n%s", u)
+	}
+	if !strings.Contains(u, "AdGuardHome") {
+		t.Fatalf("systemd unit 缺少二进制名:\n%s", u)
+	}
+	s := renderOpenRCService("data/bin/AdGuardHome", "data/adguardhome", "")
+	if strings.Contains(s, `command="data/`) || strings.Contains(s, "command=data/") {
+		t.Fatalf("openrc command 仍含相对路径:\n%s", s)
 	}
 }
 

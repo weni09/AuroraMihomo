@@ -358,12 +358,19 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 若上次退出时 wiring=on，恢复 TProxy DNS 覆盖到 AGH 端口，
 	// 否则 Resync/重启后规则会悄悄指回 mihomo，对接名存实亡。
 	aghSvc.RestoreWiringOverrideOnBoot()
-	// enabled_at_boot 且二进制在盘：后台拉起，不阻塞面板启动。
-	// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
-	// StartWithBootRetry：先让出 ~800ms，失败则有限次指数退避重试（见 service 包常量）。
-	// 服务模式下 ShouldStartAtBoot 恒 false：开机自启由 systemctl enable /
-	// rc-update 负责，面板不拉起，避免与系统服务双重拉起竞争。
-	if aghSvc.ShouldStartAtBoot() {
+	// 服务模式：存量升级补写 unit，并按 settings 期望运行决定是否 enable+start。
+	// 必须在 ShouldStartAtBoot 分支之前——否则已装用户升级后 AGH 既无 unit
+	// 也不走面板自启，等于停机。
+	if aghMgr.ServiceMode() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			aghSvc.EnsureServiceUnitOnBoot(ctx)
+		}()
+	} else if aghSvc.ShouldStartAtBoot() {
+		// exec 模式：enabled_at_boot 且二进制在盘 → 后台拉起，不阻塞面板启动。
+		// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
+		// StartWithBootRetry：先让出 ~800ms，失败则有限次指数退避重试。
 		go func() {
 			// 总预算覆盖：初始等待 + 最多 3 次 Start + 2s/4s 退避，留余量给慢盘。
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -375,8 +382,8 @@ func NewServiceContext(c config.Config) *ServiceContext {
 			}
 		}()
 	} else {
-		logx.Infof("AdGuard Home 跳过开机自启（component=%v desired=%v installed=%v）",
-			aghSvc.ComponentEnabled(), aghSvc.DesiredRunning(), aghMgr.Status().Installed)
+		logx.Infof("AdGuard Home 跳过开机自启（component=%v desired=%v installed=%v serviceMode=%v）",
+			aghSvc.ComponentEnabled(), aghSvc.DesiredRunning(), aghMgr.Status().Installed, aghMgr.ServiceMode())
 	}
 
 	// 老版本 SubFile 无 share_token，升级后需补齐，否则这些文件的直链失效

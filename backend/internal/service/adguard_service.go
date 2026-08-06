@@ -225,26 +225,71 @@ func (s *AdGuardService) Install(ctx context.Context) error {
 	if port, err := adguard.ReadDNSPort(s.workDir); err == nil && port > 0 {
 		_ = s.db.SetSetting(settingAdGuardDNSPort, strconv.Itoa(port))
 	}
-	// 服务模式：注册系统服务单元。失败不阻塞安装（二进制已就位），
-	// 记日志并提示——unit 注册失败意味着进程仍只能由面板托管。
-	s.registerServiceIfNeeded(ctx)
+	// 服务模式：注册系统服务单元。失败返回 error——否则用户看到「安装成功」
+	// 后点启动才 systemctl 失败，排查成本高。
+	if err := s.registerServiceUnit(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
-// registerServiceIfNeeded 服务模式下注册系统服务单元（幂等；失败仅记日志，
-// 不阻塞安装）。unit 内容只含安装期不变的路径参数，此后改端口/更新不再动它。
-func (s *AdGuardService) registerServiceIfNeeded(ctx context.Context) {
+// registerServiceUnit 服务模式下注册系统服务单元（幂等）。
+// unit 内容只含安装期不变的绝对路径参数，此后改端口/更新不再动它。
+// exec 模式（controller nil）为 no-op。
+func (s *AdGuardService) registerServiceUnit(ctx context.Context) error {
 	c := s.serviceController()
 	if c == nil {
-		return
+		return nil
 	}
 	if s.updater == nil {
-		s.logger.Errorf("注册 AdGuard 系统服务失败: 更新器未初始化")
+		return errors.New("更新器未初始化，无法注册 AdGuard 系统服务")
+	}
+	bin := s.updater.AdGuardBinaryPath()
+	if bin == "" {
+		return errors.New("AdGuard 二进制路径为空，无法注册系统服务")
+	}
+	if err := c.Install(ctx, bin, s.workDir, s.mgr.ConfigFilePath()); err != nil {
+		return fmt.Errorf("注册 AdGuard 系统服务失败: %w", err)
+	}
+	return nil
+}
+
+// EnsureServiceUnitOnBoot 面板启动时调用：存量升级后若已安装 AGH 但尚无 unit，
+// 补写 unit 并按「组件开 + 期望运行」决定是否 enable+start。
+//
+// 背景：服务化前 AGH 是面板子进程；升级后 ServiceMode=true 且 ShouldStartAtBoot
+// 恒 false，若不补注册，已装用户的 AGH 会停在那起不来。
+// 失败只记日志，不拖垮面板启动。
+func (s *AdGuardService) EnsureServiceUnitOnBoot(ctx context.Context) {
+	if s == nil || s.serviceController() == nil {
 		return
 	}
-	if err := c.Install(ctx, s.updater.AdGuardBinaryPath(), s.workDir, s.mgr.ConfigFilePath()); err != nil {
-		s.logger.Errorf("注册 AdGuard 系统服务失败（可重试安装或手动检查 systemd）: %v", err)
+	if !s.BinaryPresent() {
+		return
 	}
+	if err := s.registerServiceUnit(ctx); err != nil {
+		s.logger.Errorf("启动时补注册 AdGuard 系统服务失败: %v", err)
+		return
+	}
+	// 组件未启用：只写 unit，不 enable/start（与「关组件」语义一致）
+	if !s.ComponentEnabled() {
+		return
+	}
+	// 期望运行：settings 里的 enabled_at_boot（不用 DesiredRunning——
+	// 服务模式下它读 systemctl is-enabled，unit 刚写完可能仍是 disabled）
+	if !s.desiredRunningFromSettings() {
+		return
+	}
+	if err := s.Start(ctx); err != nil {
+		s.logger.Errorf("启动时按期望运行拉起 AdGuard 系统服务失败: %v", err)
+	}
+}
+
+// desiredRunningFromSettings 只读 settings，不查 systemctl。
+// 供升级迁移：unit 尚未 enable 时 DesiredRunning() 会误报 false。
+func (s *AdGuardService) desiredRunningFromSettings() bool {
+	v := strings.TrimSpace(s.getSetting(settingAdGuardBoot, ""))
+	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") || v == "yes"
 }
 
 // serviceController 返回注入到进程 Manager 的系统服务控制器（nil 为 exec 模式）。
@@ -600,6 +645,11 @@ func (s *AdGuardService) SetComponentEnabled(ctx context.Context, enabled bool) 
 	// 关闭前：强制退出 DNS 模式（回滚劫持 + dns_mode=0）
 	if err := s.SetDNSMode(ctx, DNSModeNone); err != nil {
 		return fmt.Errorf("关闭组件前退出 DNS 模式失败: %w", err)
+	}
+	// 服务模式：先 disable 开机自启。Stop 只停进程保留 enable——
+	// 若不 disable，机器重启后 systemd 仍会拉起 AGH，与「组件关」矛盾。
+	if err := s.SetBootEnabled(ctx, false); err != nil {
+		return fmt.Errorf("关闭组件时取消开机自启失败: %w", err)
 	}
 	if err := s.Stop(ctx); err != nil {
 		return fmt.Errorf("关闭组件时停止 AdGuard 失败: %w", err)

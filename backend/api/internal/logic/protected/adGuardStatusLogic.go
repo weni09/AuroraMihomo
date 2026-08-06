@@ -56,5 +56,6 @@ func (l *AdGuardStatusLogic) AdGuardStatus() (resp *types.AdGuardStatusResp, err
 		AutoUpdateCron:   dto.AutoUpdateCron,
 		Username:         dto.Username,
 		DesiredRunning:   dto.DesiredRunning,
+		ManagedBy:        dto.ManagedBy,
 	}, nil
 }
