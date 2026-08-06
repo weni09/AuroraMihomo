@@ -386,6 +386,55 @@ supervise-daemon auroramihomo --start --chdir /opt/auroramihomo ...
     data/bin/mihomo -d ./data
 ```
 
+## AdGuard Home 服务单元
+
+启用 AdGuard 组件并安装后，面板（在 systemd / OpenRC 环境）会把 AGH 注册为
+独立的系统服务，与面板自身解耦：**面板升级、重启或崩溃期间，DNS 过滤不随
+面板进程中断**；AGH 崩溃由服务管理器自动拉起。
+
+```ini
+# /etc/systemd/system/aurora-adguardhome.service
+[Unit]
+Description=Aurora AdGuard Home (managed by AuroraMihomo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/auroramihomo/data/bin/AdGuardHome \
+    --work-dir /opt/auroramihomo/data/adguardhome \
+    --config /opt/auroramihomo/data/adguardhome/AdGuardHome.yaml \
+    --no-check-update
+Restart=always
+RestartSec=3
+
+# :53 绑定权限只给 AGH；面板自身不再需要整体带 CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+```
+
+要点：
+
+- **单元不含任何端口参数**（`--web-addr` / DNS 端口均不出现）：AGH 的端口唯一
+  事实来源是 yaml（`http.address` / `dns.port`）。改端口只改 yaml 并重启服务
+  （面板设置弹窗内操作即可），**单元从安装写到卸载不重写**。
+- 面板对 AGH 的控制面（启停/自启/卸载）一律走 `systemctl` / `rc-service`，
+  不会直接杀 PID——`Restart=always` 会把 kill 变成 3 秒后复活。
+- 开机自启由单元 `enable` 状态决定（面板「设置 → AdGuard 设置 → 开机自启」开关
+  驱动 `systemctl enable/disable`）；用户点「停止」只临时停进程，不影响自启。
+- 卸载（面板内「彻底卸载」）顺序：解除 DNS 对接 → 停服务 → `disable` + 删单元
+  → 删二进制与 work-dir。`disable` 必须先于删二进制，否则开机按残留 enable
+  拉起已不存在的二进制。
+- OpenRC（Alpine）环境对应 `/etc/init.d/aurora-adguardhome`，用
+  `supervise-daemon`（与面板自身单元一致），`rc-update add aurora-adguardhome default`
+  控制自启。
+- 边界：DNS 过滤/日志/上游解析随服务常驻；TProxy / iptables 劫持规则由面板
+  维护（面板重启后自动恢复），面板长期下线期间「入口劫持」不生效。
+
 ## Alpine 的前置依赖
 
 Alpine 最小系统缺几样东西。第一组与第三组由 `install.sh` 自动补齐
