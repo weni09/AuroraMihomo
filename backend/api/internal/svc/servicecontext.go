@@ -309,6 +309,10 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		WorkDir:    aghWorkDir,
 		WebAddr:    aghWebAddr,
 	})
+	// 服务化：Linux 上探测 systemd/OpenRC 并注入控制器，AGH 由系统服务
+	// 看护（面板升级/重启期间 DNS 不中断）；探测不到（Windows 等）为 nil，
+	// Manager 回落 exec 子进程托管。
+	aghMgr.SetController(adguard.NewServiceController())
 	aghSvc := service.NewAdGuardService(db, upd, aghMgr, transparentSvc, cfgSvc, aghWorkDir, aghWebAddr)
 	// 免密桥：与反代共用 web 地址解析；用户名从 settings/yaml 读取。
 	aghSSO := adguard.NewSessionBridge(func() string {
@@ -357,6 +361,8 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// enabled_at_boot 且二进制在盘：后台拉起，不阻塞面板启动。
 	// 失败只记日志——AGH 是可选组件，起不来不能拖垮主服务。
 	// StartWithBootRetry：先让出 ~800ms，失败则有限次指数退避重试（见 service 包常量）。
+	// 服务模式下 ShouldStartAtBoot 恒 false：开机自启由 systemctl enable /
+	// rc-update 负责，面板不拉起，避免与系统服务双重拉起竞争。
 	if aghSvc.ShouldStartAtBoot() {
 		go func() {
 			// 总预算覆盖：初始等待 + 最多 3 次 Start + 2s/4s 退避，留余量给慢盘。

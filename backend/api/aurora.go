@@ -370,9 +370,10 @@ func main() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), kernelStopTimeout)
 		defer stopCancel()
 		_ = svcCtx.MihomoManager.Stop(stopCtx)
-		// AdGuard 是可选常驻子进程，关停主进程时必须一并停掉，
-		// 否则会留下占着 DNS/Web 端口的孤儿进程。
-		if svcCtx.AdGuardManager != nil {
+		// AdGuard 是可选常驻子进程。exec 模式（Windows 等）下关停主进程必须
+		// 一并停掉，否则留下占着 DNS/Web 端口的孤儿进程；服务模式下进程由
+		// systemd/OpenRC 看护，面板退出不停止——DNS 过滤保持常驻。
+		if svcCtx.AdGuardManager != nil && !svcCtx.AdGuardManager.ServiceMode() {
 			_ = svcCtx.AdGuardManager.Stop(stopCtx)
 		}
 
