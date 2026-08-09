@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { useNotifyStore } from './notify'
 import api from '../api'
 import { apiErrorMessage } from '../utils/apiError'
+import router from '../router'
 
 /** 透明代理模式。off 表示关闭 */
 export type TransparentMode = 'off' | 'tun' | 'tproxy'
@@ -309,6 +310,20 @@ export const useTransparentStore = defineStore('transparent', {
                 cache: 'no-store',
               })
               if (!res.ok) {
+                // 401 = token 已失效：与 api 拦截器对齐——清 token、静默跳登录。
+                // 这里用原生 fetch，不经 axios 拦截器，必须自己处理，
+                // 否则用户会看到「加载透明代理状态失败（HTTP 401）」的 toast，
+                // 而且 401 重试多少次都一样，直接结束本轮请求。
+                if (res.status === 401) {
+                  localStorage.removeItem('aurora_token')
+                  if (router.currentRoute.value.name !== 'login') {
+                    router.push({
+                      name: 'login',
+                      query: { redirect: router.currentRoute.value.fullPath },
+                    })
+                  }
+                  return
+                }
                 let detail = ''
                 try {
                   const ct = res.headers.get('content-type') || ''

@@ -14,6 +14,7 @@ import ConfigView from '../views/ConfigView.vue'
 import ZashboardView from '../views/ZashboardView.vue'
 import AdGuardView from '../views/AdGuardView.vue'
 import NotFoundView from '../views/NotFoundView.vue'
+import { isTokenExpired } from '../utils/token'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -62,8 +63,12 @@ const router = createRouter({
 })
 
 router.beforeEach((to, _from, next) => {
-  const isAuthenticated = !!localStorage.getItem('aurora_token')
+  const token = localStorage.getItem('aurora_token')
+  const isAuthenticated = !!token && !isTokenExpired(token)
   if (!to.meta.public && !isAuthenticated) {
+    // 过期 token 必须当场清理：否则登录页成功后旧值被覆盖无碍，
+    // 但不清的话用户刷新页面又被当「已登录」放进业务页，接口一片 401。
+    if (token) localStorage.removeItem('aurora_token')
     // 记住原目标，登录后回到用户本来要去的页面
     next({ name: 'login', query: { redirect: to.fullPath } })
   } else if (to.name === 'login' && isAuthenticated) {
