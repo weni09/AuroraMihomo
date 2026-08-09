@@ -230,8 +230,8 @@ const logout = async () => {
            32px 的 Logo 加一个 44px 触控热区的按钮（触控下限见 .tap-target），
            因此改为竖排——Logo 在上、折叠开关在下，每行最宽 44px 不溢出。 -->
       <div
-        class="border-b border-line shrink-0 flex items-center gap-3"
-        :class="collapsed ? 'p-2 lg:flex-col lg:gap-2' : 'p-6'"
+        class="border-b border-line shrink-0 flex items-center"
+        :class="collapsed ? 'p-2 lg:flex-col lg:gap-2' : 'gap-2 px-4 py-5'"
       >
         <!-- 固定 32 盒：避免 flex 行把 SVG 压扁；折叠竖排时水平居中 -->
         <div
@@ -240,11 +240,11 @@ const logout = async () => {
         >
           <AppLogo :size="32" />
         </div>
-        <!-- 折叠时隐藏标题。用 v-if 而非视觉隐藏：读屏用户此时也不需要它，
-             aside 的 aria-label 已说明这是主导航 -->
+        <!-- 折叠时隐藏标题。不用 truncate：产品名固定 12 字，截断成 AuroraMi...
+             比略收紧字距更难看。字号/字距按 w-64 侧栏实测可完整显示整词。 -->
         <h1
           v-if="!collapsed"
-          class="min-w-0 truncate text-xl font-bold tracking-wider text-primary"
+          class="shrink-0 text-lg font-bold tracking-wide text-primary whitespace-nowrap"
         >
           AuroraMihomo
         </h1>
@@ -260,7 +260,7 @@ const logout = async () => {
                 type="button"
                 variant="ghost"
                 size="icon-sm"
-                class="tap-target hidden text-fg-muted hover:bg-elevated hover:text-fg lg:inline-flex"
+                class="hidden shrink-0 text-fg-muted hover:bg-elevated hover:text-fg lg:inline-flex"
                 :class="collapsed ? '' : 'ml-auto'"
                 :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
                 :aria-expanded="!collapsed"
