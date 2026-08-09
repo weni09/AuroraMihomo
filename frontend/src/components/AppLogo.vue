@@ -10,18 +10,27 @@ const bandA = computed(() => `auroraA-${uid}`)
 const bandB = computed(() => `auroraB-${uid}`)
 const bandC = computed(() => `auroraC-${uid}`)
 
-// 32px 以下时三道细光带会糊成一团，简化为两道并加粗
-const compact = computed(() => Number(props.size) > 0 && Number(props.size) <= 24)
+// 像素尺寸（字符串也转成数字，避免 class/style 算错）
+const px = computed(() => {
+  const n = Number(props.size)
+  return Number.isFinite(n) && n > 0 ? n : 32
+})
+
+// 侧栏 32px 及以下：三道细光带会糊成一团，改两道加粗；登录页 64 仍用三道
+const compact = computed(() => px.value <= 32)
 </script>
 
 <template>
+  <!-- shrink-0 / block：侧栏 flex 行里防止被压扁，并去掉 inline SVG 的基线空隙 -->
   <svg
-    :width="size"
-    :height="size"
+    :width="px"
+    :height="px"
     viewBox="0 0 64 64"
     xmlns="http://www.w3.org/2000/svg"
     role="img"
     aria-label="AuroraMihomo"
+    class="block shrink-0 select-none"
+    :style="{ minWidth: `${px}px`, minHeight: `${px}px` }"
   >
     <defs>
       <linearGradient :id="bandA" x1="32" y1="4" x2="32" y2="50" gradientUnits="userSpaceOnUse">
@@ -39,26 +48,26 @@ const compact = computed(() => Number(props.size) > 0 && Number(props.size) <= 2
       </linearGradient>
     </defs>
 
-    <!-- 小尺寸：两道加粗光带，保证 16px 下仍可辨识 -->
+    <!-- 小尺寸（侧栏 32 / 更小）：两道加粗光带，保证 16–32px 下仍可辨识 -->
     <template v-if="compact">
       <path
-        d="M23 46C18 33 24 21 32 12"
+        d="M22 48C16 34 24 20 33 10"
         fill="none"
         :stroke="`url(#${bandB})`"
+        stroke-width="10"
+        stroke-linecap="round"
+      />
+      <path
+        d="M40 47C35 34 42 22 50 14"
+        fill="none"
+        :stroke="`url(#${bandA})`"
         stroke-width="9"
         stroke-linecap="round"
       />
-      <path
-        d="M40 45C36 33 41 23 48 16"
-        fill="none"
-        :stroke="`url(#${bandA})`"
-        stroke-width="8"
-        stroke-linecap="round"
-      />
-      <circle cx="30" cy="53" r="4.5" fill="#22d3ee" />
+      <circle cx="30" cy="54" r="5" fill="#22d3ee" />
     </template>
 
-    <!-- 常规尺寸：三道极光帷幕，层次更丰富 -->
+    <!-- 常规尺寸（登录 64 等）：三道极光帷幕，层次更丰富 -->
     <template v-else>
       <path
         d="M13 46C8 31 15 17 25 6"

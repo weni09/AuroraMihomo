@@ -233,10 +233,19 @@ const logout = async () => {
         class="border-b border-line shrink-0 flex items-center gap-3"
         :class="collapsed ? 'p-2 lg:flex-col lg:gap-2' : 'p-6'"
       >
-        <AppLogo :size="32" />
+        <!-- 固定 32 盒：避免 flex 行把 SVG 压扁；折叠竖排时水平居中 -->
+        <div
+          class="flex size-8 shrink-0 items-center justify-center"
+          :class="collapsed ? 'lg:mx-auto' : ''"
+        >
+          <AppLogo :size="32" />
+        </div>
         <!-- 折叠时隐藏标题。用 v-if 而非视觉隐藏：读屏用户此时也不需要它，
              aside 的 aria-label 已说明这是主导航 -->
-        <h1 v-if="!collapsed" class="text-xl font-bold tracking-wider text-primary">
+        <h1
+          v-if="!collapsed"
+          class="min-w-0 truncate text-xl font-bold tracking-wider text-primary"
+        >
           AuroraMihomo
         </h1>
 
