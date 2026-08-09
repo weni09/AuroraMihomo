@@ -201,6 +201,11 @@ type TransparentService struct {
 	// 不必重建 mihomo 端口注入。为 nil 或返回 ≤0 时走 dnsPortFn。
 	dnsPortOverride func() int
 
+	// boot 负责把规则集持久化到宿主开机链路（OpenRC/Alpine）。
+	// 非 Linux 或未注入时为 nil：syncBootPersist 据此跳过，行为与旧版一致
+	//（重启后由 ReconcileState 回落关闭，需手动重新启用）。
+	boot *netcheck.BootPersist
+
 	// 新增：用于读写 base.yaml
 	getBaseFn    func() (string, error)
 	updateBaseFn func(content string) error
@@ -239,6 +244,14 @@ func NewTransparentService(
 // 能力，塞进构造函数会让所有调用方（含既有测试）都得传一个 nil。
 func (s *TransparentService) SetProvisioner(p transparentProvisioner) {
 	s.provisioner = p
+}
+
+// SetBootPersist 注入开机持久化组件。
+//
+// 只在 Linux 上构造（写入 /etc 需要），非 Linux 平台保持 nil。与 provisioner
+// 一样用 setter：避免把全部现有调用方/测试的构造函数都改一遍。
+func (s *TransparentService) SetBootPersist(b *netcheck.BootPersist) {
+	s.boot = b
 }
 
 // hasApplier 判断规则下发能力是否真的可用。
@@ -779,6 +792,32 @@ func (s *TransparentService) applyMode(ctx context.Context, mode string, tproxyP
 	return s.reload(ctx)
 }
 
+// syncBootPersist 让宿主开机链路与当前 TProxy 状态对齐。
+//
+// 规则已生效且处于"面板托管的已确认 TProxy"时：把当前参数快照落盘成
+// 开机可自动加载的文件（Write 幂等，参数没变时是重写）。其余一切情况
+// （未启用、TUN、未托管、待确认中）都移除持久化——特别是关闭/回落时
+// 必须删掉，否则重启后规则复活、把流量引向已无人监听的端口。
+//
+// 失败只记日志不阻断：持久化是增强能力，运行时规则是否生效仍以
+// nft 实时下发为准（对应"持久化失败则行为与旧版一致"）。
+func (s *TransparentService) syncBootPersist(ctx context.Context) {
+	if s.boot == nil {
+		return
+	}
+	st := s.state()
+	if !s.hasApplier() || !st.Enabled || st.Mode != string(netcheck.ModeTProxy) ||
+		!s.tproxyManaged() || !s.pendingUntil().IsZero() {
+		if err := s.boot.Remove(ctx); err != nil {
+			s.logger.Errorf("移除透明代理开机持久化失败: %v", err)
+		}
+		return
+	}
+	if err := s.boot.Write(ctx, s.tproxyParams(st.TProxyPort), s.customRules()); err != nil {
+		s.logger.Errorf("写入透明代理开机持久化失败（重启后需手动重新启用）: %v", err)
+	}
+}
+
 // keepPorts 必须直连的端口。
 //
 // 这是防"锁死自己"的核心：SSH 断了还能从别的设备连面板，面板断了还能
@@ -821,7 +860,7 @@ func dedupPorts(in []int) []int {
 }
 
 // Confirm 确认网络正常，取消自动回滚。
-func (s *TransparentService) Confirm(_ context.Context) error {
+func (s *TransparentService) Confirm(ctx context.Context) error {
 	until := s.pendingUntil()
 	if until.IsZero() {
 		s.logger.Error("透明代理确认请求被拒绝：当前没有待确认的启用操作")
@@ -839,6 +878,9 @@ func (s *TransparentService) Confirm(_ context.Context) error {
 		s.logger.Errorf("透明代理确认失败（清除 pending 失败）: %v", err)
 		return err
 	}
+	// 确认即表示规则已验证通过：此刻才把规则集写入开机链路
+	//（pending 窗口内不写——那套规则还可能被回滚，写进去就白恢复一次）。
+	s.syncBootPersist(ctx)
 	s.logger.Info("透明代理已确认，自动回滚已取消")
 	return nil
 }
@@ -924,6 +966,9 @@ func (s *TransparentService) disable(ctx context.Context) error {
 		return err
 	}
 	_ = s.clearPending()
+	// 关闭后必须移除开机持久化：否则宿主重启时规则复活，把流量引向已
+	// 无人监听的端口（mihomo 已停），比没开透明代理更糟。
+	s.syncBootPersist(ctx)
 
 	if err := s.reload(ctx); err != nil {
 		s.logger.Errorf("关闭透明代理后重新下发配置失败: %v", err)
@@ -1049,6 +1094,7 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		if err := s.setTProxyManaged(false); err != nil {
 			s.logger.Errorf("清理规则托管标记失败: %v", err)
 		}
+		s.syncBootPersist(ctx)
 		return
 	}
 
@@ -1060,6 +1106,10 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		return
 	}
 	if active {
+		// 规则还在（或已由开机链路恢复）：状态一致，保持启用。
+		// 顺带补齐开机持久化——旧版本升级上来、或持久化文件曾被外部删掉时，
+		// 这里把缺失的落盘补上，无需用户重新启用。
+		s.syncBootPersist(ctx)
 		return
 	}
 
@@ -1109,6 +1159,9 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 		s.logger.Errorf("回落透明代理状态失败: %v", err)
 		return
 	}
+	// 回落为关闭同样要移除开机持久化：规则已随重启消失，持久化文件若
+	// 还在，下次重启又会把同一套规则恢复出来，与"已关闭"矛盾。
+	s.syncBootPersist(ctx)
 	s.logger.Info("透明代理已回落为关闭，配置将由随后的合并按新状态重新生成")
 }
 
@@ -1155,6 +1208,7 @@ func (s *TransparentService) Resync(ctx context.Context) error {
 			} else {
 				s.logger.Info("配置已是 TUN：已拆除残留 aurora_tproxy 并清除托管标记")
 			}
+			s.syncBootPersist(ctx)
 		}
 		return nil
 	}
@@ -1194,6 +1248,9 @@ func (s *TransparentService) Resync(ctx context.Context) error {
 		s.logger.Errorf("记录规则参数指纹失败: %v", err)
 	}
 	s.persistAppliedCustomRules(want.CustomRules)
+	// 规则已按新参数生效：同步开机持久化（参数变了要重写文件，否则
+	// 重启恢复的是旧参数那套规则，与当前配置不一致）。
+	s.syncBootPersist(ctx)
 	s.logger.Info("防火墙规则已与当前配置同步")
 	return nil
 }

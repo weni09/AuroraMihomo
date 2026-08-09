@@ -242,6 +242,16 @@ func NewServiceContext(c config.Config) *ServiceContext {
 			return cfgSvc.UpdateBaseConfig(content)
 		},
 	)
+	// 开机持久化（Linux）：把已确认的 TProxy 规则写入宿主开机链路，
+	// 宿主重启后自动恢复。只在 Linux 构造——写入 /etc 需要 root 且
+	// 依赖 OpenRC/rc-update；其它平台保持 nil，行为与旧版一致。
+	if runtime.GOOS == "linux" {
+		transparentSvc.SetBootPersist(&netcheck.BootPersist{
+			Root:   "/",
+			Runner: netcheck.NewExecRunner(),
+			Logf:   logx.Infof,
+		})
+	}
 	// 合并流程要知道"TProxy 规则是不是面板下发的"才能决定是否注入 routing-mark：
 	// 只配了 tproxy-port 不构成启用 TProxy（把流量引过去的规则不在配置里）。
 	//
