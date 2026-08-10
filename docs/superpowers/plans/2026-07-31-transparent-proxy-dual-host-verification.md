@@ -534,8 +534,8 @@ command_user="root:root"
 
 # 用 supervise-daemon：面板的 /api/v1/system/restart 依赖"进程退出后被拉起"，
 # start-stop-daemon 不做这件事，会导致重启接口变成单向关机。
+# 不重定向 stdout/stderr：应用日志由面板写 data/logs/aurora.log 并受清理任务管理。
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
 pidfile="/run/auroramihomo.pid"
 
 depend() {
@@ -552,7 +552,7 @@ a.run("chmod +x /etc/init.d/auroramihomo && rc-update add auroramihomo default",
 ```python
 a.run("rc-service auroramihomo start", check=True, timeout=120)
 a.run("sleep 20; rc-service auroramihomo status; ss -tlnp | grep 8899")
-a.run("tail -40 /var/log/auroramihomo.log")
+a.run("tail -40 /opt/auroramihomo/data/logs/aurora.log")
 rc, pw129 = a.run("cat /opt/auroramihomo/data/initial_password.txt")
 ```
 

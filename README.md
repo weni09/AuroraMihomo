@@ -247,8 +247,9 @@ directory="/opt/auroramihomo"
 command="/opt/auroramihomo/auroramihomo"
 command_args="-f etc/aurora-api.yaml"
 command_user="root:root"
+# 不重定向 stdout/stderr：应用日志由面板写 <data>/logs/aurora.log
+# 并受日志清理任务管理，不再往 /var/log 写重复副本。
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
 pidfile="/run/auroramihomo.pid"
 depend() { need net; after firewall; }
 EOF
@@ -256,7 +257,7 @@ EOF
 sudo chmod +x /etc/init.d/auroramihomo
 sudo rc-update add auroramihomo default
 sudo rc-service auroramihomo start
-sudo tail -f /var/log/auroramihomo.log
+sudo tail -f /opt/auroramihomo/data/logs/aurora.log
 ```
 
 #### Alpine 补充说明
