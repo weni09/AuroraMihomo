@@ -142,14 +142,15 @@ func tarGzOf(t *testing.T, fileName string, content []byte) []byte {
 //     verifySelfBinary 的规则是"进程能启动且输出非空即通过"：Go 测试二进制
 //     收到未知 -version flag 会打印 flag 错误并退出（输出非空），恰好通过校验，
 //     因此整条下载-校验-暂存-交换链路在 Windows 上也能真实跑通。
-//   - 其它平台：tar.gz 内放可执行 shell 脚本。
+//   - 其它平台：tar.gz 内放可执行 shell 脚本（经 paddedShellScript 填充，
+//     满足 downloadWithCDN 的 1024 字节最小体积校验）。
 //
 // 返回 (资产内容, 资产文件名)。
 func selfUpdateAsset(t *testing.T) ([]byte, string) {
 	t.Helper()
 	name := selfArchiveName("v2.0.0")
 	if runtime.GOOS != "windows" {
-		return tarGzOf(t, "auroramihomo", []byte("#!/bin/sh\necho auroramihomo-v2.0.0\n")), name
+		return tarGzOf(t, "auroramihomo", selfTestPayload()), name
 	}
 
 	// Windows：zip 内塞测试进程自身
@@ -255,12 +256,19 @@ func TestSelfUpdateStageAndSwap(t *testing.T) {
 	}
 }
 
+// selfTestPayload 返回非 Windows 分支的测试二进制内容（可执行 shell 脚本）。
+// 供资产构造与内容断言复用，保证两处一致：脚本执行 -v 输出版本行，
+// 填充部分是不影响执行的注释。
+func selfTestPayload() []byte {
+	return paddedShellScript("echo auroramihomo-v2.0.0")
+}
+
 // archiveContentOf 返回资产解压后应得到的单个二进制内容，用于断言 .new 内容。
 // Windows 的 zip 内条目即测试进程 exe，非 Windows 的 tar.gz 内条目即 shell 脚本。
 func archiveContentOf(t *testing.T, archive []byte) []byte {
 	t.Helper()
 	if runtime.GOOS != "windows" {
-		return []byte("#!/bin/sh\necho auroramihomo-v2.0.0\n")
+		return selfTestPayload()
 	}
 	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	if err != nil {
