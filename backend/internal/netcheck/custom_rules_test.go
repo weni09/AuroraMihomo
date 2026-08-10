@@ -133,30 +133,30 @@ func TestApplyRunsCustomRulesAfterBuiltin(t *testing.T) {
 		t.Fatalf("Apply 失败: %v", err)
 	}
 
-	nftIdx := r.indexOf("nft -f -")
-	if nftIdx < 0 {
-		t.Fatalf("没有下发 nft 规则:\n%s", r.joined())
-	}
-	var shIdx []int
-	for i, c := range r.calls {
-		if strings.HasPrefix(c, "sh -c") {
-			shIdx = append(shIdx, i)
+		nftIdx := r.indexOf("nft -f -")
+		if nftIdx < 0 {
+			t.Fatalf("没有下发 nft 规则:\n%s", r.joined())
+		}
+		// Apply 前会有一次 sh -c purge 旧 ip rule；自定义规则是之后的 sh -c iptables
+		var customIdx []int
+		for i, c := range r.calls {
+			if strings.HasPrefix(c, "sh -c iptables") {
+				customIdx = append(customIdx, i)
+			}
+		}
+		if len(customIdx) != 2 {
+			t.Fatalf("应执行 2 条自定义规则，实际 %d:\n%s", len(customIdx), r.joined())
+		}
+		if customIdx[0] < nftIdx {
+			t.Fatalf("自定义规则必须在内置 nft 之后:\n%s", r.joined())
+		}
+		if !strings.HasPrefix(r.calls[customIdx[0]], "sh -c iptables -t nat -A") {
+			t.Errorf("第 1 条自定义规则不对: %s", r.calls[customIdx[0]])
+		}
+		if !strings.HasPrefix(r.calls[customIdx[1]], "sh -c iptables -t mangle -I") {
+			t.Errorf("第 2 条自定义规则不对: %s", r.calls[customIdx[1]])
 		}
 	}
-	if len(shIdx) != 2 {
-		t.Fatalf("应执行 2 条自定义规则，实际 %d:\n%s", len(shIdx), r.joined())
-	}
-	if shIdx[0] < nftIdx {
-		t.Fatalf("自定义规则必须先于内置规则执行（顺序颠倒）:\n%s", r.joined())
-	}
-	// 顺序保持书写顺序
-	if !strings.HasPrefix(r.calls[shIdx[0]], "sh -c iptables -t nat -A") {
-		t.Errorf("第 1 条自定义规则不对: %s", r.calls[shIdx[0]])
-	}
-	if !strings.HasPrefix(r.calls[shIdx[1]], "sh -c iptables -t mangle -I") {
-		t.Errorf("第 2 条自定义规则不对: %s", r.calls[shIdx[1]])
-	}
-}
 
 // 自定义规则任一条失败 → 整体回滚：内置规则拆除 + 已执行的自定义规则
 // 逆序 -D 拆除，且错误信息带行号。

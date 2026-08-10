@@ -71,22 +71,26 @@ func TestBootPersistWriteOpenRC(t *testing.T) {
 	// 命令序列脚本应含策略路由、nft 加载与自定义规则（含引号那条）
 	shellData, _ := os.ReadFile(shellPath)
 	for _, want := range []string{
+		"purge()",
+		"while ip rule del fwmark",
+		"while ip -6 rule del fwmark",
 		"ip rule add fwmark 1 table 100",
 		"ip -6 rule add fwmark 1 table 100",
 		`nft -f "$AURORA_NFT"`,
 		`--comment \"aurora tproxy test\"`,
-		"ip rule del fwmark 1 table 100",
 		"nft delete table inet aurora_tproxy",
 		"case \"$1\" in",
+		"\tpurge\n", // start/stop 都调 purge
 	} {
 		if !strings.Contains(string(shellData), want) {
 			t.Fatalf("命令序列脚本缺少 %q:\n%s", want, shellData)
 		}
 	}
-	// OpenRC init 脚本是薄封装：调 .sh，不含内联命令
+	// OpenRC init 脚本是薄封装：调 .sh，不含内联命令；并约束启动顺序
 	initData, _ := os.ReadFile(initPath)
 	for _, want := range []string{
 		"#!/sbin/openrc-run",
+		"before auroramihomo",
 		`/bin/sh "$AURORA_SCRIPT" start`,
 		`/bin/sh "$AURORA_SCRIPT" stop`,
 	} {
@@ -128,7 +132,7 @@ func TestBootPersistWriteSystemd(t *testing.T) {
 	unitData, _ := os.ReadFile(unitPath)
 	for _, want := range []string{
 		"Type=oneshot",
-		"RemainAfterYes=yes",
+		"RemainAfterExit=yes",
 		"After=network-online.target",
 		"Before=auroramihomo.service",
 		"ExecStart=/bin/sh /etc/aurora-tproxy.sh start",
@@ -138,6 +142,9 @@ func TestBootPersistWriteSystemd(t *testing.T) {
 		if !strings.Contains(string(unitData), want) {
 			t.Fatalf("unit 缺少 %q:\n%s", want, unitData)
 		}
+	}
+	if strings.Contains(string(unitData), "RemainAfterYes") {
+		t.Fatalf("systemd 字段写错：应为 RemainAfterExit，不是 RemainAfterYes")
 	}
 
 	// 命令序列在 .sh，unit 不内联

@@ -385,12 +385,25 @@ func PolicyRouteCommands(enableIPv6 bool) [][]string {
 // 天生易错——进程重启、数据库与实际状态不一致时那个参数根本无从得知。
 // 既然 v6 的清理命令在没有 v6 规则时只会返回"不存在"（已被视为成功），
 // 无条件执行没有代价，却消除了整类残留。
+//
+// 注意：Linux 允许同一 selector（fwmark+table）有多条不同 priority 的
+// ip rule；`ip rule del` 一次只删一条。调用方应循环执行 del 直到失败
+// （见 Applier.Teardown / 开机脚本 purge），本函数只给出单次 del 命令。
 func PolicyRouteTeardownCommands() [][]string {
 	return [][]string{
 		{"ip", "rule", "del", "fwmark", fmt.Sprint(FirewallMark), "table", fmt.Sprint(RouteTable)},
 		{"ip", "route", "flush", "table", fmt.Sprint(RouteTable)},
 		{"ip", "-6", "rule", "del", "fwmark", fmt.Sprint(FirewallMark), "table", fmt.Sprint(RouteTable)},
 		{"ip", "-6", "route", "flush", "table", fmt.Sprint(RouteTable)},
+	}
+}
+
+// PolicyRouteRuleDeleteCommands 返回需要循环执行直到失败的 ip rule del。
+// route flush 不在其中（执行一次即可）。
+func PolicyRouteRuleDeleteCommands() [][]string {
+	return [][]string{
+		{"ip", "rule", "del", "fwmark", fmt.Sprint(FirewallMark), "table", fmt.Sprint(RouteTable)},
+		{"ip", "-6", "rule", "del", "fwmark", fmt.Sprint(FirewallMark), "table", fmt.Sprint(RouteTable)},
 	}
 }
 

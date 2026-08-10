@@ -128,13 +128,13 @@ func TestApplyRollsBackOnRuleFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("规则下发失败时应报错")
 	}
-	if r.indexOf("ip rule del") < 0 {
-		t.Errorf("失败后应拆除已建的策略路由:\n%s", r.joined())
+		if !strings.Contains(r.joined(), "while ip rule del fwmark") && r.indexOf("ip rule del") < 0 {
+			t.Errorf("失败后应拆除已建的策略路由:\n%s", r.joined())
+		}
+		if r.indexOf("nft delete table") < 0 {
+			t.Errorf("失败后应尝试删除专用表:\n%s", r.joined())
+		}
 	}
-	if r.indexOf("nft delete table") < 0 {
-		t.Errorf("失败后应尝试删除专用表:\n%s", r.joined())
-	}
-}
 
 // 重复应用要幂等：策略路由已存在时报 "File exists"，不应视为失败
 func TestApplyTreatsExistingRouteAsSuccess(t *testing.T) {
@@ -144,9 +144,12 @@ func TestApplyTreatsExistingRouteAsSuccess(t *testing.T) {
 	if err := newApplier(r, t.TempDir()).Apply(context.Background(), sampleParams()); err != nil {
 		t.Errorf("策略路由已存在应视为成功，实际报错: %v", err)
 	}
-	// 且不应因此触发回滚
-	if r.indexOf("ip rule del") >= 0 {
-		t.Errorf("已存在不该触发回滚:\n%s", r.joined())
+	// 预清理走 sh -c while del，不应因此触发回滚删表
+	if r.indexOf("nft delete table") >= 0 {
+		t.Errorf("已存在不该触发回滚删表:\n%s", r.joined())
+	}
+	if r.indexOf("sh -c") < 0 {
+		t.Errorf("Apply 前应先 purge 旧 ip rule:\n%s", r.joined())
 	}
 }
 
@@ -174,31 +177,37 @@ func TestTeardownAlwaysCleansIPv6(t *testing.T) {
 		t.Fatalf("Teardown 失败: %v", err)
 	}
 	all := r.joined()
-	for _, want := range []string{
-		"ip -6 rule del fwmark 1 table 100",
-		"ip -6 route flush table 100",
-	} {
-		if !strings.Contains(all, want) {
-			t.Errorf("拆除未执行 %q，v6 策略路由会残留:\n%s", want, all)
+		for _, want := range []string{
+			"ip -6 rule del fwmark 1 table 100",
+			"ip -6 route flush table 100",
+		} {
+			if !strings.Contains(all, want) {
+				t.Errorf("拆除未执行 %q，v6 策略路由会残留:\n%s", want, all)
+			}
 		}
 	}
-}
-
-// 拆除顺序：先删规则再撤路由。反序会短暂出现"规则在、路由没了"的黑洞。
-func TestTeardownRemovesRulesBeforeRoutes(t *testing.T) {
-	r := newFakeRunner()
-	if err := newApplier(r, t.TempDir()).Teardown(context.Background()); err != nil {
-		t.Fatalf("Teardown 失败: %v", err)
+	
+	// 拆除顺序：先删规则再撤路由。反序会短暂出现"规则在、路由没了"的黑洞。
+	func TestTeardownRemovesRulesBeforeRoutes(t *testing.T) {
+		r := newFakeRunner()
+		if err := newApplier(r, t.TempDir()).Teardown(context.Background()); err != nil {
+			t.Fatalf("Teardown 失败: %v", err)
+		}
+		all := r.joined()
+		nft := r.indexOf("nft delete table")
+		// rule 清理可能是 `ip rule del` 或 `sh -c while ... del`
+		rule := r.indexOf("ip rule del")
+		if rule < 0 {
+			rule = r.indexOf("sh -c")
+		}
+		route := r.indexOf("ip route flush")
+		if nft < 0 || rule < 0 || route < 0 {
+			t.Fatalf("拆除步骤不全:\n%s", all)
+		}
+		if nft > rule || nft > route {
+			t.Errorf("应先删 nft 表(%d)再撤策略路由(rule=%d route=%d):\n%s", nft, rule, route, all)
+		}
 	}
-	nft := r.indexOf("nft delete table")
-	rule := r.indexOf("ip rule del")
-	if nft < 0 || rule < 0 {
-		t.Fatalf("拆除步骤不全:\n%s", r.joined())
-	}
-	if nft > rule {
-		t.Errorf("应先删 nft 表(%d)再撤策略路由(%d):\n%s", nft, rule, r.joined())
-	}
-}
 
 // 拆除只能动自己的表，不得整体 flush
 func TestTeardownNeverFlushesEverything(t *testing.T) {

@@ -206,6 +206,9 @@ func (a *Applier) Apply(ctx context.Context, p TProxyParams) error {
 	teardownRules := MergeCustomRuleLists(p.PreviousCustomRules, p.CustomRules)
 
 	// 2. 策略路由。必须在规则之前，理由见函数头注释。
+	// 先清掉同 mark/table 的旧 rule（可能因重复 Apply / 开机脚本叠加了多条），
+	// 再 add，保证最终只有一套。用 shell while：`ip rule del` 一次只删一条。
+	a.purgePolicyRules(ctx)
 	for _, cmd := range PolicyRouteCommands(p.EnableIPv6) {
 		if out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...); err != nil {
 			// 已存在（File exists）视为成功，使重复应用幂等
@@ -290,10 +293,14 @@ func (a *Applier) Teardown(ctx context.Context, customRules ...[]string) error {
 		}
 	}
 
-	for _, cmd := range PolicyRouteTeardownCommands() {
+	// 策略路由：rule 可能叠多条，purgePolicyRules 循环删干净；再 flush table。
+	a.purgePolicyRules(ctx)
+	for _, cmd := range [][]string{
+		{"ip", "route", "flush", "table", fmt.Sprint(RouteTable)},
+		{"ip", "-6", "route", "flush", "table", fmt.Sprint(RouteTable)},
+	} {
 		if out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...); err != nil {
 			low := strings.ToLower(out)
-			// 规则不存在同样属于"已经是目标状态"
 			if !strings.Contains(low, "no such") && !strings.Contains(low, "cannot find") {
 				a.logf("拆除策略路由失败 %v: %v: %s", cmd, err, strings.TrimSpace(out))
 				if firstErr == nil {
@@ -311,6 +318,27 @@ func (a *Applier) Teardown(ctx context.Context, customRules ...[]string) error {
 		a.logf("透明代理规则已拆除")
 	}
 	return firstErr
+}
+
+// purgePolicyRules 循环删除同 mark/table 的全部 ip rule（v4+v6）。
+//
+// Linux 允许相同 selector 有多条不同 priority 的 rule；单次 `ip rule del`
+// 只删一条。用 shell while 一次调完，避免在 Go 里空转几十次。
+func (a *Applier) purgePolicyRules(ctx context.Context) {
+	script := fmt.Sprintf(
+		`while ip rule del fwmark %d table %d 2>/dev/null; do :; done; `+
+			`while ip -6 rule del fwmark %d table %d 2>/dev/null; do :; done`,
+		FirewallMark, RouteTable, FirewallMark, RouteTable,
+	)
+	if out, err := a.Runner.Run(ctx, "sh", "-c", script); err != nil {
+		// 最终没有匹配时 while 以非 0 结束，属于目标状态，不记错
+		low := strings.ToLower(out)
+		if strings.Contains(low, "no such") || strings.Contains(low, "cannot find") ||
+			strings.TrimSpace(out) == "" {
+			return
+		}
+		a.logf("清理策略路由 rule 时出现异常: %v: %s", err, strings.TrimSpace(out))
+	}
 }
 
 // CleanupMihomoAutoRedirect 尽力拆除 mihomo tun.auto-redirect 留下的宿主痕迹。

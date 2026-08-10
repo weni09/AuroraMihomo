@@ -279,35 +279,45 @@ func (b *BootPersist) Present() bool {
 
 // renderBootRules 渲染承载命令序列的通用 shell 脚本。
 //
-// start() 顺序与 netcheck.Applier.Apply 保持一致：先策略路由再 nft 规则
-// （反序会导致打标的包被丢弃），最后追加自定义 iptables 规则；每条命令
-// 容忍失败（|| true），与 Apply 对「file exists」的幂等容忍对齐。
-// stop() 按 Teardown 顺序拆除。systemd unit 与 OpenRC init 脚本都调它，
-// 命令只存这一份，避免双后端漂移。
+// start() 先幂等清理再建立：避免 ip rule 重复叠加、nft 表已存在时
+// `nft -f` 静默失败。顺序仍是「路由 → 表 → 自定义规则」。
+// stop() 循环删除全部同 mark/table 的 ip rule（del 一次只删一条）。
+// systemd unit 与 OpenRC init 都调它，命令只存这一份。
 func renderBootRules(p TProxyParams, customRules []string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("# 由 AuroraMihomo 自动生成：开机恢复/拆除透明代理（TProxy）规则。\n")
 	b.WriteString("# 被 systemd unit 与 OpenRC init 脚本共同调用；请勿手工编辑。\n")
 	b.WriteString("AURORA_NFT=\"/etc/aurora-tproxy.nft\"\n")
+	fmt.Fprintf(&b, "AURORA_FWMARK=%d\n", FirewallMark)
+	fmt.Fprintf(&b, "AURORA_TABLE=%d\n", RouteTable)
+	b.WriteString("\n")
+	// purge：Linux 允许多条相同 selector 的 ip rule（priority 不同）；
+	// `ip rule del` 一次只删一条，必须循环直到没有匹配。
+	b.WriteString("purge() {\n")
+	b.WriteString("\twhile ip rule del fwmark \"$AURORA_FWMARK\" table \"$AURORA_TABLE\" 2>/dev/null; do :; done\n")
+	b.WriteString("\twhile ip -6 rule del fwmark \"$AURORA_FWMARK\" table \"$AURORA_TABLE\" 2>/dev/null; do :; done\n")
+	b.WriteString("\tip route flush table \"$AURORA_TABLE\" 2>/dev/null || true\n")
+	b.WriteString("\tip -6 route flush table \"$AURORA_TABLE\" 2>/dev/null || true\n")
+	fmt.Fprintf(&b, "\tnft delete table inet %s 2>/dev/null || true\n", NFTTableName)
+	b.WriteString("}\n")
 	b.WriteString("\n")
 	b.WriteString("start() {\n")
+	b.WriteString("\t# 先清干净再装：防重复 start / 面板 Apply 叠加出多条 rule\n")
+	b.WriteString("\tpurge\n")
 	b.WriteString("\t# 策略路由必须在规则之前（同 Apply 的顺序），否则打了标记的包无路可走\n")
 	for _, c := range PolicyRouteCommands(p.EnableIPv6) {
 		fmt.Fprintf(&b, "\t%s || true\n", strings.Join(c, " "))
 	}
 	b.WriteString("\tnft -f \"$AURORA_NFT\" || true\n")
-	// 自定义规则与内置 nft 是两条通道，开机同样要恢复，否则重启后自定义放行/分流失效
+	// 自定义规则与内置 nft 是两条通道，开机同样要恢复
 	for _, r := range customRules {
 		fmt.Fprintf(&b, "\tsh -c %q || true\n", r)
 	}
 	b.WriteString("}\n")
 	b.WriteString("\n")
 	b.WriteString("stop() {\n")
-	for _, c := range PolicyRouteTeardownCommands() {
-		fmt.Fprintf(&b, "\t%s || true\n", strings.Join(c, " "))
-	}
-	fmt.Fprintf(&b, "\tnft delete table inet %s || true\n", NFTTableName)
+	b.WriteString("\tpurge\n")
 	b.WriteString("}\n")
 	b.WriteString("\n")
 	b.WriteString("case \"$1\" in\n")
@@ -319,6 +329,9 @@ func renderBootRules(p TProxyParams, customRules []string) string {
 }
 
 // renderBootInit 渲染 OpenRC init 脚本（薄封装，命令在 aurora-tproxy.sh）。
+//
+// before auroramihomo：必须先于面板启动。否则面板 ReconcileState 在规则
+// 恢复前探测不到 aurora_tproxy 表，会把已确认的 TProxy 回落为关闭。
 func renderBootInit() string {
 	return `#!/sbin/openrc-run
 # 由 AuroraMihomo 自动生成：开机恢复透明代理（TProxy）规则。
@@ -329,6 +342,7 @@ AURORA_SCRIPT="/etc/aurora-tproxy.sh"
 
 depend() {
 	need net
+	before auroramihomo
 }
 
 start() {
@@ -347,11 +361,10 @@ stop() {
 
 // renderBootUnit 渲染 systemd oneshot unit（命令在 aurora-tproxy.sh）。
 //
-// Type=oneshot + RemainAfterYes：start 跑一次即"active"，stop 才能触发
-// ExecStop 拆除。After=network-online.target：策略路由需要网卡就绪。
-// Before=auroramihomo.service：先建规则再让面板起来，避免面板启动后
-// 一段"规则未就绪"的窗口。auroramihomo.service 未安装时该排序无单位可比，
-// systemd 静默忽略。
+// Type=oneshot + RemainAfterExit：start 跑完仍保持 active，关机/stop 才会
+// 触发 ExecStop。After=network-online.target：策略路由需要网卡就绪。
+// Before=auroramihomo.service：先建规则再起面板，避免 ReconcileState
+// 在规则恢复前把 TProxy 误判为失效并回落关闭。
 func renderBootUnit() string {
 	return `[Unit]
 Description=AuroraMihomo TProxy firewall rules
@@ -361,7 +374,7 @@ Before=auroramihomo.service
 
 [Service]
 Type=oneshot
-RemainAfterYes=yes
+RemainAfterExit=yes
 ExecStart=/bin/sh /etc/aurora-tproxy.sh start
 ExecStop=/bin/sh /etc/aurora-tproxy.sh stop
 
