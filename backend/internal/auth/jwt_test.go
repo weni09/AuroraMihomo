@@ -146,3 +146,42 @@ func TestExtractBearerToken(t *testing.T) {
 		t.Fatalf("nil 请求应返回空串，实际 %q", got)
 	}
 }
+
+// AuthorizeRequest 是同源反代的统一鉴权（/adguard-ui、/mihomo-api 共用）：
+// 优先 aurora_session cookie，其次 Bearer；口令版本闸门与 API/WS 一致。
+func TestAuthorizeRequest(t *testing.T) {
+	now := time.Now().Unix()
+	valid := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"exp": now + 3600,
+		"iat": now,
+		"uid": 1,
+		"ver": 1,
+	})
+	validStr, err := valid.SignedString([]byte(testJWTSecret))
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+
+	if AuthorizeRequest(httptest.NewRequest(http.MethodGet, "/", nil), "", NewPasswordVer(0)) {
+		t.Fatal("空密钥必须拒绝")
+	}
+	rNoCred := httptest.NewRequest(http.MethodGet, "/", nil)
+	if AuthorizeRequest(rNoCred, testJWTSecret, NewPasswordVer(1)) {
+		t.Fatal("无凭据应拒绝")
+	}
+
+	rCookie := httptest.NewRequest(http.MethodGet, "/", nil)
+	rCookie.AddCookie(&http.Cookie{Name: SessionCookieName, Value: validStr})
+	if !AuthorizeRequest(rCookie, testJWTSecret, NewPasswordVer(1)) {
+		t.Fatal("有效 cookie 应放行")
+	}
+	if AuthorizeRequest(rCookie, testJWTSecret, NewPasswordVer(2)) {
+		t.Fatal("改密后旧令牌应拒绝")
+	}
+
+	rBearer := httptest.NewRequest(http.MethodGet, "/", nil)
+	rBearer.Header.Set("Authorization", "Bearer "+validStr)
+	if !AuthorizeRequest(rBearer, testJWTSecret, NewPasswordVer(1)) {
+		t.Fatal("有效 Bearer 应放行")
+	}
+}

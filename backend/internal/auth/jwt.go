@@ -118,3 +118,36 @@ func ExtractBearerToken(r *http.Request) string {
 	}
 	return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 }
+
+// SessionCookieName 为面板登录会话 Cookie 名。
+// API 闸门、/ws 与两个同源反代（/adguard-ui、/mihomo-api）共用同一会话，
+// 常量统一放在 auth 包，避免各层各自定义字符串。
+const SessionCookieName = "aurora_session"
+
+// AuthorizeRequest 校验同源反代请求：优先 aurora_session cookie，
+// 其次 Authorization Bearer。JWT 校验方式与 verifyWSToken 一致（HMAC）；
+// ver 为口令版本闸门：改密后旧令牌即使签名有效也拒绝访问。
+//
+// /adguard-ui 与 /mihomo-api 两个反代共用此函数：iframe 内嵌页面的请求
+// 无法像 fetch 那样显式带 Authorization，但同源下浏览器会自动附带 Cookie，
+// 因此两者都以 Cookie 为主要鉴权通道。
+func AuthorizeRequest(r *http.Request, secret string, ver *PasswordVer) bool {
+	if r == nil || secret == "" {
+		return false
+	}
+	raw := ""
+	if c, err := r.Cookie(SessionCookieName); err == nil && c != nil {
+		raw = strings.TrimSpace(c.Value)
+	}
+	if raw == "" {
+		raw = ExtractBearerToken(r)
+	}
+	if raw == "" {
+		return false
+	}
+	claims, err := ParseToken(raw, secret)
+	if err != nil {
+		return false
+	}
+	return TokenVersionValid(claims, ver.Current())
+}

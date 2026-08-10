@@ -11,7 +11,7 @@ import (
 func DashboardEntryHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		l := protected.NewDashboardEntryLogic(r.Context(), svcCtx)
-		resp, err := l.DashboardEntry(r.Host)
+		resp, err := l.DashboardEntry(r)
 		if err != nil {
 			httpx.ErrorCtx(r.Context(), w, err)
 		} else {

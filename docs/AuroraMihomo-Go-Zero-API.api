@@ -662,12 +662,15 @@ type LogLine {
 
 // DashboardEntryResp 内置 zashboard 面板的免手填入口。
 // Available 为 false 时 Message 说明原因（如未启用 external-controller）。
+// Host/Port 是浏览器访问面板用的主机与端口；PublicPort 与 Port 相同，
+// 单独暴露便于前端预写 zashboard 记录时区分「隐含端口（80/443）」与显式端口。
 type DashboardEntryResp {
-	Available bool   `json:"available"`
-	Url       string `json:"url"`
-	Host      string `json:"host"`
-	Port      string `json:"port"`
-	Message   string `json:"message"`
+	Available  bool   `json:"available"`
+	Url        string `json:"url"`
+	Host       string `json:"host"`
+	Port       string `json:"port"`
+	PublicPort string `json:"publicPort,omitempty"`
+	Message    string `json:"message"`
 }
 
 // ---------- AdGuard Home（可选嵌入） ----------

@@ -80,3 +80,41 @@ func RequestIsHTTPS(r *http.Request, trustedProxies []string) bool {
 	}
 	return false
 }
+
+// IsLocalDialableHost 判断 host 是否为本机可 dial 的上游（回环 / localhost /
+// 本机接口 IP）。同源反代（/adguard-ui、/mihomo-api）用它做 SSRF 防线：
+// 上游须为本机可达的 IP 字面量，拒绝域名与外网 IP——否则配置被改写成
+// 外网地址时反代会变成 SSRF 跳板。
+func IsLocalDialableHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		var ifIP net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ifIP = v.IP
+		case *net.IPAddr:
+			ifIP = v.IP
+		}
+		if ifIP != nil && ifIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}

@@ -35,15 +35,15 @@ func signTestJWT(t *testing.T, secret string, expOffset time.Duration, ver int64
 
 func TestAuthorizeRequest_NoCredentials(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
+	if auth.AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("expected unauthorized without cookie/bearer")
 	}
 }
 
 func TestAuthorizeRequest_InvalidCookie(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "not-a-jwt"})
-	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "not-a-jwt"})
+	if auth.AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("expected unauthorized for invalid cookie")
 	}
 }
@@ -52,14 +52,14 @@ func TestAuthorizeRequest_ValidCookieAndBearer(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	rCookie := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	rCookie.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
-	if !AuthorizeRequest(rCookie, testJWTSecret, auth.NewPasswordVer(0)) {
+	rCookie.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
+	if !auth.AuthorizeRequest(rCookie, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("valid cookie should authorize")
 	}
 
 	rBearer := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
 	rBearer.Header.Set("Authorization", "Bearer "+token)
-	if !AuthorizeRequest(rBearer, testJWTSecret, auth.NewPasswordVer(0)) {
+	if !auth.AuthorizeRequest(rBearer, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("valid bearer should authorize")
 	}
 }
@@ -73,14 +73,14 @@ func TestAuthorizeRequest_StaleVersionRejected(t *testing.T) {
 	ver := auth.NewPasswordVer(2)
 
 	rStale := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	rStale.AddCookie(&http.Cookie{Name: sessionCookieName, Value: stale})
-	if AuthorizeRequest(rStale, testJWTSecret, ver) {
+	rStale.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: stale})
+	if auth.AuthorizeRequest(rStale, testJWTSecret, ver) {
 		t.Fatal("版本落后的旧令牌必须被拒绝")
 	}
 
 	rFresh := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	rFresh.AddCookie(&http.Cookie{Name: sessionCookieName, Value: fresh})
-	if !AuthorizeRequest(rFresh, testJWTSecret, ver) {
+	rFresh.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: fresh})
+	if !auth.AuthorizeRequest(rFresh, testJWTSecret, ver) {
 		t.Fatal("版本匹配的令牌应放行")
 	}
 }
@@ -100,12 +100,12 @@ func TestAuthorizeRequest_MissingVersionClaim(t *testing.T) {
 	}
 
 	r := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: s})
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: s})
 
-	if !AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
+	if !auth.AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(0)) {
 		t.Fatal("未改密时存量令牌应放行")
 	}
-	if AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(1)) {
+	if auth.AuthorizeRequest(r, testJWTSecret, auth.NewPasswordVer(1)) {
 		t.Fatal("改密后存量令牌必须被拒绝")
 	}
 }
@@ -126,7 +126,7 @@ func TestProxyHandler_InvalidCookie_401(t *testing.T) {
 	h := NewProxyHandler(mgr, testJWTSecret, auth.NewPasswordVer(0), nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage.token.value"})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "garbage.token.value"})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -160,7 +160,7 @@ func TestProxyHandler_ValidCookie_StripsPrefixAndProxies(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://panel.example/adguard-ui/control/status?x=1", nil)
 	req.Host = "panel.example"
 	req.RemoteAddr = "203.0.113.10:54321"
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -195,7 +195,7 @@ func TestProxyHandler_NotRunning_503(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -235,7 +235,10 @@ func TestRewriteLocationUnderAdguard(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackHost(t *testing.T) {
+// TestIsLocalDialableHost 反代上游白名单（auth 包）：回环与域名别名放行，
+// 公网 IP / 域名拒绝（防 SSRF）；本机接口 IP（若有）放行。
+// 同源反代（/adguard-ui、/mihomo-api）共用同一策略，这里回归 auth 实现。
+func TestIsLocalDialableHost(t *testing.T) {
 	cases := map[string]bool{
 		"127.0.0.1":   true,
 		"127.0.0.2":   true,
@@ -248,8 +251,14 @@ func TestIsLoopbackHost(t *testing.T) {
 		"":            false,
 	}
 	for in, want := range cases {
-		if got := isLoopbackHost(in); got != want {
-			t.Errorf("isLoopbackHost(%q) = %v, want %v", in, got, want)
+		if got := auth.IsLocalDialableHost(in); got != want {
+			t.Errorf("auth.IsLocalDialableHost(%q) = %v, want %v", in, got, want)
+		}
+	}
+	// 动态取一个本机非回环接口 IP（测试环境网络各异，存在才断言）
+	if ifIP := firstNonLoopbackInterfaceIP(t); ifIP != "" {
+		if !auth.IsLocalDialableHost(ifIP) {
+			t.Fatalf("本机接口 IP %q 应放行", ifIP)
 		}
 	}
 }
@@ -261,7 +270,7 @@ func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -270,25 +279,6 @@ func TestProxyHandler_RejectsNonLoopbackUpstream(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "local IP") {
 		t.Fatalf("body = %q, want local IP hint", rec.Body.String())
-	}
-}
-
-// TestIsAllowedProxyUpstream 反代上游白名单：回环与域名别名放行，
-// 公网 IP / 域名拒绝（防 SSRF）；本机接口 IP（若有）放行。
-func TestIsAllowedProxyUpstream(t *testing.T) {
-	if !isAllowedProxyUpstream("127.0.0.1") || !isAllowedProxyUpstream("::1") || !isAllowedProxyUpstream("localhost") {
-		t.Fatal("回环/locahost 应放行")
-	}
-	for _, bad := range []string{"8.8.8.8", "1.1.1.1", "example.com", "", "0.0.0.0"} {
-		if isAllowedProxyUpstream(bad) {
-			t.Fatalf("%q 应拒绝", bad)
-		}
-	}
-	// 动态取一个本机非回环接口 IP（测试环境网络各异，存在才断言）
-	if ifIP := firstNonLoopbackInterfaceIP(t); ifIP != "" {
-		if !isAllowedProxyUpstream(ifIP) {
-			t.Fatalf("本机接口 IP %q 应放行", ifIP)
-		}
 	}
 }
 

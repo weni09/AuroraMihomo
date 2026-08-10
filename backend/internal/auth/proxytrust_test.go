@@ -59,3 +59,19 @@ func TestRequestIsHTTPSForwardedSslOn(t *testing.T) {
 		t.Fatal("X-Forwarded-Ssl=on 应视为 HTTPS")
 	}
 }
+
+// IsLocalDialableHost：同源反代上游白名单（回环 / localhost / 本机接口 IP 放行，
+// 域名、公网 IP、通配符拒绝）。与 adguard 反代共用，归属在 auth 包保证单一实现。
+func TestIsLocalDialableHost(t *testing.T) {
+	allowed := []string{"127.0.0.1", "127.0.0.2", "::1", "localhost", "LOCALHOST"}
+	for _, h := range allowed {
+		if !IsLocalDialableHost(h) {
+			t.Errorf("%q 应放行", h)
+		}
+	}
+	for _, h := range []string{"0.0.0.0", "8.8.8.8", "1.1.1.1", "example.com", "", "[::]"} {
+		if IsLocalDialableHost(h) {
+			t.Errorf("%q 应拒绝", h)
+		}
+	}
+}

@@ -17,39 +17,14 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 )
 
-const sessionCookieName = "aurora_session"
 const adguardURLPrefix = "/adguard-ui"
-
-// AuthorizeRequest 校验 AdGuard 反代请求：优先 aurora_session cookie，
-// 其次 Authorization Bearer。JWT 校验方式与 aurora.verifyWSToken 一致（HMAC）；
-// ver 为口令版本闸门：改密后旧令牌即使签名有效也拒绝访问。
-func AuthorizeRequest(r *http.Request, secret string, ver *auth.PasswordVer) bool {
-	if r == nil || secret == "" {
-		return false
-	}
-	raw := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil && c != nil {
-		raw = strings.TrimSpace(c.Value)
-	}
-	if raw == "" {
-		raw = auth.ExtractBearerToken(r)
-	}
-	if raw == "" {
-		return false
-	}
-	claims, err := auth.ParseToken(raw, secret)
-	if err != nil {
-		return false
-	}
-	return auth.TokenVersionValid(claims, ver.Current())
-}
 
 // NewProxyHandler 返回挂在 /adguard-ui 下的同源反代（与 SPA 路由 /adguard 分离，避免刷新整页变成裸 AGH）。
 // bridge 可为 nil；非 nil 时在已登录 Aurora 的前提下注入 agh_session，实现免密进 AGH。
 // ver 为口令版本闸门（改密吊销），与 API / WS 共用同一计数器。
 func NewProxyHandler(mgr *Manager, jwtSecret string, ver *auth.PasswordVer, webAddrResolver func() string, bridge *SessionBridge) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !AuthorizeRequest(r, jwtSecret, ver) {
+		if !auth.AuthorizeRequest(r, jwtSecret, ver) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -88,7 +63,7 @@ func NewProxyHandler(mgr *Manager, jwtSecret string, ver *auth.PasswordVer, webA
 		// 上游须为本机可达 IP 字面量（回环 / 本机接口 IP）。
 		// 服务化后 AGH 可绑 0.0.0.0 或网卡 IP；0.0.0.0 已在 resolver 侧归一成 127.0.0.1。
 		// 拒绝非 IP 主机名与本机接口之外的 IP，防止 yaml 被改写成外网地址时变成 SSRF。
-		if !isAllowedProxyUpstream(target.Hostname()) {
+		if !auth.IsLocalDialableHost(target.Hostname()) {
 			http.Error(w, "upstream must be a local IP address", http.StatusBadGateway)
 			return
 		}
@@ -184,7 +159,7 @@ func UserKeyFromRequest(r *http.Request, secret string) string {
 		return ""
 	}
 	raw := ""
-	if c, err := r.Cookie(sessionCookieName); err == nil && c != nil {
+	if c, err := r.Cookie(auth.SessionCookieName); err == nil && c != nil {
 		raw = strings.TrimSpace(c.Value)
 	}
 	if raw == "" {
@@ -217,59 +192,6 @@ func UserKeyFromRequest(r *http.Request, secret string) string {
 		}
 	}
 	return "1"
-}
-
-func isLoopbackHost(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return ip.IsLoopback()
-}
-
-// isAllowedProxyUpstream 反代上游白名单：localhost / 回环 / 本机接口 IP。
-// 绑网卡 IP 时必须 dial 该 IP（127.0.0.1 连不上）；禁止域名与外网 IP，防 SSRF。
-func isAllowedProxyUpstream(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return false
-	}
-	if isLoopbackHost(host) {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	return isLocalInterfaceIP(ip)
-}
-
-// isLocalInterfaceIP 判断 IP 是否属于本机任一网卡接口。
-func isLocalInterfaceIP(ip net.IP) bool {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false
-	}
-	for _, a := range addrs {
-		var ifIP net.IP
-		switch v := a.(type) {
-		case *net.IPNet:
-			ifIP = v.IP
-		case *net.IPAddr:
-			ifIP = v.IP
-		}
-		if ifIP != nil && ifIP.Equal(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 func stripAdguardPrefix(path string) string {

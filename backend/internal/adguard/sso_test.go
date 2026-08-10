@@ -151,7 +151,7 @@ func TestProxyHandler_InjectsAghSession(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/control/status", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -180,7 +180,7 @@ func TestProxyHandler_LoginHTMLRedirectWithSSO(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 
 	req := httptest.NewRequest(http.MethodGet, "/adguard-ui/login.html", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound {
@@ -194,7 +194,7 @@ func TestProxyHandler_LoginHTMLRedirectWithSSO(t *testing.T) {
 func TestUserKeyFromRequest(t *testing.T) {
 	token := signTestJWT(t, testJWTSecret, time.Hour, 0)
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	r.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	if got := UserKeyFromRequest(r, testJWTSecret); got != "1" {
 		t.Fatalf("uid=%q want 1", got)
 	}

@@ -158,11 +158,12 @@ type CreateSubscriptionReq struct {
 }
 
 type DashboardEntryResp struct {
-	Available bool   `json:"available"`
-	Url       string `json:"url"`
-	Host      string `json:"host"`
-	Port      string `json:"port"`
-	Message   string `json:"message"`
+	Available  bool   `json:"available"`
+	Url        string `json:"url"`
+	Host       string `json:"host"`
+	Port       string `json:"port"`
+	PublicPort string `json:"publicPort,omitempty"`
+	Message    string `json:"message"`
 }
 
 type DiffItem struct {

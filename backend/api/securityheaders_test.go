@@ -10,11 +10,12 @@ import (
 // staticFallback 是唯一的最外层 Handler，安全响应头必须对 API 与静态资源
 // 两条路径都生效，否则新增 handler 时极易遗漏。
 func TestSecurityHeadersAppliedOnBothPaths(t *testing.T) {
-	apiHit, staticHit := false, false
+	apiHit, staticHit, kernelHit := false, false, false
 	h := staticFallback(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { apiHit = true }),
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { staticHit = true }),
 		nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { kernelHit = true }),
 	)
 
 	// 三个基础头对所有路径都必须存在
@@ -76,6 +77,37 @@ func TestSecurityHeadersAppliedOnBothPaths(t *testing.T) {
 			t.Error("静态请求未被转发给 static handler")
 		}
 	})
+
+	t.Run("内核反代路径", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mihomo-api/traffic", nil))
+
+		for k, want := range common {
+			if got := rec.Header().Get(k); got != want {
+				t.Errorf("内核反代的 %s = %q, want %q", k, got, want)
+			}
+		}
+		// 敏感内核 API 必须 no-store，不能走静态资源缓存策略
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("内核反代 Cache-Control = %q, want no-store", got)
+		}
+		if !kernelHit {
+			t.Error("/mihomo-api 请求未被转发给 kernelHandler")
+		}
+	})
+
+	t.Run("内核反代前缀须精确到段边界", func(t *testing.T) {
+		kernelHit = false
+		staticHit = false
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/mihomo-apiXXX", nil))
+		if kernelHit {
+			t.Error("/mihomo-apiXXX 不应进入 kernelHandler")
+		}
+		if !staticHit {
+			t.Error("/mihomo-apiXXX 应回落到静态 handler")
+		}
+	})
 }
 
 // 无 TLS 时下发 HSTS 会把用户锁死在无法访问的 https:// 上，
@@ -84,6 +116,7 @@ func TestNoHSTSByDefault(t *testing.T) {
 	h := staticFallback(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+		nil,
 		nil,
 	)
 	rec := httptest.NewRecorder()
@@ -103,6 +136,7 @@ func TestHealthzRoutedToAPI(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("/healthz 不应交给静态服务")
 		}),
+		nil,
 		nil,
 	)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))

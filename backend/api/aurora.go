@@ -21,6 +21,7 @@ import (
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/auth"
+	"auroramihomo/backend/internal/mihomo"
 	"auroramihomo/backend/internal/service"
 
 	"github.com/gorilla/websocket"
@@ -419,8 +420,22 @@ func main() {
 		return addr
 	}, svcCtx.AdGuardSSO)
 	// 最外层包装静态资源分流：API/WS 走 go-zero，/adguard-ui 反代，其余走静态（含 SPA /adguard）文件（含 SPA 回退）
+	// 同源 /mihomo-api 反代：zashboard 面板经此访问内核 external-controller
+	//（含 WebSocket 隧道），浏览器不再直连内核端口，公网经 nginx 443 即可用。
+	kernelAPIProxy := mihomo.NewKernelAPIProxyHandler(
+		svcCtx.Config.Auth.AccessSecret,
+		svcCtx.PasswordVer,
+		func() (string, string) {
+			t, err := svcCtx.ConfigService.KernelAPITarget()
+			if err != nil || t.Port == "" {
+				return "", ""
+			}
+			return net.JoinHostPort(mihomo.LocalDialTarget(t.Host), t.Port), t.Secret
+		},
+		svcCtx.Config.TrustedProxies,
+	)
 	server.StartWithOpts(func(svr *http.Server) {
-		svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy)
+		svr.Handler = staticFallback(svr.Handler, staticMux, aghProxy, kernelAPIProxy)
 		applyServerTimeouts(svr, c)
 		// 交给关停 goroutine，让它能自己调 Shutdown 真正停掉监听
 		srvReady <- svr
@@ -536,27 +551,30 @@ func registerWebSocket(server *rest.Server, svcCtx *svc.ServiceContext) {
 }
 
 // staticFallback 包装在 go-zero handler 之外：
-// API 走 go-zero，/adguard-ui 走 AGH 反代，/adguard 走 SPA，其余由静态文件处理。
-// 这样可支持任意深度的静态资源路径与 SPA 客户端路由回退。
-func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handler {
+// API 走 go-zero，/adguard-ui 走 AGH 反代，/mihomo-api 走内核反代，
+// /adguard 走 SPA，其余由静态文件处理（含 SPA 客户端路由回退）。
+func staticFallback(apiHandler, static, adguardHandler, kernelHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		// /healthz 必须走 go-zero，否则会被静态服务返回 index.html，
-		// 导致容器健康检查永远"通过"
-		isAPI := strings.HasPrefix(path, "/api/") || path == "/ws" || path == "/healthz"
+		// 导致容器健康检查永远"通过"。
+		// /mihomo-api 虽不交给 apiHandler，但仍按 API 分支设 no-store：
+		// 内核接口含代理列表/连接等敏感数据，不能走静态资源缓存策略。
+		isMihomoAPI := path == mihomo.MihomoAPIPrefix || strings.HasPrefix(path, mihomo.MihomoAPIPrefix+"/")
+		isAPI := strings.HasPrefix(path, "/api/") || path == "/ws" || path == "/healthz" || isMihomoAPI
 
 		// 这是唯一的最外层 Handler，安全响应头统一在此设置，
 		// 避免各 handler 各写一份导致遗漏
 		setSecurityHeaders(w, isAPI)
 
-		if isAPI {
+		if strings.HasPrefix(path, "/api/") || path == "/ws" || path == "/healthz" {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}
 
 		// AdGuard Home Web UI 同源反代（iframe 嵌入管理端）
 		// 仅 /adguard-ui 反代 AGH；/adguard 留给 Vue 路由（刷新仍留在 Aurora 壳内）
-		if strings.HasPrefix(path, "/adguard-ui") {
+		if path == "/adguard-ui" || strings.HasPrefix(path, "/adguard-ui/") {
 			if path == "/adguard-ui" {
 				http.Redirect(w, r, "/adguard-ui/", http.StatusMovedPermanently)
 				return
@@ -570,6 +588,19 @@ func staticFallback(apiHandler, static, adguardHandler http.Handler) http.Handle
 				return
 			}
 			http.Error(w, "adguard proxy unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// 内核 external-controller 同源反代：zashboard 面板的 API 与 WebSocket
+		// 都经 /mihomo-api 进内核，鉴权与 SSRF 防线在 handler 内部完成。
+		// 不走 gzip 包装：面板的 ws 隧道需要流式直通，压缩中间件不能碰它。
+		// 前缀必须精确到段边界，避免 /mihomo-apiXXX 误入。
+		if isMihomoAPI {
+			if kernelHandler != nil {
+				kernelHandler.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "mihomo proxy unavailable", http.StatusServiceUnavailable)
 			return
 		}
 
