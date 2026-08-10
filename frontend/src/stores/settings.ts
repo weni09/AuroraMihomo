@@ -35,6 +35,20 @@ export interface UpdateSettings {
   monitorIntervalSec: number
 }
 
+/** 主程序（AuroraMihomo 自身）自升级检查结果 */
+export interface SelfUpdateInfo {
+  /** 是否已配置主程序仓库（未配置时无法自升级） */
+  configured: boolean
+  /** 当前运行版本 */
+  currentVersion: string
+  /** 远端最新 release tag，查询失败时为空串 */
+  latestVersion: string
+  /** 是否存在可升级的新版本 */
+  updateAvailable: boolean
+  /** 提示信息：配置缺失 / 已最新 / 有新版本 / 查询失败原因 */
+  message?: string
+}
+
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
     // 检查更新与各组件更新是独立动作，各自可能耗时数秒到数十秒，
@@ -43,6 +57,12 @@ export const useSettingsStore = defineStore('settings', {
     checkingUpdate: false,
     updatingMihomo: false,
     updatingZashboard: false,
+    backingUp: false,
+    // 主程序自升级的独立状态：检查与升级各自耗时较长（下载可达分钟级），
+    // 与组件更新一样拆开标志，避免互相误禁用按钮
+    checkingSelfUpdate: false,
+    updatingSelf: false,
+    selfUpdateInfo: null as SelfUpdateInfo | null,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
@@ -124,6 +144,48 @@ export const useSettingsStore = defineStore('settings', {
         console.error(e)
       } finally {
         this.updatingZashboard = false
+      }
+    },
+    // 数据库在线备份（VACUUM INTO），备份文件落在服务端 backups 目录
+    async backupDatabase() {
+      if (this.backingUp) return
+      this.backingUp = true
+      try {
+        const res = await api.post('/system/backup')
+        useNotifyStore().success(res.data?.message || '备份完成')
+      } catch (e: unknown) {
+        console.error(e)
+      } finally {
+        this.backingUp = false
+      }
+    },
+    // 检查主程序（AuroraMihomo 自身）是否有新版本；只读版本信息，不下载
+    async checkSelfUpdate() {
+      if (this.checkingSelfUpdate) return
+      this.checkingSelfUpdate = true
+      try {
+        const res = await api.get<SelfUpdateInfo>('/system/self-update/check')
+        this.selfUpdateInfo = res.data
+        if (res.data?.configured) {
+          useNotifyStore().success(res.data.message || '检查完成')
+        }
+      } catch (e: unknown) {
+        console.error(e)
+      } finally {
+        this.checkingSelfUpdate = false
+      }
+    },
+    // 一键自升级：下载校验新版 → 自动备份数据库 → 重启生效
+    async updateSelf() {
+      if (this.updatingSelf) return
+      this.updatingSelf = true
+      try {
+        const res = await api.post('/system/self-update')
+        useNotifyStore().success(res.data?.message || '升级已触发，即将重启生效')
+      } catch (e: unknown) {
+        console.error(e)
+      } finally {
+        this.updatingSelf = false
       }
     },
   },

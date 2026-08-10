@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"auroramihomo/backend/internal/netcheck"
@@ -36,8 +37,19 @@ type Config struct {
 	MihomoRepo        string
 	ZashboardRepo     string
 	// AdGuardRepo 为空时默认 AdguardTeam/AdGuardHome
-	AdGuardRepo        string
-	GitHubAPI          string
+	AdGuardRepo string
+	GitHubAPI   string
+	// SelfRepo 为主程序（AuroraMihomo 自身）所在的 GitHub 仓库，
+	// 形如 "owner/AuroraMihomo"。为空表示未配置，自升级功能不可用
+	//（CheckSelfUpdate 返回 ErrSelfRepoNotConfigured）。
+	SelfRepo string
+	// SelfBinaryPath 为主程序自身二进制的路径。为空时取 os.Executable()
+	//（当前运行中的进程路径），测试可注入假路径。
+	SelfBinaryPath string
+	// SelfDownloadBase 为主程序 release 资产的下载基址，默认 "https://github.com"。
+	// 与组件资产不同，主程序资产按 install.sh 的同名契约拼接 URL，
+	// 不依赖 release JSON 里的 browser_download_url；测试可注入本地服务器。
+	SelfDownloadBase   string
 	HTTPTimeoutSeconds int
 	// CDNProviders 为 GitHub Release 资产的下载源（内核与面板都以 Release 分发）
 	CDNProviders []string
@@ -67,7 +79,7 @@ type RuntimeSettings struct {
 }
 
 type Manager struct {
-	// updateMu 串行化 UpdateMihomo / UpdateZashboard / UpdateAdGuard。
+	// updateMu 串行化 UpdateMihomo / UpdateZashboard / UpdateAdGuard / UpdateSelf。
 	// 会覆盖二进制与面板目录，并发执行会写出内容交错的坏文件、并互相删掉备份。
 	updateMu sync.Mutex
 
@@ -75,6 +87,11 @@ type Manager struct {
 	client *http.Client
 	logger logx.Logger
 	mu     sync.RWMutex
+
+	// selfUpdating 标记主程序自升级已进入"下载完成、等待关停换二进制"阶段。
+	// 与 updateMu 不同：后者只覆盖下载过程，本标志覆盖到进程退出，
+	// 用于拒绝二次升级与并发 /system/restart，避免与 RequestQuit 竞态。
+	selfUpdating atomic.Bool
 
 	// zashboardVersion 记录上次成功更新的 release tag。
 	// 由 SettingsService 在启动时从数据库回灌，更新成功后再写回，
@@ -135,6 +152,22 @@ func New(cfg Config) *Manager {
 	}
 	if cfg.HTTPTimeoutSeconds <= 0 {
 		cfg.HTTPTimeoutSeconds = 120
+	}
+	if cfg.SelfBinaryPath == "" {
+		// 自身二进制路径在运行时探测，不设默认值兜底：
+		// os.Executable 失败（极少见）时保持空串，SwapSelfBinary 会显式报错。
+		// 必须解析符号链接并转成绝对路径：Linux 上 systemd 常以
+		// /usr/bin/foo → /opt/foo 的 symlink 启动，若只拿 Executable 的
+		// 原始路径去 rename，会改到链接本身或换到错误位置。
+		if exe, err := os.Executable(); err == nil {
+			if abs, absErr := filepath.Abs(exe); absErr == nil {
+				exe = abs
+			}
+			if resolved, linkErr := filepath.EvalSymlinks(exe); linkErr == nil {
+				exe = resolved
+			}
+			cfg.SelfBinaryPath = exe
+		}
 	}
 	if cfg.AutoUpdateCron == "" {
 		cfg.AutoUpdateCron = "0 0 4 * * *"
@@ -524,9 +557,25 @@ func (m *Manager) UpdateMihomo(ctx context.Context) error {
 		}
 	}
 
+	// 先在临时目录校验新二进制：解压产物有问题时立即失败，还没碰
+	// 过目标文件，磁盘上留的还是旧内核。此前是先覆盖再校验，坏文件
+	// 会直接落到目标路径，进程一重启就起不来（校验失败只能靠再跑
+	// 一次更新恢复）。
+	verifyCmd := exec.CommandContext(ctx, binPath, "-v")
+	if out, err := verifyCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("downloaded mihomo binary invalid: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
 	target := m.MihomoBinaryPath()
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
+	}
+	// 目标已存在时先备份，与 AdGuardHome 的替换路径一致：
+	// 万一替换过程中出错，还有一份旧内核可手工恢复。
+	if fileExists(target) {
+		if err := copyFile(target, target+".bak"); err != nil {
+			m.logger.Errorf("备份旧 mihomo 失败: %v", err)
+		}
 	}
 	if err := copyFile(binPath, target); err != nil {
 		return err

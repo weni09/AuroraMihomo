@@ -57,6 +57,13 @@ AutoUpdate:
   Enabled: false
   Cron: "0 0 4 * * *"
 
+# 数据库在线备份。备份由「系统设置 · 立即备份」与主程序自升级前的
+# 自动备份触发；目录留空取 <Mihomo.ConfigDir>/backups（容器镜像已预建
+# /data/backups），MaxKeep 控制保留的最近份数。
+Backup:
+  Dir: ""
+  MaxKeep: 7
+
 Updater:
   MihomoRepo: "MetaCubeX/mihomo"
   ZashboardRepo: "Zephyruso/zashboard"
@@ -67,6 +74,11 @@ Updater:
   # 内核跑起来后走它通常比第三方镜像更快、拿到的也是官方原始文件；
   # 代理不可用（内核未运行或未开放 mixed-port/port）时自动回落。
   UseMihomoProxy: true
+
+  # 主程序（AuroraMihomo 自身）的 GitHub 仓库，形如 "owner/AuroraMihomo"。
+  # 填了之后，「系统设置 · 主程序升级」即可一键检查/升级并自动重启；
+  # 留空则不启用面板内自升级（界面会提示未配置）。
+  SelfRepo: ""
 
   # Release 资产（内核/面板二进制）的下载源，顺序即优先级。
   # 仅这一类需要镜像：GitHub REST API 没有可用镜像（ghproxy 只代理

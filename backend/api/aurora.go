@@ -23,6 +23,7 @@ import (
 	"auroramihomo/backend/internal/auth"
 	"auroramihomo/backend/internal/mihomo"
 	"auroramihomo/backend/internal/service"
+	"auroramihomo/backend/internal/version"
 
 	"github.com/gorilla/websocket"
 	"github.com/zeromicro/go-zero/core/conf"
@@ -33,7 +34,15 @@ import (
 var configFile = flag.String("f", "etc/aurora-api.yaml", "the config file")
 
 func main() {
+	// -version 只打印版本号并退出：供自升级流程校验新下载的二进制
+	// 是否可执行、以及运维快速确认当前运行版本。必须在加载配置之前
+	// 返回，避免无配置文件时无法查询版本。
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Get())
+		return
+	}
 
 	var c config.Config
 	conf.MustLoad(*configFile, &c)
@@ -45,6 +54,11 @@ func main() {
 
 	svcCtx := svc.NewServiceContext(c)
 	handler.RegisterHandlers(server, svcCtx)
+
+	// 自升级残留清理：删掉上次 Windows 交换成功后遗留的 .old；
+	// 检测到待生效的 .new（上次下载后异常退出没来得及交换）时保留，
+	// 本次关停时 SwapSelfBinary 会继续完成升级。
+	svcCtx.Updater.CleanupStaleSelf()
 
 	// 静态资源（Zashboard 内嵌面板 + 本项目前端）挂到原生 mux，
 	// go-zero 路由无法匹配任意深度路径，这里在进入路由前直接分流。
@@ -384,6 +398,15 @@ func main() {
 		// 此时 HTTP 服务已停、定时任务已收尾，不会再有人使用连接。
 		if err := svcCtx.Database.Close(); err != nil {
 			logx.Errorf("close database failed: %v", err)
+		}
+
+		// 自升级生效点：把 .new 换成自身二进制。放在数据库关闭之后——
+		// 此刻没有活动请求、也没有并发写库，替换失败最坏也只是升级不生效，
+		// 不会破坏任何运行态。替换完成后由进程管理器拉起的就是新版本。
+		if err := svcCtx.Updater.SwapSelfBinary(); err != nil {
+			// 只记录不阻断关停：进程该退还是要退，否则 supervisor 不会拉起。
+			// 未生效的 .new 保留在磁盘，下次关停会重试（或用户手工删掉放弃升级）。
+			logx.Errorf("swap self binary failed: %v", err)
 		}
 		logx.Info("shutdown complete")
 	}()

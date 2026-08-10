@@ -118,6 +118,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		HTTPTimeoutSeconds: c.Updater.TimeoutSec,
 		CDNProviders:       c.Updater.CDNProviders,
 		UseMihomoProxy:     c.Updater.UseMihomoProxy,
+		SelfRepo:           c.Updater.SelfRepo,
 	})
 
 	hub := realtime.NewHub()

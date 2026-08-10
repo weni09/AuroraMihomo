@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { useNotifyStore } from '../stores/notify'
 import { useAdGuardStore } from '../stores/adguard'
+import { useMihomoStore } from '../stores/mihomo'
 import { useTransparentStore, type TransparentMode } from '../stores/transparent'
 import { useCopy } from '../composables/useCopy'
 import api from '../api'
@@ -18,6 +19,7 @@ import { Badge } from '@/components/ui/badge'
 const store = useSettingsStore()
 const notify = useNotifyStore()
 const adguard = useAdGuardStore()
+const mihomoStore = useMihomoStore()
 const tp = useTransparentStore()
 const { copy: copyText } = useCopy()
 const form = reactive({
@@ -113,6 +115,18 @@ const zashboardVersionText = computed(
   () => store.settings?.zashboardVersion || '版本未知（更新一次后可获取）',
 )
 
+// 主程序升级区块的状态提示：优先用后端给出的 message，
+// 未检查过时按是否可升级给出引导文案
+const selfUpdateHint = computed(() => {
+  const info = store.selfUpdateInfo
+  if (!info) return '点击「检查主程序更新」查看是否有新版本'
+  if (!info.configured) return info.message || '自升级未配置（Updater.SelfRepo）'
+  if (info.message) return info.message
+  return info.updateAvailable
+    ? `发现新版本 ${info.latestVersion ?? ''}`
+    : `已是最新版本 ${info.currentVersion}`
+})
+
 // 设计 §16：合并策略用户可配置
 const mergePolicy = reactive({ proxyPriority: 'local', rulePriority: 'local', dnsPriority: 'local', tunPriority: 'local', generalPriority: 'local' })
 async function loadPolicy() {
@@ -203,6 +217,18 @@ const confirmUpdateMihomo = () => {
 }
 const confirmUpdateZashboard = () => {
   if (confirm('将下载并替换面板静态资源，确定继续？')) store.updateZashboard()
+}
+
+// 主程序自升级会替换自身二进制并重启进程，期间服务短暂不可用
+//（由 systemd / docker / supervisor 拉起新版）。升级前会自动备份数据库。
+const confirmUpdateSelf = () => {
+  if (
+    confirm(
+      '将下载并校验新版主程序，替换自身二进制并重启进程（服务短暂中断，由进程管理器拉起新版）。升级前会自动备份数据库，确定继续？',
+    )
+  ) {
+    store.updateSelf()
+  }
 }
 
 /** 组件开关：与透明代理同样用 model-value + 事件，避免 Switch 在请求失败后 UI 与后端脱节 */
@@ -436,6 +462,7 @@ function stepBadge(s: { success: boolean; skipped: boolean }) {
 const sections = [
   { id: 'password', title: '管理员密码' },
   { id: 'components', title: '组件状态' },
+  { id: 'self-update', title: '主程序升级与备份' },
   { id: 'auto-update', title: '自动更新' },
   { id: 'transparent', title: '透明代理' },
   { id: 'network', title: '下载与更新出网' },
@@ -655,6 +682,57 @@ const navOpen = ref(false)
                 @click="onUninstallAdGuard"
               >
                 {{ adguard.actionLoading ? '处理中…' : '彻底卸载' }}
+              </Button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 主程序（AuroraMihomo 自身）升级与数据库备份。
+             升级会替换正在运行的二进制并重启进程（服务短暂中断），
+             升级前自动备份数据库；备份按钮随时可触发在线备份。 -->
+        <section id="self-update" class="scroll-mt-20">
+          <h2 class="text-lg font-semibold mb-3">主程序升级与备份</h2>
+
+          <div class="p-4 rounded-lg border border-line bg-elevated/50">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div class="text-sm text-fg-muted">当前版本</div>
+                <div class="font-medium text-fg font-mono">{{ mihomoStore.appVersion }}</div>
+                <div class="mt-1 text-xs text-fg-subtle">
+                  {{ selfUpdateHint }}
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2 shrink-0">
+                <Button variant="outline" :disabled="store.checkingSelfUpdate" @click="store.checkSelfUpdate()">
+                  {{ store.checkingSelfUpdate ? '检查中…' : '检查主程序更新' }}
+                </Button>
+                <Button
+                  variant="outline"
+                  :disabled="store.updatingSelf || !store.selfUpdateInfo?.updateAvailable"
+                  @click="confirmUpdateSelf()"
+                >
+                  {{ store.updatingSelf ? '下载中…' : '升级并重启' }}
+                </Button>
+              </div>
+            </div>
+            <p class="mt-3 text-xs text-fg-subtle">
+              升级流程：下载新版并校验完整性 → 自动备份数据库 → 优雅关停时替换
+              自身二进制 → 由进程管理器（systemd / docker / NSSM）拉起新版。
+              升级期间服务有短暂中断，属预期行为。
+            </p>
+          </div>
+
+          <div class="mt-3 p-4 rounded-lg border border-line bg-elevated/50">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div class="text-sm font-medium text-fg">数据库在线备份</div>
+                <p class="mt-1 text-xs text-fg-subtle">
+                  生成独立副本（VACUUM INTO），无需停服；备份文件落在服务端
+                  backups 目录，按配置保留最近若干份。
+                </p>
+              </div>
+              <Button variant="outline" :disabled="store.backingUp" @click="store.backupDatabase()">
+                {{ store.backingUp ? '备份中…' : '立即备份' }}
               </Button>
             </div>
           </div>

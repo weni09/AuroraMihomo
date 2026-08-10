@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/applog"
 	"auroramihomo/backend/internal/service"
+	"auroramihomo/backend/internal/updater"
 
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/rest"
@@ -132,6 +135,13 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 			Method: http.MethodPost,
 			Path:   "/api/v1/system/restart",
 			Handler: func(w http.ResponseWriter, r *http.Request) {
+				// 自升级已暂存 .new、等待关停换二进制时，禁止再走普通重启：
+				// 普通重启同样会 RequestQuit，但语义是"原地再起当前版本"，
+				// 与"换二进制后起新版"冲突，且可能让用户误以为升级被取消。
+				if svcCtx.Updater.SelfUpdateInProgress() {
+					httpx.ErrorCtx(r.Context(), w, fmt.Errorf("主程序自升级进行中，请等待重启生效，勿重复触发重启"))
+					return
+				}
 				// 先应答再触发退出：关停会关闭监听，若先触发，
 				// 这条响应可能写不回去，调用方只看到连接被断开。
 				httpx.OkJson(w, map[string]any{
@@ -145,6 +155,106 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 				go func() {
 					time.Sleep(100 * time.Millisecond)
 					mgr.RequestQuit("HTTP /api/v1/system/restart")
+				}()
+			},
+		},
+		{
+			// 数据库在线备份：VACUUM INTO 生成独立副本，无需停服。
+			// 目录与保留份数由配置 Backup 段控制（Dir 为空取
+			// <Mihomo.ConfigDir>/backups，MaxKeep 默认 7）。
+			Method: http.MethodPost,
+			Path:   "/api/v1/system/backup",
+			Handler: func(w http.ResponseWriter, r *http.Request) {
+				path, err := svcCtx.Database.BackupTo(backupDir(svcCtx), svcCtx.Config.Backup.MaxKeep)
+				if err != nil {
+					logx.Errorf("database backup failed: %v", err)
+					httpx.ErrorCtx(r.Context(), w, err)
+					return
+				}
+				httpx.OkJson(w, map[string]any{
+					"success": true,
+					"path":    path,
+					"message": "数据库备份完成",
+				})
+			},
+		},
+		{
+			// 主程序自身版本检查：对比当前运行版本与 GitHub 最新 release。
+			// 未配置 SelfRepo 时返回 configured=false，让前端提示配置缺失
+			// 而不是报错（部署方可能刻意不启用自升级）。
+			Method: http.MethodGet,
+			Path:   "/api/v1/system/self-update/check",
+			Handler: func(w http.ResponseWriter, r *http.Request) {
+				check, err := svcCtx.Updater.CheckSelfUpdate(r.Context())
+				if err != nil {
+					httpx.OkJson(w, map[string]any{
+						"configured":     false,
+						"currentVersion": check.CurrentVersion,
+						"error":          err.Error(),
+						"message":        "主程序自升级未配置（请在配置中填写 Updater.SelfRepo）",
+					})
+					return
+				}
+				body := map[string]any{
+					"configured":      check.Configured,
+					"currentVersion":  check.CurrentVersion,
+					"latestVersion":   check.LatestVersion,
+					"updateAvailable": check.UpdateAvailable,
+				}
+				msg := ""
+				switch {
+				case check.Error != "":
+					msg = "检查最新版本失败: " + check.Error
+				case !check.UpdateAvailable:
+					msg = "当前已是最新版本 (" + check.CurrentVersion + ")"
+				default:
+					msg = "发现新版本 " + check.LatestVersion
+				}
+				body["message"] = msg
+				httpx.OkJson(w, body)
+			},
+		},
+		{
+			// 主程序一键自升级：下载并校验新版本 → 自动备份数据库 →
+			// 响应"即将重启生效" → 触发优雅关停，由进程管理器拉起新版。
+			// 与 /system/restart 相同的"先应答再退出"模式：关停会关闭监听，
+			// 先应答才能让调用方拿到结果而不是看到连接被断开。
+			Method: http.MethodPost,
+			Path:   "/api/v1/system/self-update",
+			Handler: func(w http.ResponseWriter, r *http.Request) {
+				// 已有一次升级在飞（下载中或已暂存待关停）时直接拒绝，
+				// 避免二次下载与重复 RequestQuit。
+				if svcCtx.Updater.SelfUpdateInProgress() {
+					httpx.ErrorCtx(r.Context(), w, updater.ErrSelfUpdateInProgress)
+					return
+				}
+				if err := svcCtx.Updater.UpdateSelf(r.Context()); err != nil {
+					logx.Errorf("self update failed: %v", err)
+					httpx.ErrorCtx(r.Context(), w, err)
+					return
+				}
+				// 升级前自动备份数据库：万一新版本异常，还能用备份恢复。
+				// 备份失败只记录、不阻断升级——备份目录权限问题不该让用户
+				// 卡在"无法升级"，升级本身已通过完整性校验。
+				backupMsg := ""
+				if path, err := svcCtx.Database.BackupTo(backupDir(svcCtx), svcCtx.Config.Backup.MaxKeep); err != nil {
+					logx.Errorf("pre-upgrade database backup failed: %v", err)
+					backupMsg = "（数据库自动备份失败: " + err.Error() + "）"
+				} else {
+					backupMsg = "，数据库已自动备份到 " + path
+				}
+
+				httpx.OkJson(w, map[string]any{
+					"success":    true,
+					"message":    "新版本已下载并校验通过，即将重启生效" + backupMsg,
+					"restarting": true,
+				})
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					mgr.RequestQuit("HTTP /api/v1/system/self-update")
 				}()
 			},
 		},
@@ -228,6 +338,15 @@ func parseLimit(raw string, def, max int) int {
 		return max
 	}
 	return n
+}
+
+// backupDir 返回数据库备份目录：优先配置的 Backup.Dir，留空时取
+// <Mihomo.ConfigDir>/backups（容器镜像已预建 /data/backups，两者一致）。
+func backupDir(svcCtx *svc.ServiceContext) string {
+	if dir := strings.TrimSpace(svcCtx.Config.Backup.Dir); dir != "" {
+		return dir
+	}
+	return filepath.Join(svcCtx.Config.Mihomo.ConfigDir, "backups")
 }
 
 // notifyReloadSignal 注册重载信号。信号常量随平台不同，

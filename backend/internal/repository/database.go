@@ -72,6 +72,19 @@ func NewDatabase(dsn string) (*Database, error) {
 		return nil, fmt.Errorf("failed to connect to sqlite database: %w", err)
 	}
 
+	// Schema 版本迁移必须跑在 AutoMigrate 之前：AutoMigrate 只会增量加列，
+	// 删列/改型/数据转换这类破坏性变更只能由 migrateSchema 完成；迁移后的
+	// 结构再交给 AutoMigrate 兜底对齐新增字段。迁移列表为空时是纯空操作。
+	// 两个失败路径都要关掉已建立的连接：migrateSchema 的"数据库版本高于
+	// 当前二进制"就是拒绝启动的场景，不关连接会一直锁着 SQLite 文件，
+	// 用户换回新二进制后仍可能撞上 "database is locked"。
+	if err := migrateSchema(db); err != nil {
+		if sqlDB, closeErr := db.DB(); closeErr == nil {
+			_ = sqlDB.Close()
+		}
+		return nil, fmt.Errorf("failed to migrate schema: %w", err)
+	}
+
 	if err := db.AutoMigrate(
 		&model.Subscription{},
 		&model.Config{},

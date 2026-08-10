@@ -194,6 +194,7 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.sha256
             dist/SHA256SUMS.txt
           generate_release_notes: true
           body: |

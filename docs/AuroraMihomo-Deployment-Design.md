@@ -517,20 +517,46 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 
 # 8. Upgrade System
 
-Components:
+## AuroraMihomo（主程序）
 
-## AuroraMihomo
+**面板内一键自升级**（需在配置 `Updater.SelfRepo` 填主程序仓库，形如
+`owner/AuroraMihomo`）：
 
--   image update
+1. `GET /api/v1/system/self-update/check` 对比当前版本与 GitHub 最新 release；
+2. `POST /api/v1/system/self-update`：下载与官方同名的
+   `auroramihomo_<tag>_<goos>_<goarch>.tar.gz|.zip` 资产 → 与发布时附带的
+   `.sha256` 比对完整性 → 临时目录验证新二进制可执行（`-version`）→
+   暂存为 `<自身路径>.new` → **自动备份数据库** → 触发优雅关停；
+3. 关停流程在释放数据库后调用 `SwapSelfBinary`：Unix 直接 rename 覆盖自身，
+   Windows 先把自身改名为 `.old` 再把 `.new` 改回（运行中 exe 无法覆盖、
+   但可重命名）；随后由进程管理器拉起新版；
+4. 启动早期 `CleanupStaleSelf` 清理 `.old` 残留，并保留待生效的 `.new`
+   （上次异常退出未及交换时，下次关停会继续完成升级）。
+
+**停机窗口说明**：自升级与 `/api/v1/system/restart` 相同，是"优雅退出、
+等进程管理器拉起"的语义（进程刻意不做 fork 自重启，见 Makefile 注释）。
+从关停到 supervisor（systemd `Restart=always` / docker `restart` /
+OpenRC `supervise-daemon` / NSSM）拉起新版之间，服务有秒级中断，属预期。
+
+**升级路径约束**：
+
+- 依赖进程管理器拉起，`start-stop-daemon` 不满足（见 §OpenRC 单元）；
+- Windows 上替换成功后遗留的 `.old` 由下次启动清理，两个文件共存只是中间态；
+- 升级前的数据库自动备份失败仅记录不阻断（备份目录权限问题不该卡死升级，
+  升级本身已通过 sha256 与可执行性校验）。
+
+**install.sh 离线/命令行升级**：`scripts/install.sh` 走"停服 → 校验 → 解压 →
+保留配置 → 覆盖 → 重启"，升级前在运行的服务装完会恢复运行（含 `--no-start`
+场景）。配置保留见 §4，服务单元保留现有文件。
 
 ## Mihomo
 
 -   version check
--   binary replace
+-   binary replace（更新前先备份为 `.bak`，解压产物先经临时校验再覆盖）
 
 ## Zashboard
 
--   static asset update
+-   static asset update（目录级 .bak + 失败回滚）
 
 ## Sub-Store
 
@@ -540,21 +566,26 @@ Components:
 
 # 9. Backup
 
-Before update:
+## 数据库在线备份
 
-    backup/
+- `POST /api/v1/system/backup`：`VACUUM INTO` 生成独立副本
+  `aurora-<时间戳>.db`，无需停服；落盘目录取配置 `Backup.Dir`，留空为
+  `<Mihomo.ConfigDir>/backups`（容器镜像已预建 `/data/backups`）；
+  按 `Backup.MaxKeep`（默认 7）保留最近份数，更旧自动清理。
+- 主程序自升级前会自动执行一次同样的备份。
+- 前端入口：系统设置 →「主程序升级与备份」→「立即备份」。
 
-    config.yaml
+## 恢复步骤
 
-    database
+1. 停服：`systemctl stop auroramihomo`（或 `docker stop`）；
+2. 用备份文件替换数据文件（默认 `data/aurora.db`），删除同目录的
+   `-wal` / `-shm` 残留（它们是旧库的 WAL 附属，与新库不匹配）；
+3. 重启并确认。备份文件本身是完整数据库，可用 `sqlite3` 直接打开核对。
 
-    runtime
+## Rollback
 
-Rollback:
-
-    restore
-
-    restart
+    恢复备份 → 重启（备份覆盖的是数据库与磁盘配置，`config.yaml`
+    另有合并前自动备份，见 ConfigService）
 
 ------------------------------------------------------------------------
 

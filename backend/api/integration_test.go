@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"auroramihomo/backend/api/internal/svc"
 	"auroramihomo/backend/internal/auth"
 	"auroramihomo/backend/internal/model"
+	"auroramihomo/backend/internal/service"
 	"github.com/zeromicro/go-zero/rest"
 )
 
@@ -206,4 +209,105 @@ func findTaskByName(tasks []model.Task, name string) *model.Task {
 		}
 	}
 	return nil
+}
+
+// /system/backup 应鉴权可用，并在配置的目录下生成可读的备份文件。
+// 同时验证未登录访问返回 401（system 路由与其它受保护路由一致）。
+func TestSystemBackup(t *testing.T) {
+	dir := t.TempDir()
+	backupDir := filepath.Join(dir, "backups")
+
+	cfg := config.Config{}
+	cfg.DataSource = filepath.Join(dir, "test_backup.db")
+	cfg.Mihomo.ConfigDir = dir
+	cfg.Backup.Dir = backupDir
+	cfg.Backup.MaxKeep = 3
+	cfg.Auth.AccessSecret = "secret33456789012345678901234567"
+	cfg.Auth.AccessExpire = 3600
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 8892
+
+	ctx := svc.NewServiceContext(cfg)
+	t.Cleanup(func() { _ = ctx.Database.Close() })
+	server := rest.MustNewServer(cfg.RestConf)
+	defer server.Stop()
+	handler.RegisterHandlers(server, ctx)
+	applyAuthHardening(server, ctx)
+	// system 路由由 main() 单独挂载，测试须同样显式挂载
+	registerSystemRoutes(server, ctx, service.NewReloadManager())
+
+	go server.Start()
+	time.Sleep(1 * time.Second)
+
+	client := &http.Client{}
+
+	// 未登录访问应 401
+	reqNoAuth, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8892/api/v1/system/backup", nil)
+	respNoAuth, err := client.Do(reqNoAuth)
+	if err != nil {
+		t.Fatalf("请求失败: %v", err)
+	}
+	_ = respNoAuth.Body.Close()
+	if respNoAuth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未登录访问 /system/backup 应 401，实际 %d", respNoAuth.StatusCode)
+	}
+
+	// 登录取 token
+	hashed, err := auth.HashPassword("backup-test-pass")
+	if err != nil {
+		t.Fatalf("生成口令哈希失败: %v", err)
+	}
+	if err := ctx.Database.SetSetting("admin_password", hashed); err != nil {
+		t.Fatalf("写入口令失败: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{"password": "backup-test-pass"})
+	reqLogin, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8892/api/v1/auth/login", bytes.NewBuffer(body))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	respLogin, err := client.Do(reqLogin)
+	if err != nil {
+		t.Fatalf("登录请求失败: %v", err)
+	}
+	var loginResp map[string]string
+	_ = json.NewDecoder(respLogin.Body).Decode(&loginResp)
+	token := loginResp["token"]
+	if token == "" {
+		t.Fatal("未获取到登录令牌")
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8892/api/v1/system/backup", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("备份请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("备份应返回 200，实际 %d", resp.StatusCode)
+	}
+
+	var respBody map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if respBody["success"] != true {
+		t.Fatalf("备份响应 success 应为 true，实际 %v", respBody)
+	}
+
+	// 备份文件应落在配置的目录下，且文件名符合约定
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("读取备份目录失败: %v", err)
+	}
+	var found []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "aurora-") && strings.HasSuffix(e.Name(), ".db") {
+			found = append(found, e.Name())
+		}
+	}
+	if len(found) == 0 {
+		t.Fatalf("备份目录下没有生成备份文件")
+	}
+	if fi, err := os.Stat(filepath.Join(backupDir, found[0])); err != nil || fi.Size() == 0 {
+		t.Fatalf("备份文件不可读或为空: %v", err)
+	}
 }

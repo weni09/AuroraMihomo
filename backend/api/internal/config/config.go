@@ -67,6 +67,14 @@ type Config struct {
 		Enabled bool   `json:",default=false"`
 		Cron    string `json:",optional"` // 为空时由 updater 兜底为 0 0 4 * * *
 	}
+	// Backup 控制数据库在线备份的落盘位置与保留份数。
+	Backup struct {
+		// Dir 为备份文件目录；为空时取 <Mihomo.ConfigDir>/backups
+		//（容器镜像已预建 /data/backups，与 ConfigDir=/data 对齐）。
+		Dir string `json:",optional"`
+		// MaxKeep 保留的最近备份份数，超过即按时间清理最旧的。
+		MaxKeep int `json:",default=7"`
+	}
 	Updater struct {
 		MihomoRepo    string `json:",default=MetaCubeX/mihomo"`
 		ZashboardRepo string `json:",default=Zephyruso/zashboard"`
@@ -78,5 +86,9 @@ type Config struct {
 		// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理。
 		// 默认开启：内核跑起来后走它出网通常比第三方镜像更快也更可靠。
 		UseMihomoProxy bool `json:",default=true"`
+		// SelfRepo 为主程序（AuroraMihomo 自身）的 GitHub 仓库，形如
+		// "owner/AuroraMihomo"。为空表示不启用面板内一键自升级（仅提示
+		// 未配置）。部署方知道仓库地址（官方还是自建 fork），不做默认值。
+		SelfRepo string `json:",optional"`
 	}
 }

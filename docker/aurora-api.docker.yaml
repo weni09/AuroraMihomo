@@ -44,11 +44,20 @@ AutoUpdate:
   Enabled: false
   Cron: "0 0 4 * * *"
 
+# 数据库在线备份：目录留空取 <Mihomo.ConfigDir>/backups（即 /data/backups，
+# 镜像已预建），MaxKeep 保留最近份数。
+Backup:
+  Dir: ""
+  MaxKeep: 7
+
 Updater:
   MihomoRepo: "MetaCubeX/mihomo"
   ZashboardRepo: "Zephyruso/zashboard"
   GitHubAPI: "https://api.github.com"
   TimeoutSec: 180
+  # 主程序（AuroraMihomo 自身）仓库，形如 "owner/AuroraMihomo"。
+  # 留空则不启用面板内一键自升级。
+  SelfRepo: ""
   CDNProviders:
     - ghproxy.com
     - mirror.ghproxy.com

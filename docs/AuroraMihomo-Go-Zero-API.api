@@ -19,6 +19,23 @@ type Status {
 	Timezone string `json:"timezone,optional"`
 }
 
+// SelfUpdateCheck 主程序（AuroraMihomo 自身）自升级检查结果。
+type SelfUpdateCheck {
+	// Configured 是否已配置主程序仓库（Updater.SelfRepo）；未配置时
+	// 仅 currentVersion 有意义，无法判断是否有新版
+	Configured bool `json:"configured"`
+	// CurrentVersion 当前运行版本（未注入时为 dev）
+	CurrentVersion string `json:"currentVersion"`
+	// LatestVersion 远端最新 release tag，查询失败时为空串
+	LatestVersion string `json:"latestVersion"`
+	// UpdateAvailable 是否存在可升级的新版本
+	UpdateAvailable bool `json:"updateAvailable"`
+	// Error 版本查询失败的原因（远端不可达等），空串表示正常
+	Error string `json:"error,omitempty"`
+	// Message 面向用户的提示（已最新 / 有新版本 / 未配置 / 查询失败）
+	Message string `json:"message,optional"`
+}
+
 // SystemStats 宿主服务器资源快照。网络速率为「自上次查询以来的平均速率」
 // （后端保存上次采样做差分），因此两次查询间隔越短，速率越接近瞬时值。
 type SystemStats {
@@ -805,6 +822,17 @@ service aurora-api {
 
 	@handler systemStats
 	get /api/v1/system/stats returns (SystemStats)
+
+	// 主程序自升级：以下三个端点经手写路由注册（见 backend/api/system.go
+	// registerSystemRoutes），不参与 goctl 生成，此处声明仅为对外契约同步。
+	@handler systemBackup
+	post /api/v1/system/backup returns (Result)
+
+	@handler selfUpdateCheck
+	get /api/v1/system/self-update/check returns (SelfUpdateCheck)
+
+	@handler selfUpdate
+	post /api/v1/system/self-update returns (Result)
 
 	@handler dashboardEntry
 	get /api/v1/dashboard/entry returns (DashboardEntryResp)
