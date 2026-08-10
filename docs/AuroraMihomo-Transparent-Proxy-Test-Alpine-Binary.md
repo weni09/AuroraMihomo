@@ -236,7 +236,6 @@ command="/opt/auroramihomo/auroramihomo"
 command_args="-f etc/aurora-api.yaml"
 command_user="root:root"
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
 pidfile="/run/auroramihomo.pid"
 depend() { need net; after firewall; }
 ```

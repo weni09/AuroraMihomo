@@ -296,9 +296,12 @@ command_args="-f etc/aurora-api.yaml"
 command_user="root:root"
 
 # supervise-daemon 才有进程退出后重新拉起的能力，
-# /api/v1/system/restart 依赖这一点
+# /api/v1/system/restart 依赖这一点。
+# 不重定向 stdout/stderr（supervise-daemon 会丢弃）：面板自身已把应用
+# 日志写入 $INSTALL_DIR/data/logs/aurora.log（AppLog.ToFile 默认开启），
+# 且受「系统设置 · 日志」的清理任务管理；再往 /var/log 写一份既重复
+# 又不受清理，长期占用根分区。
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
 pidfile="/run/auroramihomo.pid"
 
 depend() {
@@ -340,7 +343,7 @@ start_service() {
 		if run_cmd rc-service auroramihomo restart; then
 			started=1
 		else
-			warn "启动失败，请查看 /var/log/auroramihomo.log"
+			warn "启动失败，请查看 $INSTALL_DIR/data/logs/aurora.log"
 		fi
 		;;
 	esac
@@ -648,7 +651,7 @@ else
 		echo "  rc-update add auroramihomo default && rc-service auroramihomo start"
 	fi
 	echo "查看日志："
-	echo "  tail -f /var/log/auroramihomo.log"
+	echo "  tail -f $INSTALL_DIR/data/logs/aurora.log"
 fi
 
 echo

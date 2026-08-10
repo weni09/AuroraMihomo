@@ -358,9 +358,10 @@ command_args="-f etc/aurora-api.yaml"
 command_user="root:root"
 
 # supervise-daemon 才有进程退出后重新拉起的能力，
-# /api/v1/system/restart 依赖这一点
+# /api/v1/system/restart 依赖这一点。
+# 不重定向 stdout/stderr：应用日志由面板自身写 data/logs/aurora.log
+# 并受日志清理任务管理，不再往 /var/log 写重复副本。
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/auroramihomo.log --stderr /var/log/auroramihomo.log"
 pidfile="/run/auroramihomo.pid"
 
 depend() {
@@ -374,7 +375,7 @@ chmod +x /etc/init.d/auroramihomo
 rc-update add auroramihomo default
 rc-service auroramihomo start
 rc-service auroramihomo status
-tail -f /var/log/auroramihomo.log
+tail -f /opt/auroramihomo/data/logs/aurora.log
 ```
 
 装好后 `ps` 里应能看到 supervise-daemon 在监管（带
