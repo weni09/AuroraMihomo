@@ -244,10 +244,11 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	)
 	// 开机持久化（Linux）：把已确认的 TProxy 规则写入宿主开机链路，
 	// 宿主重启后自动恢复。只在 Linux 构造——写入 /etc 需要 root 且
-	// 依赖 OpenRC/rc-update；其它平台保持 nil，行为与旧版一致。
+	// 依赖 init 系统（systemd/OpenRC）；其它平台保持 nil，行为与旧版一致。
 	if runtime.GOOS == "linux" {
 		transparentSvc.SetBootPersist(&netcheck.BootPersist{
 			Root:   "/",
+			Init:   netcheck.DetectInitSystem(),
 			Runner: netcheck.NewExecRunner(),
 			Logf:   logx.Infof,
 		})

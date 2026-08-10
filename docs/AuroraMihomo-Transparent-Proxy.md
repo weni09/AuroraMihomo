@@ -788,13 +788,17 @@ TProxy 生效需要两半，缺一半都不通：
   `ReconcileState` 处理，启动时探测 `aurora_tproxy` 表是否还存在，
   不存在则回落为关闭——不会静默重新下发规则（那等于绕过了确认窗口），
   用户需要重新走一次启用流程。两者均在启动时、配置合并之前执行。
-- **TProxy 开机自动恢复（OpenRC/Alpine）**。自 v0.6.0 起，面板会把**已确认生效**的
-  TProxy 规则集与策略路由持久化为 `/etc/aurora-tproxy.nft` + `/etc/init.d/aurora-tproxy`
-  并注册 `rc-update add aurora-tproxy default`：宿主重启后规则自动恢复，无需手动重新启用。
-  恢复的是「上次确认过的参数快照」（不涉及新参数，与 90 秒确认窗口不冲突）；
-  参数变更或关闭 TProxy 时面板会自动重写/删除持久化文件。旧部署升级到 v0.6.0 后，
-  首次启动即自动补齐持久化。仅 OpenRC（Alpine 等）支持；systemd 平台本版未实现，
-  仍按「重启后手动启用」处理。持久化失败（非 root、/etc 只读）时降级为旧行为并记日志。
+- **TProxy 开机自动恢复（OpenRC 与 systemd）**。自 v0.6.0 起支持 OpenRC（Alpine），
+  v0.7.0 起扩展 systemd（Debian/Ubuntu）。面板把**已确认生效**的 TProxy 规则集与策略路由
+  持久化为 `/etc/aurora-tproxy.nft` + `/etc/aurora-tproxy.sh`（命令序列脚本），并注册开机服务：
+  - OpenRC：`/etc/init.d/aurora-tproxy` + `rc-update add aurora-tproxy default`
+  - systemd：`/etc/systemd/system/aurora-tproxy.service`（oneshot，`Before=auroramihomo.service`）
+    + `systemctl enable aurora-tproxy`
+
+  宿主重启后规则自动恢复，无需手动重新启用。恢复的是「上次确认过的参数快照」（不涉及
+  新参数，与 90 秒确认窗口不冲突）；参数变更或关闭 TProxy 时面板会自动重写/删除持久化文件。
+  旧部署升级后首次启动即自动补齐持久化。持久化失败（非 root、/etc 只读）时降级为旧行为
+  并记日志。
 - **同时存在其它 VPN 的 TUN 设备**时可能冲突。
 - **iptables legacy 与 nft 后端混用**的机器上，规则可能看着存在却永不匹配。
   检测会报告当前后端，但无法自动解决。
