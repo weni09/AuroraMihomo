@@ -183,8 +183,7 @@ func TestSelfUpdateStageAndSwap(t *testing.T) {
 	archive, name := selfUpdateAsset(t)
 	sum := sha256.Sum256(archive)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			w.Header().Set("Content-Type", "application/json")
@@ -290,8 +289,7 @@ func archiveContentOf(t *testing.T, archive []byte) []byte {
 func TestSelfUpdateRejectsChecksumMismatch(t *testing.T) {
 	archive, name := selfUpdateAsset(t)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			w.Header().Set("Content-Type", "application/json")
@@ -341,8 +339,7 @@ func TestSelfUpdateFallsBackToSumsFile(t *testing.T) {
 	archive, name := selfUpdateAsset(t)
 	sum := sha256.Sum256(archive)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			w.Header().Set("Content-Type", "application/json")
@@ -408,8 +405,7 @@ func TestSelfUpdateInProgressRejectsSecondCall(t *testing.T) {
 	archive, name := selfUpdateAsset(t)
 	sum := sha256.Sum256(archive)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			w.Header().Set("Content-Type", "application/json")

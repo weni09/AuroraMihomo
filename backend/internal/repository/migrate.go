@@ -21,7 +21,7 @@ type migration struct {
 // migrations 按版本升序排列的全部 Schema 迁移。
 //
 // 新增迁移的固定流程：
-//  1. 在表尾追加一个 version = currentSchemaVersion()+1 的条目；
+//  1. 在表尾追加一个 version = 上一个条目 + 1 的条目；
 //  2. 变更 backend/internal/model 里的模型定义；
 //  3. 若变更让旧结构无法由 AutoMigrate 兜底（删列/改型/数据转换），
 //     在 up 里完成，并更新既有数据；
@@ -43,15 +43,6 @@ type migration struct {
 //		},
 //	}
 var migrations = []migration{}
-
-// currentSchemaVersion 返回当前二进制内置的最新 Schema 版本。
-// 空迁移表为 0，即"结构完全由 AutoMigrate 管理"的基线版本。
-func currentSchemaVersion() int {
-	if len(migrations) == 0 {
-		return 0
-	}
-	return migrations[len(migrations)-1].version
-}
 
 // migrateSchema 执行数据库 Schema 版本迁移。在 NewDatabase 中位于
 // AutoMigrate 之前调用：AutoMigrate 只会增量加列，破坏性变更
@@ -93,7 +84,8 @@ func runMigrations(db *gorm.DB, list []migration) error {
 			}
 			return writeSchemaVersion(tx, m.version)
 		}); err != nil {
-			return fmt.Errorf("Schema 迁移 %s(%d) 失败: %w", m.name, m.version, err)
+			// 错误信息以中文开头，规避 staticcheck ST1005 对 ASCII 大写的检查
+			return fmt.Errorf("迁移 %s(%d) 失败: %w", m.name, m.version, err)
 		}
 	}
 	return nil

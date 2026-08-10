@@ -41,17 +41,19 @@ func TestUpdateMihomoBacksUpExistingBinary(t *testing.T) {
 	assetName := fmt.Sprintf("mihomo-%s-%s-v1.2.3.gz", runtime.GOOS, runtime.GOARCH)
 	dir := t.TempDir()
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			w.Header().Set("Content-Type", "application/json")
+			// r.Host 即本 mock 服务器地址：assets 的下载地址指向自己。
+			// 用请求 host 而非闭包引用 srv，避免 httptest.NewServer 的
+			// 初始化表达式里引用自身变量（Go 的 := 左侧在右侧不可见）。
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"tag_name": "v1.2.3",
 				"assets": []map[string]any{
 					{
 						"name":                 assetName,
-						"browser_download_url": srv.URL + "/assets/" + assetName,
+						"browser_download_url": "http://" + r.Host + "/assets/" + assetName,
 						"size":                 len(gzBytes),
 					},
 				},
