@@ -219,6 +219,7 @@ func toUpdateSettings(svcCtx *svc.ServiceContext, st updater.RuntimeSettings) *t
 		AutoUpdateCron:    st.AutoUpdateCron,
 		CDNProviders:      st.CDNProviders,
 		UseMihomoProxy:    st.UseMihomoProxy,
+		SelfRepo:          st.SelfRepo,
 		MihomoProxyUrl:    st.MihomoProxyURL,
 		MihomoPath:        st.MihomoPath,
 		ZashboardDir:      st.ZashboardDir,

@@ -531,10 +531,12 @@ type UpdateBaseConfigReq struct {
 }
 
 type UpdateSettings struct {
-	AutoUpdateEnabled  bool     `json:"autoUpdateEnabled"`
-	AutoUpdateCron     string   `json:"autoUpdateCron"`
-	CDNProviders       []string `json:"cdnProviders"`
-	UseMihomoProxy     bool     `json:"useMihomoProxy"`
+	AutoUpdateEnabled bool     `json:"autoUpdateEnabled"`
+	AutoUpdateCron    string   `json:"autoUpdateCron"`
+	CDNProviders      []string `json:"cdnProviders"`
+	UseMihomoProxy    bool     `json:"useMihomoProxy"`
+	// SelfRepo 主程序（AuroraMihomo 自身）仓库，空串 = 显式停用面板内自升级
+	SelfRepo           string   `json:"selfRepo"`
 	MihomoProxyUrl     string   `json:"mihomoProxyUrl"`
 	MihomoPath         string   `json:"mihomoPath"`
 	ZashboardDir       string   `json:"zashboardDir"`
@@ -555,6 +557,7 @@ type UpdateSettingsReq struct {
 	AutoUpdateCron     string   `json:"autoUpdateCron,optional"`
 	CDNProviders       []string `json:"cdnProviders,optional"`
 	UseMihomoProxy     *bool    `json:"useMihomoProxy,optional"`
+	SelfRepo           *string  `json:"selfRepo,optional"`
 	LogRetentionDays   *int     `json:"logRetentionDays,optional"`
 	LogCleanupCron     string   `json:"logCleanupCron,optional"`
 	LogCleanupEnabled  *bool    `json:"logCleanupEnabled,optional"`

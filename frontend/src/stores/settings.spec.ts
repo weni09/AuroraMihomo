@@ -71,4 +71,33 @@ describe('useSettingsStore self-update & backup', () => {
     await store.updateSelf()
     expect(mockedApi.post).not.toHaveBeenCalled()
   })
+
+  it('save 携带 selfRepo 到 PUT /settings/update', async () => {
+    mockedApi.put.mockResolvedValue({
+      data: {
+        autoUpdateEnabled: true,
+        autoUpdateCron: '0 0 4 * * *',
+        cdnProviders: [],
+        useMihomoProxy: true,
+        selfRepo: 'myuser/AuroraMihomo',
+        mihomoPath: '',
+        zashboardDir: '',
+        mihomoPresent: false,
+        zashboardPresent: false,
+        defaultCDN: [],
+        logRetentionDays: 7,
+        logCleanupCron: '0 30 3 * * *',
+        logCleanupEnabled: true,
+        monitorEnabled: true,
+        monitorIntervalSec: 3,
+      },
+    })
+    const store = useSettingsStore()
+    await store.save({ selfRepo: 'myuser/AuroraMihomo' })
+    expect(mockedApi.put).toHaveBeenCalledWith(
+      '/settings/update',
+      expect.objectContaining({ selfRepo: 'myuser/AuroraMihomo' }),
+    )
+    expect(store.settings?.selfRepo).toBe('myuser/AuroraMihomo')
+  })
 })

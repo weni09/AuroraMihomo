@@ -601,6 +601,10 @@ type UpdateSettings {
 	CDNProviders []string `json:"cdnProviders"`
 	// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理
 	UseMihomoProxy bool `json:"useMihomoProxy"`
+	// SelfRepo 主程序（AuroraMihomo 自身）的发布仓库。
+	// 空串 = 显式停用面板内自升级；未配置时由后端兜底默认
+	// weni09/AuroraMihomo。
+	SelfRepo string `json:"selfRepo"`
 	// MihomoProxyUrl 为当前探测到的代理地址，未就绪时为空串
 	MihomoProxyUrl   string `json:"mihomoProxyUrl"`
 	MihomoPath       string `json:"mihomoPath"`
@@ -629,6 +633,8 @@ type UpdateSettingsReq {
 	AutoUpdateCron    string   `json:"autoUpdateCron,optional"`
 	CDNProviders      []string `json:"cdnProviders,optional"`
 	UseMihomoProxy    *bool    `json:"useMihomoProxy,optional"`
+	// SelfRepo 主程序仓库，nil 表示不修改；空串 = 停用面板内自升级
+	SelfRepo *string `json:"selfRepo,optional"`
 	// LogRetentionDays 日志保留天数，取值夹到 [1, 365]
 	LogRetentionDays *int `json:"logRetentionDays,optional"`
 	// LogCleanupCron 清理调度，空串表示不修改

@@ -30,6 +30,7 @@ func (l *PutUpdateSettingsLogic) PutUpdateSettings(req *types.UpdateSettingsReq)
 		AutoUpdateCron:     req.AutoUpdateCron,
 		CDNProviders:       req.CDNProviders,
 		UseMihomoProxy:     req.UseMihomoProxy,
+		SelfRepo:           req.SelfRepo,
 		LogRetentionDays:   req.LogRetentionDays,
 		LogCleanupCron:     req.LogCleanupCron,
 		LogCleanupEnabled:  req.LogCleanupEnabled,

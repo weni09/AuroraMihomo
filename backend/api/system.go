@@ -191,7 +191,7 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 						"configured":     false,
 						"currentVersion": check.CurrentVersion,
 						"error":          err.Error(),
-						"message":        "主程序自升级未配置（请在配置中填写 Updater.SelfRepo）",
+						"message":        "主程序自升级未配置（可在「系统设置 · 下载与更新出网」中填写主程序仓库，留空则停用）",
 					})
 					return
 				}

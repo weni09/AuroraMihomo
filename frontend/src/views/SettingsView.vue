@@ -28,6 +28,8 @@ const form = reactive({
   cdnText: '',
   // 出网优先走本地内核代理，失败再回落镜像/直连
   useMihomoProxy: true,
+  // 主程序仓库：留空 = 停用面板内自升级
+  selfRepo: '',
   // 应用日志归档的保留天数
   logRetentionDays: 7,
   logCleanupEnabled: true,
@@ -97,6 +99,7 @@ function syncForm() {
   form.autoUpdateCron = store.settings.autoUpdateCron
   form.cdnText = (store.settings.cdnProviders || []).join('\n')
   form.useMihomoProxy = store.settings.useMihomoProxy !== false
+  form.selfRepo = store.settings.selfRepo || ''
   form.logRetentionDays = store.settings.logRetentionDays || 7
   form.logCleanupEnabled = store.settings.logCleanupEnabled !== false
   form.logCleanupCron = store.settings.logCleanupCron || '0 30 3 * * *'
@@ -120,7 +123,7 @@ const zashboardVersionText = computed(
 const selfUpdateHint = computed(() => {
   const info = store.selfUpdateInfo
   if (!info) return '点击「检查主程序更新」查看是否有新版本'
-  if (!info.configured) return info.message || '自升级未配置（Updater.SelfRepo）'
+  if (!info.configured) return info.message || '主程序仓库未配置，可在「下载与更新出网」中填写（留空则停用自升级）'
   if (info.message) return info.message
   return info.updateAvailable
     ? `发现新版本 ${info.latestVersion ?? ''}`
@@ -159,6 +162,8 @@ async function onSave() {
     autoUpdateCron: form.autoUpdateCron,
     cdnProviders: parseList(form.cdnText),
     useMihomoProxy: form.useMihomoProxy,
+    // 主程序仓库 trim 后提交：空串 = 停用自升级
+    selfRepo: form.selfRepo.trim(),
     // Input 是封装组件，v-model.number 修饰符不会透传，输入会是字符串，
     // 显式转数字再提交（空值回退 7 与 syncForm 的兜底一致）
     logRetentionDays: Number(form.logRetentionDays) || 7,
@@ -1108,6 +1113,22 @@ const navOpen = ref(false)
             检查更新（<code>api.github.com</code>）不使用这些源：没有镜像代理 GitHub 的 REST API，
             套上前缀只会得到 404。该请求一律直连官方，网络不通时由上面的 Mihomo 代理兜底。
           </p>
+
+          <div class="mt-5">
+            <Label for="self-repo" class="text-sm font-semibold text-fg">主程序仓库</Label>
+            <Input
+              id="self-repo"
+              v-model="form.selfRepo"
+              class="mt-1.5 font-mono text-sm"
+              placeholder="weni09/AuroraMihomo"
+            />
+            <p class="text-xs text-fg-subtle mt-1.5">
+              主程序（AuroraMihomo 自身）自升级的发布仓库，形如
+              <code>owner/AuroraMihomo</code>。默认
+              <code>weni09/AuroraMihomo</code>；fork 用户请改成自己的仓库。
+              留空保存即停用「系统设置 · 主程序升级」的面板内自升级。
+            </p>
+          </div>
         </section>
 
         <!-- 服务器资源监控：控制台资源卡片的开关与刷新节奏。

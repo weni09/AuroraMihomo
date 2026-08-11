@@ -56,7 +56,8 @@ Updater:
   GitHubAPI: "https://api.github.com"
   TimeoutSec: 180
   # 主程序（AuroraMihomo 自身）仓库，形如 "owner/AuroraMihomo"。
-  # 留空则不启用面板内一键自升级。
+  # 留空时默认 weni09/AuroraMihomo；可在「系统设置 · 下载与更新出网」
+  # 运行期修改，清空保存即停用面板内自升级。
   SelfRepo: ""
   CDNProviders:
     - ghproxy.com

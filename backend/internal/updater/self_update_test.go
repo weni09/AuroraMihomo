@@ -26,10 +26,48 @@ import (
 // 未配置 SelfRepo 时，检查接口必须返回 ErrSelfRepoNotConfigured，
 // 而不是请求一个错误的默认仓库地址。
 func TestCheckSelfUpdateNotConfigured(t *testing.T) {
+	// 显式清空仓库 = 停用自升级，即使默认值存在也报未配置
 	m := New(Config{DataDir: t.TempDir()})
+	m.SetSelfRepo("")
 	_, err := m.CheckSelfUpdate(context.Background())
 	if !errors.Is(err, ErrSelfRepoNotConfigured) {
-		t.Fatalf("未配置仓库应返回 ErrSelfRepoNotConfigured，实际 %v", err)
+		t.Fatalf("清空仓库后应返回 ErrSelfRepoNotConfigured，实际 %v", err)
+	}
+}
+
+// SelfRepo 默认值为 weni09/AuroraMihomo；SetSelfRepo 可覆盖或清空（清空=停用）。
+func TestSelfRepoDefaultAndSetter(t *testing.T) {
+	m := New(Config{DataDir: t.TempDir()})
+	if got := m.SelfRepo(); got != DefaultSelfRepo {
+		t.Fatalf("默认仓库应为 %q，实际 %q", DefaultSelfRepo, got)
+	}
+
+	// 覆盖为自建仓库
+	m.SetSelfRepo("myuser/AuroraMihomo")
+	if got := m.SelfRepo(); got != "myuser/AuroraMihomo" {
+		t.Fatalf("SetSelfRepo 后应生效，实际 %q", got)
+	}
+	if !m.SelfRepoConfigured() {
+		t.Fatal("有效仓库应判定为已配置")
+	}
+
+	// 幂等：重复设置同一值
+	m.SetSelfRepo("  myuser/AuroraMihomo  ")
+	if got := m.SelfRepo(); got != "myuser/AuroraMihomo" {
+		t.Fatalf("重复设置应幂等且 trim，实际 %q", got)
+	}
+
+	// 清空 = 显式停用
+	m.SetSelfRepo("")
+	if m.SelfRepo() != "" {
+		t.Fatalf("清空后 SelfRepo 应为空，实际 %q", m.SelfRepo())
+	}
+	if m.SelfRepoConfigured() {
+		t.Fatal("空仓库应判定为未配置")
+	}
+	// 清空后 CheckSelfUpdate 报未配置（不允许从空仓库拉取）
+	if _, err := m.CheckSelfUpdate(context.Background()); !errors.Is(err, ErrSelfRepoNotConfigured) {
+		t.Fatalf("空仓库检查应报未配置，实际 %v", err)
 	}
 }
 

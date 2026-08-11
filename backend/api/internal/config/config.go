@@ -87,8 +87,9 @@ type Config struct {
 		// 默认开启：内核跑起来后走它出网通常比第三方镜像更快也更可靠。
 		UseMihomoProxy bool `json:",default=true"`
 		// SelfRepo 为主程序（AuroraMihomo 自身）的 GitHub 仓库，形如
-		// "owner/AuroraMihomo"。为空表示不启用面板内一键自升级（仅提示
-		// 未配置）。部署方知道仓库地址（官方还是自建 fork），不做默认值。
+		// "owner/AuroraMihomo"。留空时由 updater 兜底为默认
+		// "weni09/AuroraMihomo"；运行期可在「系统设置 · 下载与更新出网」
+		// 修改（存库），此配置仅作启动默认。设置页清空保存即停用自升级。
 		SelfRepo string `json:",optional"`
 	}
 }

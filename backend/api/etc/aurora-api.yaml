@@ -76,8 +76,8 @@ Updater:
   UseMihomoProxy: true
 
   # 主程序（AuroraMihomo 自身）的 GitHub 仓库，形如 "owner/AuroraMihomo"。
-  # 填了之后，「系统设置 · 主程序升级」即可一键检查/升级并自动重启；
-  # 留空则不启用面板内自升级（界面会提示未配置）。
+  # 留空时默认 weni09/AuroraMihomo；运行期可在「系统设置 · 下载与更新出网」
+  # 修改（存库，重启保留），设置页清空保存即停用面板内自升级。
   SelfRepo: ""
 
   # Release 资产（内核/面板二进制）的下载源，顺序即优先级。

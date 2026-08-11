@@ -40,8 +40,9 @@ type Config struct {
 	AdGuardRepo string
 	GitHubAPI   string
 	// SelfRepo 为主程序（AuroraMihomo 自身）所在的 GitHub 仓库，
-	// 形如 "owner/AuroraMihomo"。为空表示未配置，自升级功能不可用
-	//（CheckSelfUpdate 返回 ErrSelfRepoNotConfigured）。
+	// 形如 "owner/AuroraMihomo"。为空时由 New 兜底为默认
+	// "weni09/AuroraMihomo"（本仓库作者维护的默认发布仓库），
+	// 运行期可在设置页修改；显式清空表示停用面板内自升级。
 	SelfRepo string
 	// SelfBinaryPath 为主程序自身二进制的路径。为空时取 os.Executable()
 	//（当前运行中的进程路径），测试可注入假路径。
@@ -64,6 +65,9 @@ type RuntimeSettings struct {
 	CDNProviders      []string `json:"cdnProviders"`
 	// UseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	UseMihomoProxy bool `json:"useMihomoProxy"`
+	// SelfRepo 为主程序（AuroraMihomo 自身）的仓库，运行期可配置。
+	// 空串表示显式停用面板内自升级（此时 CheckSelfUpdate 报未配置）。
+	SelfRepo string `json:"selfRepo"`
 	// MihomoProxyURL 为当前探测到的代理地址，未就绪时为空串
 	MihomoProxyURL   string `json:"mihomoProxyUrl"`
 	MihomoPath       string `json:"mihomoPath"`
@@ -149,6 +153,12 @@ func New(cfg Config) *Manager {
 	}
 	if cfg.GitHubAPI == "" {
 		cfg.GitHubAPI = "https://api.github.com"
+	}
+	if cfg.SelfRepo == "" {
+		// 默认主程序仓库：与组件 repo 的默认值兜底同款惯例。
+		// 用户可在设置页改成自己的 fork 或自建仓库；显式清空（存库空串）
+		// 才是"停用自升级"，这里的空值仅指"未配置"，不拦截。
+		cfg.SelfRepo = DefaultSelfRepo
 	}
 	if cfg.HTTPTimeoutSeconds <= 0 {
 		cfg.HTTPTimeoutSeconds = 120
@@ -280,6 +290,23 @@ func (m *Manager) UseMihomoProxy() bool {
 	return m.cfg.UseMihomoProxy
 }
 
+// SelfRepo 返回主程序仓库的当前配置值。
+// 空串表示显式停用面板内自升级；否则为有效仓库地址（默认
+// weni09/AuroraMihomo，可经设置页 / SetSelfRepo 修改）。
+func (m *Manager) SelfRepo() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return strings.TrimSpace(m.cfg.SelfRepo)
+}
+
+// SetSelfRepo 运行期修改主程序仓库。传空串 = 显式停用自升级。
+// 幂等：重复设置同一值安全。
+func (m *Manager) SetSelfRepo(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.SelfRepo = strings.TrimSpace(repo)
+}
+
 func (m *Manager) GetSettings() RuntimeSettings {
 	m.mu.RLock()
 	proxyEnabled := m.cfg.UseMihomoProxy
@@ -288,6 +315,7 @@ func (m *Manager) GetSettings() RuntimeSettings {
 		AutoUpdateCron:    m.cfg.AutoUpdateCron,
 		CDNProviders:      append([]string{}, m.cfg.CDNProviders...),
 		UseMihomoProxy:    proxyEnabled,
+		SelfRepo:          strings.TrimSpace(m.cfg.SelfRepo),
 		MihomoPath:        m.cfg.MihomoBinaryPath,
 		ZashboardDir:      m.cfg.ZashboardDir,
 		MihomoPresent:     fileExists(m.cfg.MihomoBinaryPath),

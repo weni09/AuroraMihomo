@@ -27,6 +27,9 @@ const (
 	settingCDNProviders = "auto_update.cdn_providers"
 	// settingUseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	settingUseMihomoProxy = "auto_update.use_mihomo_proxy"
+	// settingSelfRepo 主程序（AuroraMihomo 自身）的仓库，运行期可配置。
+	// 空串 = 显式停用面板内自升级；未设置（首次启动）时用 updater 的默认值。
+	settingSelfRepo = "auto_update.self_repo"
 	// settingZashboardVersion 记录面板上次更新到的 release tag。
 	// 面板是纯静态资源，本地无法反查版本，只能在下载时记账。
 	settingZashboardVersion = "zashboard.version"
@@ -117,6 +120,13 @@ func (s *SettingsService) LoadAndApply() error {
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+	// 主程序仓库：读不到（首次启动）保持 updater.New 兜底的默认值；
+	// 存了空串 = 用户显式停用自升级，同样写回 updater。
+	if v, err := s.db.GetSetting(settingSelfRepo); err == nil {
+		s.updater.SetSelfRepo(v)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
 
 	// 日志保留天数：读不到（首次启动）时沿用默认值，不报错
 	if v, err := s.db.GetSetting(settingLogRetentionDays); err == nil {
@@ -172,6 +182,9 @@ type UpdateSettingsInput struct {
 	CDNProviders      []string `json:"cdnProviders,optional"`
 	// UseMihomoProxy 是否优先经由本地 mihomo 代理出网，nil 表示不修改
 	UseMihomoProxy *bool `json:"useMihomoProxy,optional"`
+	// SelfRepo 主程序（AuroraMihomo 自身）仓库，nil 表示不修改。
+	// 传空串 = 显式停用面板内自升级；传仓库地址即切换（可改成自建 fork）。
+	SelfRepo *string `json:"selfRepo,optional"`
 	// LogRetentionDays 应用日志文件保留天数，nil 表示不修改。
 	// 取值被夹到 [1, 365]，只影响轮转归档，不影响内存缓冲。
 	LogRetentionDays *int `json:"logRetentionDays,optional"`
@@ -246,6 +259,12 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 	if err := s.updater.ApplySettings(in.AutoUpdateEnabled, cronExpr, in.CDNProviders, in.UseMihomoProxy); err != nil {
 		return updater.RuntimeSettings{}, err
 	}
+	// 主程序仓库先应用再取快照：st.SelfRepo 必须是 SetSelfRepo 之后的新值，
+	// 否则下面落库会写进旧值（trim 前的原始输入）。
+	// 空串 = 显式停用，落库后下次启动 LoadAndApply 同样读到空串。
+	if in.SelfRepo != nil {
+		s.updater.SetSelfRepo(*in.SelfRepo)
+	}
 
 	// persist
 	st := s.updater.GetSettings()
@@ -261,6 +280,9 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 		return updater.RuntimeSettings{}, err
 	}
 	if err := s.db.SetSetting(settingUseMihomoProxy, boolToStr(st.UseMihomoProxy)); err != nil {
+		return updater.RuntimeSettings{}, err
+	}
+	if err := s.db.SetSetting(settingSelfRepo, st.SelfRepo); err != nil {
 		return updater.RuntimeSettings{}, err
 	}
 	// 日志保留天数不属于 updater 的运行期设置（它管的是组件更新），

@@ -19,9 +19,14 @@ import (
 )
 
 // ErrSelfRepoNotConfigured 表示主程序自升级未配置仓库。
-// 仓库是部署方才知道的信息（官方还是自建 fork），无法安全地给默认值，
-// 未配置时检查接口应提示用户而不是请求一个错误的地址。
+// 默认值（weni09/AuroraMihomo）在 updater.New 兜底，运行期可在设置页
+// 改成自建仓库；显式清空保存（DB 存空串）才会落到"未配置"并禁用自升级。
 var ErrSelfRepoNotConfigured = errors.New("self update repo not configured")
+
+// DefaultSelfRepo 是主程序自升级的默认发布仓库。
+// 与本仓库 release.yml 的 GitHub 发布目标一致；fork 用户应在设置页改为
+// 自己的 "owner/AuroraMihomo" 仓库（否则会从本仓库拉取二进制）。
+const DefaultSelfRepo = "weni09/AuroraMihomo"
 
 // ErrSelfUpdateInProgress 表示主程序自升级已在进行中（下载已成功、
 // 等待关停换二进制，或第二次请求撞上第一次）。

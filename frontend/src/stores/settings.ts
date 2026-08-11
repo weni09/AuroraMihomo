@@ -12,6 +12,8 @@ export interface UpdateSettings {
   cdnProviders: string[]
   /** 下载与版本查询是否优先经由本地 mihomo 代理 */
   useMihomoProxy: boolean
+  /** 主程序（AuroraMihomo 自身）仓库，空串 = 停用面板内自升级 */
+  selfRepo: string
   /** 当前探测到的代理地址，未就绪时为空串 */
   mihomoProxyUrl: string
   mihomoPath: string
@@ -89,6 +91,7 @@ export const useSettingsStore = defineStore('settings', {
       autoUpdateCron?: string
       cdnProviders?: string[]
       useMihomoProxy?: boolean
+      selfRepo?: string
       logRetentionDays?: number
       logCleanupCron?: string
       logCleanupEnabled?: boolean

@@ -519,8 +519,9 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 
 ## AuroraMihomo（主程序）
 
-**面板内一键自升级**（需在配置 `Updater.SelfRepo` 填主程序仓库，形如
-`owner/AuroraMihomo`）：
+**面板内一键自升级**（默认从 `weni09/AuroraMihomo` 仓库拉取；fork 用户可在
+「系统设置 · 下载与更新出网」把主程序仓库改成自己的 `owner/AuroraMihomo`，
+清空保存即停用面板内自升级。也可在配置 `Updater.SelfRepo` 设启动默认值）：
 
 1. `GET /api/v1/system/self-update/check` 对比当前版本与 GitHub 最新 release；
 2. `POST /api/v1/system/self-update`：下载与官方同名的
