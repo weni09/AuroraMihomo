@@ -28,8 +28,10 @@ const form = reactive({
   cdnText: '',
   // 出网优先走本地内核代理，失败再回落镜像/直连
   useMihomoProxy: true,
-  // 主程序仓库：留空 = 停用面板内自升级
-  selfRepo: '',
+  // 主程序仓库：与后端 DefaultSelfRepo 一致。
+  // 若初值是空串，用户在 store.fetch 完成前点「保存」会把空串落库，
+  // 误把「未加载」当成「显式停用」；留空停用应是用户主动清空后的行为。
+  selfRepo: 'weni09/AuroraMihomo',
   // 应用日志归档的保留天数
   logRetentionDays: 7,
   logCleanupEnabled: true,
@@ -157,6 +159,12 @@ const parseList = (text: string) =>
     .filter(Boolean)
 
 async function onSave() {
+  // 设置尚未拉回时先取一次再保存：否则 form 仍是占位默认值，
+  // 会把用户已在库里改过的其它项（含 selfRepo 停用）冲掉。
+  if (!store.settings) {
+    await store.fetch()
+    syncForm()
+  }
   await store.save({
     autoUpdateEnabled: form.autoUpdateEnabled,
     autoUpdateCron: form.autoUpdateCron,

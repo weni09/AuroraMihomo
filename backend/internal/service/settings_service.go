@@ -262,6 +262,8 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 	// 主程序仓库先应用再取快照：st.SelfRepo 必须是 SetSelfRepo 之后的新值，
 	// 否则下面落库会写进旧值（trim 前的原始输入）。
 	// 空串 = 显式停用，落库后下次启动 LoadAndApply 同样读到空串。
+	// 仅当请求显式带 SelfRepo 时才改写与落库：nil 表示不碰该项，
+	// 避免「只改监控/日志」的部分更新把默认仓库强行写进 settings 表。
 	if in.SelfRepo != nil {
 		s.updater.SetSelfRepo(*in.SelfRepo)
 	}
@@ -282,8 +284,10 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 	if err := s.db.SetSetting(settingUseMihomoProxy, boolToStr(st.UseMihomoProxy)); err != nil {
 		return updater.RuntimeSettings{}, err
 	}
-	if err := s.db.SetSetting(settingSelfRepo, st.SelfRepo); err != nil {
-		return updater.RuntimeSettings{}, err
+	if in.SelfRepo != nil {
+		if err := s.db.SetSetting(settingSelfRepo, st.SelfRepo); err != nil {
+			return updater.RuntimeSettings{}, err
+		}
 	}
 	// 日志保留天数不属于 updater 的运行期设置（它管的是组件更新），
 	// 故单独应用与落库。落库的是夹取后的值，保证读回与生效值一致。
