@@ -342,6 +342,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: protected.UpdateSubscriptionNowHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/subscriptions/refresh-all",
+				Handler: protected.RefreshAllSubscriptionsHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodGet,
 				Path:    "/api/v1/system/stats",
 				Handler: protected.SystemStatsHandler(serverCtx),

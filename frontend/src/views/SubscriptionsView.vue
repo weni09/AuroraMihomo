@@ -132,6 +132,20 @@ const onUpdate = async (id: number) => {
   await store.updateNow(id)
 }
 
+// 全局「刷新缓存」：一键回源刷新全部订阅缓存。运行期间禁用按钮，
+// 防止重复点击并发写库；失败提示由 store 汇总 toast。
+const refreshingAll = ref(false)
+const onRefreshAll = async () => {
+  refreshingAll.value = true
+  try {
+    await store.updateAll()
+  } catch {
+    // 网络/鉴权类失败由 api 拦截器统一 toast
+  } finally {
+    refreshingAll.value = false
+  }
+}
+
 // ===== 流量参数探测 =====
 // V2Board 类机场只在特定 flag 参数下下发 subscription-userinfo 头
 // （如 &flag=clashmeta），此处对当前表单 URL 逐一尝试常见组合，
@@ -243,7 +257,21 @@ const copyShareAs = (sub: any, target: string) =>
   <main class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
     <div class="flex justify-between items-center mb-6">
       <h1 class="text-2xl sm:text-3xl font-bold text-fg">单个订阅</h1>
-      <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建订阅</Button>
+      <div class="flex items-center gap-2">
+        <!-- 全局「刷新缓存」：一键刷新全部订阅的节点缓存（供分享/预览使用），
+             与行内「更多 → 刷新缓存」同义，不改动最终配置。
+             运行期间禁用，避免重复点击并发写库。 -->
+        <Button
+          variant="outline"
+          :disabled="refreshingAll"
+          title="一键回源刷新全部订阅的节点缓存，供分享链接与预览使用。不会改动最终配置，如需应用到内核请到配置中心「拉取远程并合并」。"
+          @click="onRefreshAll"
+        >
+          <RefreshCw class="h-4 w-4" aria-hidden="true" />
+          {{ refreshingAll ? '刷新中…' : '刷新缓存' }}
+        </Button>
+        <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建订阅</Button>
+      </div>
     </div>
 
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->

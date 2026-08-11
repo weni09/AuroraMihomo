@@ -1042,6 +1042,54 @@ func (s *ConfigService) RefreshSubscriptionCache(ctx context.Context, id int64) 
 	return nil
 }
 
+// RefreshAllResult 一键刷新全部订阅缓存的结果汇总。
+//
+// 单条失败不中断整体：失败明细落在 FailedNames 里，前端提示后用户可
+// 在列表「缓存状态」列逐条查看原因。全部失败时仍然返回 nil error，
+// 由调用方依据 Failed==Total 给出「全部失败」的措辞。
+type RefreshAllResult struct {
+	Total       int
+	Success     int
+	Failed      int
+	FailedNames []string
+}
+
+// RefreshAllSubscriptionCaches 一键刷新全部订阅的节点缓存，对应
+// 「单个订阅」页的全局「刷新缓存」按钮。
+//
+// 与单条「刷新缓存」完全同义：只回源刷新订阅自身的节点缓存，不生成
+// 最终配置、不重启内核。逐条调用 RefreshSubscriptionCache，任一订阅
+// 失败只标记自身状态并计入 FailedNames，不影响其余订阅继续刷新。
+// 这里刻意不按 Enabled 过滤——与单条按钮一致，禁用订阅的缓存同样值得
+// 保持新鲜，重新启用时无需再等一次手动刷新。
+func (s *ConfigService) RefreshAllSubscriptionCaches(ctx context.Context) (*RefreshAllResult, error) {
+	subs, err := s.db.GetSubscriptions()
+	if err != nil {
+		return nil, fmt.Errorf("读取订阅列表失败: %w", err)
+	}
+
+	res := &RefreshAllResult{Total: len(subs)}
+	for i := range subs {
+		sub := &subs[i]
+		// 逐条前检查取消：这个循环是串行的，每条可能回源拉取数十秒，
+		// 请求超时或进程关停时干净停止，避免拿着过期 context 继续写库。
+		if err := ctx.Err(); err != nil {
+			s.logger.Errorf("刷新全部订阅缓存被中断，已处理 %d/%d 条: %v", i, len(subs), err)
+			return res, nil
+		}
+		if err := s.RefreshSubscriptionCache(ctx, sub.ID); err != nil {
+			// 失败详情已由 RefreshSubscriptionCache 落库（status=error），
+			// 此处只累计结果，不中断整体
+			s.logger.Errorf("刷新全部订阅缓存：订阅 %s(%d) 失败: %v", sub.Name, sub.ID, err)
+			res.Failed++
+			res.FailedNames = append(res.FailedNames, sub.Name)
+			continue
+		}
+		res.Success++
+	}
+	return res, nil
+}
+
 // PullAndMerge 手动拉取远程来源并与本地配置合并。
 //
 // 对应界面上的「拉取远程并合并」按钮：与定时拉取做同一件事，

@@ -261,6 +261,13 @@ type PreviewResp struct {
 	Warnings  []string `json:"warnings"`
 }
 
+type RefreshAllResult struct {
+	Total       int      `json:"total"`
+	Success     int      `json:"success"`
+	Failed      int      `json:"failed"`
+	FailedNames []string `json:"failedNames"`
+}
+
 type RemoteSourceOption struct {
 	Type     string `json:"type"`
 	Id       int64  `json:"id"`

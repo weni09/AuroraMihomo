@@ -76,6 +76,24 @@ export const useSubscriptionStore = defineStore('subscription', {
       }
       await this.fetchSubscriptions()
     },
+    // 全局「刷新缓存」：逐条回源刷新全部订阅（含已禁用）的节点缓存。
+    // 单条失败不中断整体，后端在结果里汇总成败与失败名单；
+    // 明细在各订阅「缓存状态」列，这里只 toast 汇总。
+    async updateAll() {
+      const res = await api.post<RefreshAllResult>('/subscriptions/refresh-all')
+      const result = res.data
+      if (result.failed > 0) {
+        const names = result.failedNames?.length
+          ? `（${result.failedNames.join('、')}）`
+          : ''
+        useNotifyStore().error(
+          `已刷新 ${result.success}/${result.total} 条订阅缓存，${result.failed} 条失败${names}，详情见各订阅「缓存状态」列`,
+        )
+      } else {
+        useNotifyStore().success(`已刷新全部 ${result.total} 条订阅缓存`)
+      }
+      await this.fetchSubscriptions()
+    },
     // 拉取远程订阅并重新合并配置由配置中心承担（/config/pull-merge），
     // 单个订阅页不提供这个入口。
     // 探测订阅流量参数：V2Board 类机场只在特定 flag 参数下下发
@@ -102,4 +120,12 @@ export interface ProbeCandidate {
 export interface ProbeResp {
   candidates: ProbeCandidate[]
   bestUrl: string
+}
+
+// 全局「刷新缓存」的结果汇总：逐条回源，单条失败不中断整体。
+export interface RefreshAllResult {
+  total: number
+  success: number
+  failed: number
+  failedNames: string[]
 }
