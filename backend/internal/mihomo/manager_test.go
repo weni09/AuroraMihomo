@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -221,5 +222,49 @@ func TestWithDefaultEnvRespectsExisting(t *testing.T) {
 	}
 	if got[0] != "DISABLE_NFTABLES=0" {
 		t.Fatalf("不得覆盖用户值，got=%v", got)
+	}
+}
+
+func TestAttachExternalRejectsInvalidPID(t *testing.T) {
+	mgr := NewManager(Config{BinaryPath: "mihomo", ConfigDir: t.TempDir()})
+	ok, err := mgr.AttachExternal(0, "")
+	if err != nil || ok {
+		t.Fatalf("pid=0 应返回 false,nil，实际 ok=%v err=%v", ok, err)
+	}
+	ok, err = mgr.AttachExternal(-1, "")
+	if err != nil || ok {
+		t.Fatalf("负 pid 应返回 false,nil，实际 ok=%v err=%v", ok, err)
+	}
+	// 极大且通常不存在的 PID
+	ok, err = mgr.AttachExternal(1<<30, "v-test")
+	if err != nil {
+		t.Fatalf("不存在的 PID 不应报错: %v", err)
+	}
+	if ok {
+		t.Fatal("不存在的 PID 不应被判定为接管成功")
+	}
+}
+
+func TestAttachExternalCurrentProcess(t *testing.T) {
+	mgr := NewManager(Config{BinaryPath: "mihomo", ConfigDir: t.TempDir()})
+	pid := os.Getpid()
+	ok, err := mgr.AttachExternal(pid, "attached-version")
+	if err != nil {
+		t.Fatalf("接管当前进程失败: %v", err)
+	}
+	if !ok {
+		t.Fatal("当前进程 PID 应可接管")
+	}
+	st := mgr.Status()
+	if !st.IsRunning || st.PID != pid {
+		t.Fatalf("Status 应显示已运行 pid=%d，实际 %+v", pid, st)
+	}
+	if st.Version != "attached-version" {
+		t.Fatalf("版本应写入，实际 %q", st.Version)
+	}
+	// 幂等：再次 Attach 同一管理器应直接成功
+	ok, err = mgr.AttachExternal(pid, "ignored")
+	if err != nil || !ok {
+		t.Fatalf("重复 Attach 应幂等成功，实际 ok=%v err=%v", ok, err)
 	}
 }

@@ -399,6 +399,10 @@ func verifySelfBinary(ctx context.Context, path string) error {
 // 但可以重命名自己——先把自己改成 .old，再把 .new 改名为自身。两步之间
 // 若进程崩溃，留下的也是 .old/.new 二选一的中间态，由下次启动的
 // CleanupStaleSelf 或重试收敛，不会出现损坏的自身二进制。
+//
+// 交换成功后强制 0755：从归档解出再 copyFile 的过程在部分文件系统上
+// 可能丢掉可执行位，supervisor 随后 ExecStart 会直接 "Permission denied"，
+// 表现为"服务没拉起、全面断网"。
 func (m *Manager) SwapSelfBinary() error {
 	target := m.SelfBinaryPath()
 	if target == "" {
@@ -423,6 +427,11 @@ func (m *Manager) SwapSelfBinary() error {
 			_ = os.Rename(target+".old", target)
 		}
 		return fmt.Errorf("swap self binary failed: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(target, 0o755); err != nil {
+			m.logger.Errorf("设置新二进制可执行位失败: %v", err)
+		}
 	}
 	m.logger.Infof("self binary swapped to %s", target)
 	return nil

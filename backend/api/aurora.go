@@ -317,8 +317,22 @@ func main() {
 	}
 	mergeCancel()
 
-	if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
-		logx.Errorf("mihomo start skipped: %v", err)
+	// 优先接管自升级关停时保留下来的内核：旧主进程故意不杀 mihomo，
+	// 避免 TProxy 规则仍在、内核已死造成的全面断网。若 PID 已失效再 Start。
+	attached := false
+	if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
+		ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
+		if aerr != nil {
+			logx.Errorf("接管已有 mihomo 失败: %v", aerr)
+		} else if ok {
+			attached = true
+			logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
+		}
+	}
+	if !attached {
+		if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
+			logx.Errorf("mihomo start skipped: %v", err)
+		}
 	}
 
 	// httpSrv 由 StartWithOpts 的回调交出来，用于自己调用 Shutdown。
@@ -352,9 +366,17 @@ func main() {
 		case <-quit:
 			logx.Info("收到退出信号，开始优雅关停")
 		case <-reloadMgr.QuitRequested():
-			logx.Info("收到重启请求，开始优雅关停")
+			logx.Infof("收到重启请求，开始优雅关停（reason=%s）", reloadMgr.QuitReason())
 		}
 		cancel()
+
+		// 自升级路径：主进程要替换自身二进制并退出，由 supervisor 拉起新版。
+		// 此时绝不能停 mihomo / AdGuard——TProxy 规则仍在宿主上，内核一旦被
+		// 杀，流量会进无人监听的端口，表现为全面断网；而 supervisor 拉起
+		// 新主进程需要数秒，这段窗口对旁路由/网关是不可接受的。
+		// 新主进程启动后会 Attach 仍在跑的内核，继续托管。
+		selfUpdateShutdown := strings.Contains(reloadMgr.QuitReason(), "self-update") ||
+			svcCtx.Updater.SelfUpdateInProgress()
 
 		// 关闭顺序：先停止接受新请求并等在途请求收尾，再停定时任务与内核，
 		// 最后才关数据库。若先关 DB，正在执行的合并会在写完 config.yaml 后
@@ -384,14 +406,23 @@ func main() {
 		svcCtx.Scheduler.StopAndWait(schedulerStopTimeout)
 		server.Stop() // 关闭 go-zero 的日志写入
 
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), kernelStopTimeout)
-		defer stopCancel()
-		_ = svcCtx.MihomoManager.Stop(stopCtx)
-		// AdGuard 是可选常驻子进程。exec 模式（Windows 等）下关停主进程必须
-		// 一并停掉，否则留下占着 DNS/Web 端口的孤儿进程；服务模式下进程由
-		// systemd/OpenRC 看护，面板退出不停止——DNS 过滤保持常驻。
-		if svcCtx.AdGuardManager != nil && !svcCtx.AdGuardManager.ServiceMode() {
-			_ = svcCtx.AdGuardManager.Stop(stopCtx)
+		if selfUpdateShutdown {
+			// 持久化内核 PID，供新主进程 Attach；不杀内核、不杀 AdGuard。
+			st := svcCtx.MihomoManager.Status()
+			if st.IsRunning && st.PID > 0 {
+				_ = svcCtx.Database.SaveMihomoState(st.Version, st.PID, "running", time.Now())
+			}
+			logx.Info("自升级关停：保留 mihomo/AdGuard 进程，避免透明代理断网窗口")
+		} else {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), kernelStopTimeout)
+			defer stopCancel()
+			_ = svcCtx.MihomoManager.Stop(stopCtx)
+			// AdGuard 是可选常驻子进程。exec 模式（Windows 等）下关停主进程必须
+			// 一并停掉，否则留下占着 DNS/Web 端口的孤儿进程；服务模式下进程由
+			// systemd/OpenRC 看护，面板退出不停止——DNS 过滤保持常驻。
+			if svcCtx.AdGuardManager != nil && !svcCtx.AdGuardManager.ServiceMode() {
+				_ = svcCtx.AdGuardManager.Stop(stopCtx)
+			}
 		}
 
 		// 释放 SQLite 句柄，避免文件被占用。

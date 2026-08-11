@@ -52,6 +52,11 @@ type Manager interface {
 	// 不重启进程、不断开现有连接。controller/secret 为空或请求失败时
 	// 回退为 Reload（即 Restart）。
 	ReloadConfig(ctx context.Context, controller, secret, configPath string) error
+	// AttachExternal 把一个已在运行、非本管理器拉起的 mihomo 进程纳入托管。
+	// 主程序自升级时为了不打断透明代理，会故意不杀内核；新进程启动后
+	// 用此方法接管旧 PID，避免重复拉起、也避免状态面板误报「已停止」。
+	// 进程不存在或 PID 无效时返回 false,nil，调用方应退回 Start。
+	AttachExternal(pid int, version string) (bool, error)
 	Status() Status
 	ValidateConfig(ctx context.Context, configPath string) error
 	Version(ctx context.Context) (string, error)
@@ -153,6 +158,59 @@ func (m *ProcessManager) Start(ctx context.Context) error {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	return m.startLocked(ctx)
+}
+
+// AttachExternal 把已在运行的外部 mihomo 进程纳入本管理器。
+//
+// 与 Start 不同：不 exec 新进程，只把 PID 记入 cmd，供 Status/Stop 使用。
+// 日志管道无法补接（原 stdout/stderr 管道已随旧主进程消失），只写一条
+// system 记录说明已接管。pid<=0 或进程已不存在时返回 (false, nil)。
+func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+
+	m.mu.Lock()
+	if m.isProcessAliveLocked() {
+		m.mu.Unlock()
+		return true, nil // 已在托管中，幂等成功
+	}
+	m.mu.Unlock()
+
+	if !processExists(pid) {
+		return false, nil
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false, nil
+	}
+
+	exited := make(chan struct{})
+	m.mu.Lock()
+	m.cmd = &exec.Cmd{Process: proc}
+	m.exited = exited
+	if strings.TrimSpace(version) != "" {
+		m.version = version
+	}
+	m.mu.Unlock()
+
+	// 后台 Wait 回收，避免僵尸；进程被外部杀掉时也要把托管状态清掉
+	go func(p *os.Process, done chan struct{}) {
+		_, _ = p.Wait()
+		m.mu.Lock()
+		if m.cmd != nil && m.cmd.Process == p {
+			m.cmd = nil
+			m.exited = nil
+		}
+		m.mu.Unlock()
+		close(done)
+		m.appendLog("system", fmt.Sprintf("attached mihomo exited pid=%d", pid))
+	}(proc, exited)
+
+	m.appendLog("system", fmt.Sprintf("attached existing mihomo pid=%d", pid))
+	return true, nil
 }
 
 func (m *ProcessManager) startLocked(ctx context.Context) error {

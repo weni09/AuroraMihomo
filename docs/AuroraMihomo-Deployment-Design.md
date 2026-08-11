@@ -537,7 +537,12 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 **停机窗口说明**：自升级与 `/api/v1/system/restart` 相同，是"优雅退出、
 等进程管理器拉起"的语义（进程刻意不做 fork 自重启，见 Makefile 注释）。
 从关停到 supervisor（systemd `Restart=always` / docker `restart` /
-OpenRC `supervise-daemon` / NSSM）拉起新版之间，服务有秒级中断，属预期。
+OpenRC `supervise-daemon` / NSSM）拉起新版之间，**面板 API 有秒级中断**，属预期。
+
+自升级关停路径**不会**停止 mihomo / AdGuard：TProxy 规则仍在宿主上，
+若先杀内核再等 supervisor 拉起主进程，会出现"规则在、内核死"的全面断网。
+新主进程启动后会按数据库里记录的 PID 接管仍在运行的内核（`AttachExternal`），
+再继续正常托管。普通 `/system/restart` 与信号退出仍会停内核。
 
 **升级路径约束**：
 
