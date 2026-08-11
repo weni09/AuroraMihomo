@@ -318,15 +318,23 @@ func main() {
 	mergeCancel()
 
 	// 优先接管自升级关停时保留下来的内核：旧主进程故意不杀 mihomo，
-	// 避免 TProxy 规则仍在、内核已死造成的全面断网。若 PID 已失效再 Start。
+	// 避免 TProxy 规则仍在、内核已死造成的全面断网。
+	// Attach 成功后仍以 Status 复核——历史上用 Wait 盯非亲子进程会立刻
+	// ECHILD 并清空托管，出现「Attach 报成功、实际没人管」的假象。
 	attached := false
 	if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
 		ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
 		if aerr != nil {
 			logx.Errorf("接管已有 mihomo 失败: %v", aerr)
 		} else if ok {
-			attached = true
-			logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
+			cur := svcCtx.MihomoManager.Status()
+			if cur.IsRunning && cur.PID == st.PID {
+				attached = true
+				logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
+			} else {
+				logx.Errorf("接管 mihomo pid=%d 后状态异常（running=%v pid=%d），将重新 Start",
+					st.PID, cur.IsRunning, cur.PID)
+			}
 		}
 	}
 	if !attached {
@@ -432,12 +440,21 @@ func main() {
 		}
 
 		// 自升级生效点：把 .new 换成自身二进制。放在数据库关闭之后——
-		// 此刻没有活动请求、也没有并发写库，替换失败最坏也只是升级不生效，
-		// 不会破坏任何运行态。替换完成后由进程管理器拉起的就是新版本。
+		// 此刻没有活动请求、也没有并发写库，替换失败最坏也只是升级不生效。
 		if err := svcCtx.Updater.SwapSelfBinary(); err != nil {
 			// 只记录不阻断关停：进程该退还是要退，否则 supervisor 不会拉起。
-			// 未生效的 .new 保留在磁盘，下次关停会重试（或用户手工删掉放弃升级）。
 			logx.Errorf("swap self binary failed: %v", err)
+		}
+
+		// Unix 自升级成功后优先 syscall.Exec 热替换：
+		// 同 PID 加载新二进制，子进程（mihomo） ped 关系不变，systemd 默认的
+		// KillMode=control-group 也不会因为「主进程退出」去杀 cgroup 里的内核。
+		// 这是旁路由/TProxy 场景下避免「面板升级 → 内核被带走 → 全面断网」
+		// 的关键路径。Exec 失败再退回普通退出，由 Restart=always 拉起。
+		if selfUpdateShutdown {
+			if err := execSelfIfPossible(svcCtx.Updater.SelfBinaryPath()); err != nil {
+				logx.Errorf("exec 新二进制失败，回退为进程退出由 supervisor 拉起: %v", err)
+			}
 		}
 		logx.Info("shutdown complete")
 	}()

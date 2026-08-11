@@ -108,10 +108,11 @@ func (m *ProcessManager) isProcessAliveLocked() bool {
 	if m.cmd == nil || m.cmd.Process == nil {
 		return false
 	}
-	if runtime.GOOS == "windows" {
-		return m.cmd.ProcessState == nil || !m.cmd.ProcessState.Exited()
-	}
-	return m.cmd.Process.Signal(syscall.Signal(0)) == nil
+	// 统一用 processExists：AttachExternal 接管的是「非本进程子进程」，
+	// Windows 上仅看 ProcessState 会把已死进程一直当成存活（State 要等 Wait
+	// 才更新，而我们对外部进程不能 Wait）；Unix 上 Signal(0) 与 processExists
+	// 等价，走同一条路径更简单。
+	return processExists(m.cmd.Process.Pid)
 }
 
 func (m *ProcessManager) appendLog(stream, msg string) {
@@ -165,6 +166,12 @@ func (m *ProcessManager) Start(ctx context.Context) error {
 // 与 Start 不同：不 exec 新进程，只把 PID 记入 cmd，供 Status/Stop 使用。
 // 日志管道无法补接（原 stdout/stderr 管道已随旧主进程消失），只写一条
 // system 记录说明已接管。pid<=0 或进程已不存在时返回 (false, nil)。
+//
+// 重要：接管的进程通常不是本进程的子进程（自升级后新主进程 vs 旧内核，
+// 或 Exec 前后的 PID 关系都可能如此）。Unix 上对非自己的子进程调用
+// Process.Wait 会立即得到 ECHILD，若仍走 Wait 会误判「已退出」并清空
+// 托管状态——调用方以为 Attach 成功、跳过 Start，结果内核其实没人管、
+// 面板显示已停止。因此这里用 processExists 轮询，绝不 Wait。
 func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
 	if pid <= 0 {
 		return false, nil
@@ -174,8 +181,9 @@ func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
 
 	m.mu.Lock()
 	if m.isProcessAliveLocked() {
+		// 已在托管同一 PID：幂等成功；不同 PID 仍视为已有内核在跑
 		m.mu.Unlock()
-		return true, nil // 已在托管中，幂等成功
+		return true, nil
 	}
 	m.mu.Unlock()
 
@@ -196,9 +204,15 @@ func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
 	}
 	m.mu.Unlock()
 
-	// 后台 Wait 回收，避免僵尸；进程被外部杀掉时也要把托管状态清掉
-	go func(p *os.Process, done chan struct{}) {
-		_, _ = p.Wait()
+	// 轮询存活，进程消失后清托管状态并打点；Stop 发信号后也靠这条路径收敛。
+	go func(pid int, p *os.Process, done chan struct{}) {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !processExists(pid) {
+				break
+			}
+		}
 		m.mu.Lock()
 		if m.cmd != nil && m.cmd.Process == p {
 			m.cmd = nil
@@ -207,7 +221,7 @@ func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
 		m.mu.Unlock()
 		close(done)
 		m.appendLog("system", fmt.Sprintf("attached mihomo exited pid=%d", pid))
-	}(proc, exited)
+	}(pid, proc, exited)
 
 	m.appendLog("system", fmt.Sprintf("attached existing mihomo pid=%d", pid))
 	return true, nil

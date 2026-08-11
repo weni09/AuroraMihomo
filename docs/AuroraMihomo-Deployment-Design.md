@@ -313,6 +313,9 @@ WorkingDirectory=/opt/auroramihomo
 ExecStart=/opt/auroramihomo/auroramihomo -f /opt/auroramihomo/etc/aurora-api.yaml
 Restart=always
 RestartSec=3
+# 只杀主进程。默认 control-group 会在主进程退出时带走 mihomo 子进程，
+# 面板自升级时就会「内核被杀 + TProxy 规则仍在 → 全面断网」。
+KillMode=process
 
 # 透明代理需要的权限。不用透明代理时可全部删掉，
 # 以非 root 用户运行（User=aurora）更安全。
@@ -539,10 +542,25 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 从关停到 supervisor（systemd `Restart=always` / docker `restart` /
 OpenRC `supervise-daemon` / NSSM）拉起新版之间，**面板 API 有秒级中断**，属预期。
 
-自升级关停路径**不会**停止 mihomo / AdGuard：TProxy 规则仍在宿主上，
+自升级关停路径**不会**主动 Stop mihomo / AdGuard：TProxy 规则仍在宿主上，
 若先杀内核再等 supervisor 拉起主进程，会出现"规则在、内核死"的全面断网。
-新主进程启动后会按数据库里记录的 PID 接管仍在运行的内核（`AttachExternal`），
-再继续正常托管。普通 `/system/restart` 与信号退出仍会停内核。
+
+Unix 上自升级成功后优先 `syscall.Exec` 同 PID 热替换新二进制（子进程
+mihomo 的父子关系不变）；Exec 失败才退回普通退出。systemd 单元必须设
+`KillMode=process`，否则默认 `control-group` 仍会在主进程退出时把 cgroup
+里的 mihomo 一并杀掉——这是「面板起来了、内核没了」的常见根因。
+
+新主进程启动后会按数据库里记录的 PID 接管仍在运行的内核（`AttachExternal`，
+对非亲子进程用存活轮询而非 `Wait`），接管失败再 `Start`。
+普通 `/system/restart` 与信号退出仍会停内核。
+
+**已安装机器升级后请补一行**（install.sh 默认「保留现有单元」不会自动改）：
+
+```bash
+# /etc/systemd/system/auroramihomo.service 的 [Service] 段
+KillMode=process
+systemctl daemon-reload
+```
 
 **升级路径约束**：
 

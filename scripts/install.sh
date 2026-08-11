@@ -256,6 +256,10 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/auroramihomo -f ${INSTALL_DIR}/etc/aurora-api.yaml
 Restart=always
 RestartSec=3
+# 只杀主进程，不杀 cgroup 里的 mihomo 子进程。
+# 面板自升级会短暂退出主进程；若用默认 control-group，systemd 会把
+# 仍在跑的内核一并带走，TProxy 规则还在就全面断网。
+KillMode=process
 
 # 透明代理需要的权限。不使用透明代理时可删掉这两行并加 User=nobody。
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE

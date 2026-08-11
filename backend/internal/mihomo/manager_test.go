@@ -255,6 +255,9 @@ func TestAttachExternalCurrentProcess(t *testing.T) {
 	if !ok {
 		t.Fatal("当前进程 PID 应可接管")
 	}
+	// 给轮询 goroutine 一点时间：旧实现会对非亲子进程 Wait→ECHILD 并立刻
+	// 清空托管，这里 sleep 后仍应显示 running。
+	time.Sleep(50 * time.Millisecond)
 	st := mgr.Status()
 	if !st.IsRunning || st.PID != pid {
 		t.Fatalf("Status 应显示已运行 pid=%d，实际 %+v", pid, st)
@@ -266,5 +269,11 @@ func TestAttachExternalCurrentProcess(t *testing.T) {
 	ok, err = mgr.AttachExternal(pid, "ignored")
 	if err != nil || !ok {
 		t.Fatalf("重复 Attach 应幂等成功，实际 ok=%v err=%v", ok, err)
+	}
+	// 再等一轮，确认没有被错误地清掉
+	time.Sleep(50 * time.Millisecond)
+	st = mgr.Status()
+	if !st.IsRunning || st.PID != pid {
+		t.Fatalf("轮询后仍应托管 pid=%d，实际 %+v", pid, st)
 	}
 }
