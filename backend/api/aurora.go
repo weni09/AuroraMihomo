@@ -222,6 +222,7 @@ func main() {
 	registerSystemRoutes(server, svcCtx, reloadMgr)
 	registerPublicAuthRoutes(server, svcCtx)
 	registerSubscriptionProbeRoute(server, svcCtx)
+	registerMihomoBootRoute(server, svcCtx)
 
 	// 此处曾有一个「每分钟轮询、按各订阅自身 interval 逐条刷新」的任务，已移除。
 	// 它与上面的远程拉取 Cron 构成两套并行调度：用户在配置中心关掉定时拉取后，
@@ -242,10 +243,17 @@ func main() {
 		}
 		// 设计 §6：持久化内核运行状态
 		_ = svcCtx.Database.SaveMihomoState(st.Version, st.PID, status, time.Now())
+		// 内核守护：期望运行但已停止时自动拉起（限次）。
+		// 挂在同一个 5s tick 上，零新增调度；armed 置位前（启动接管
+		// 流程完成前）守护不动作，避免把正在被接管的旧内核再拉一遍。
+		if svcCtx.MihomoGuard != nil {
+			svcCtx.MihomoGuard.Guard(rootCtx)
+		}
 		svcCtx.Hub.Publish("mihomo.status", map[string]any{
-			"status":  status,
-			"version": st.Version,
-			"pid":     st.PID,
+			"status":         status,
+			"version":        st.Version,
+			"pid":            st.PID,
+			"desiredRunning": svcCtx.MihomoGuard != nil && svcCtx.MihomoGuard.DesiredRunning(),
 		})
 	}); err != nil {
 		logx.Errorf("register status publisher failed: %v", err)
@@ -317,30 +325,50 @@ func main() {
 	}
 	mergeCancel()
 
+	// 内核「期望运行」守卫：读用户期望（默认 true）。手动 Stop 过会清成
+	// false——此时面板重启不得自动拉内核（尊重手动停止）。
+	desiredRunning := svcCtx.MihomoGuard == nil || svcCtx.MihomoGuard.DesiredRunning()
+
 	// 优先接管自升级关停时保留下来的内核：旧主进程故意不杀 mihomo，
 	// 避免 TProxy 规则仍在、内核已死造成的全面断网。
 	// Attach 成功后仍以 Status 复核——历史上用 Wait 盯非亲子进程会立刻
 	// ECHILD 并清空托管，出现「Attach 报成功、实际没人管」的假象。
 	attached := false
-	if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
-		ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
-		if aerr != nil {
-			logx.Errorf("接管已有 mihomo 失败: %v", aerr)
-		} else if ok {
-			cur := svcCtx.MihomoManager.Status()
-			if cur.IsRunning && cur.PID == st.PID {
-				attached = true
-				logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
-			} else {
-				logx.Errorf("接管 mihomo pid=%d 后状态异常（running=%v pid=%d），将重新 Start",
-					st.PID, cur.IsRunning, cur.PID)
+	if desiredRunning {
+		if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
+			ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
+			if aerr != nil {
+				logx.Errorf("接管已有 mihomo 失败: %v", aerr)
+			} else if ok {
+				cur := svcCtx.MihomoManager.Status()
+				if cur.IsRunning && cur.PID == st.PID {
+					attached = true
+					logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
+				} else {
+					logx.Errorf("接管 mihomo pid=%d 后状态异常（running=%v pid=%d），将重新 Start",
+						st.PID, cur.IsRunning, cur.PID)
+				}
 			}
 		}
-	}
-	if !attached {
-		if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
-			logx.Errorf("mihomo start skipped: %v", err)
+		if !attached {
+			if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
+				logx.Errorf("mihomo start skipped: %v", err)
+			}
 		}
+	} else if !svcCtx.MihomoManager.Status().IsRunning {
+		// 用户手动停过内核：上面的合并流程会经 ReloadConfig→Restart 把内核
+		// 拉起来，这里显式停掉，保持「手动停止 = 面板重启也不拉」。幂等。
+		stopCtx, stopCancel := context.WithTimeout(rootCtx, kernelStopTimeout)
+		_ = svcCtx.MihomoManager.Stop(stopCtx)
+		stopCancel()
+		logx.Info("内核期望运行为关（手动停止过），启动时不自动拉起")
+	}
+
+	// 启动接管流程完成，武装守护：此后的 5s tick 若检测到停止且期望运行
+	// 才会自动拉起。置位前的 tick 只观测不动作，避开「正在接管的内核
+	// 被误判为已死再拉一个」的竞态。
+	if svcCtx.MihomoGuard != nil {
+		svcCtx.MihomoGuard.SetArmed(true)
 	}
 
 	// httpSrv 由 StartWithOpts 的回调交出来，用于自己调用 Shutdown。

@@ -607,6 +607,27 @@ systemctl daemon-reload
 -   version check
 -   binary replace（更新前先备份为 `.bak`，解压产物先经临时校验再覆盖）
 
+## Mihomo 内核守护（期望运行）
+
+面板为内核提供「期望运行」守护（多平台一致，Alpine/OpenRC、Debian/systemd、
+Windows 行为相同）：
+
+- 默认开启（首次安装 / 升级后未设置时按 true 处理）：面板每 5s 检测一次
+  内核状态，发现**期望运行但已停止**（崩溃、被外部 kill）时自动拉起，
+  近 60s 内最多尝试 3 次（滑动窗口），内核恢复即清零计数。
+- **手动停止**（`POST /api/v1/mihomo/stop`）会写期望运行 = false：
+  此后面板不再自动拉，**面板重启也不会拉回**，直到手动启动或重新开启守护。
+- 手动启动 / 重启（`/mihomo/start`、`/mihomo/restart`）会写期望运行 = true。
+- 开关：内核管理页「内核守护（期望运行）」；API `PUT /api/v1/mihomo/boot
+  {enabled}`；当前值随 `/system/status` 与 WS `mihomo.status` 返回
+  （`desiredRunning`）。
+- 面板启动时按期望决定是否拉回：期望运行走 AttachExternal/Start，期望关闭
+  则不自动拉起（合并流程可能经 ReloadConfig→Restart 把内核拉起，此时显式
+  停掉）。
+
+守护在启动接管流程完成（`SetArmed`）后才生效，避免把「正在被接管的内核」
+误判为已死再拉一个。
+
 ## Zashboard
 
 -   static asset update（目录级 .bak + 失败回滚）

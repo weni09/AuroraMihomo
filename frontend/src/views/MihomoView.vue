@@ -6,6 +6,7 @@ import KernelActionBar from '../components/KernelActionBar.vue'
 import KernelLogPreview from '../components/KernelLogPreview.vue'
 import type { KernelLogLine } from '../components/KernelLogPreview.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Switch } from '@/components/ui/switch'
 import api from '../api'
 import { wsStatusLabel } from '../utils/labels'
 
@@ -23,6 +24,12 @@ onMounted(async () => {
     /* 内核未起时忽略 */
   }
 })
+
+// 切换内核守护：由 store 落库并 toast
+const onToggleBoot = (next: boolean | 'indeterminate') => {
+  if (next === 'indeterminate') return
+  void store.setBoot(next)
+}
 </script>
 
 <template>
@@ -73,6 +80,23 @@ onMounted(async () => {
 
         <!-- 启停/重启确认与更新逻辑已下沉到 KernelActionBar -->
         <KernelActionBar show-update />
+
+        <!-- 内核守护（期望运行）：
+             开启 = 检测到停止自动拉起（限次）、面板重启按期望拉回；
+             关闭 = 手动停止后不再自动拉、面板重启也不拉。 -->
+        <div class="mt-4 border-t border-line pt-4">
+          <label class="flex items-center gap-3" data-testid="kernel-boot-switch">
+            <Switch
+              :model-value="store.desiredRunning === true"
+              @update:model-value="onToggleBoot"
+            />
+            <span class="text-sm font-medium">内核守护（期望运行）</span>
+          </label>
+          <p class="text-xs text-fg-subtle mt-1">
+            开启时，面板检测到内核异常停止会自动拉起（短时间内限次重试）；
+            关闭后手动停止的内核不再自动拉，面板重启也不会拉起，直到手动启动或重新开启。
+          </p>
+        </div>
       </CardContent>
     </Card>
 

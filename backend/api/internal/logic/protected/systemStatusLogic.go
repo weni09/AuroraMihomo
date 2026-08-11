@@ -38,13 +38,18 @@ func (l *SystemStatusLogic) SystemStatus() (resp *types.Status, err error) {
 		state = "running"
 	}
 	now := time.Now()
+	desired := true
+	if l.svcCtx.MihomoGuard != nil {
+		desired = l.svcCtx.MihomoGuard.DesiredRunning()
+	}
 	return &types.Status{
-		Status:     state,
-		Version:    st.Version,
-		AppVersion: version.Get(),
-		Pid:        st.PID,
-		ServerTime: now.Format(time.RFC3339),
-		Timezone:   hostTimezoneName(),
+		Status:         state,
+		Version:        st.Version,
+		AppVersion:     version.Get(),
+		Pid:            st.PID,
+		DesiredRunning: desired,
+		ServerTime:     now.Format(time.RFC3339),
+		Timezone:       hostTimezoneName(),
 	}, nil
 }
 

@@ -30,9 +30,12 @@ import (
 )
 
 type ServiceContext struct {
-	Config          config.Config
-	Database        *repository.Database
-	MihomoManager   mihomo.Manager
+	Config        config.Config
+	Database      *repository.Database
+	MihomoManager mihomo.Manager
+	// MihomoGuard 内核「期望运行」守护：检测到停止且期望运行则自动拉起
+	//（限次）。手动启停 logic 通过它持久化期望态。
+	MihomoGuard     *service.MihomoGuard
 	MergeEngine     *engine.MergeEngine
 	Scheduler       *scheduler.Scheduler
 	SubStore        substore.Manager
@@ -425,10 +428,12 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	absDataDir, _ := filepath.Abs(dataDir)
 	monitorSvc := service.NewMonitorService(absDataDir)
 
+	mihomoGuard := service.NewMihomoGuard(db, mihomoManager)
 	return &ServiceContext{
 		Config:             c,
 		Database:           db,
 		MihomoManager:      mihomoManager,
+		MihomoGuard:        mihomoGuard,
 		MergeEngine:        mergeEngine,
 		Scheduler:          scheduler.NewScheduler(),
 		SubStore:           subStoreManager,

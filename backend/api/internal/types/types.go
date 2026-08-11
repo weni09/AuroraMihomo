@@ -337,8 +337,11 @@ type Status struct {
 	Version    string `json:"version"`
 	AppVersion string `json:"appVersion"`
 	Pid        int    `json:"pid"`
-	ServerTime string `json:"serverTime,optional"`
-	Timezone   string `json:"timezone,optional"`
+	// DesiredRunning 内核「期望运行」：手动停止后为 false，面板重启
+	// 不自动拉；守护检测到停止时按它决定是否自动拉起。
+	DesiredRunning bool   `json:"desiredRunning"`
+	ServerTime     string `json:"serverTime,optional"`
+	Timezone       string `json:"timezone,optional"`
 }
 
 type SubFile struct {

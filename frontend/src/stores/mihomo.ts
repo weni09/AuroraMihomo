@@ -7,6 +7,8 @@ interface Status {
   version: string
   pid: number
   appVersion?: string
+  /** 内核「期望运行」：手动停止后为 false，面板重启不自动拉；守护按它决定自动拉起 */
+  desiredRunning?: boolean
   /** 宿主当前时间 RFC3339 */
   serverTime?: string
   /** IANA 时区名，如 Asia/Shanghai */
@@ -19,6 +21,7 @@ export const useMihomoStore = defineStore('mihomo', {
     version: '未知',
     appVersion: '未知',
     pid: 0,
+    desiredRunning: true,
     /** 最近一次状态接口带回的宿主时间（RFC3339），供控制台时钟对齐 */
     serverTime: '' as string,
     timezone: '' as string,
@@ -32,6 +35,7 @@ export const useMihomoStore = defineStore('mihomo', {
       if (payload.version) this.version = payload.version
       if (payload.appVersion) this.appVersion = payload.appVersion
       if (typeof payload.pid === 'number') this.pid = payload.pid
+      if (typeof payload.desiredRunning === 'boolean') this.desiredRunning = payload.desiredRunning
       if (payload.serverTime) this.serverTime = payload.serverTime
       if (payload.timezone) this.timezone = payload.timezone
     },
@@ -87,6 +91,21 @@ export const useMihomoStore = defineStore('mihomo', {
     },
     async reload() {
       await this.runAction('/mihomo/reload', '配置已重载')
+    },
+    /**
+     * 切换内核「期望运行」守护。
+     * 开启 = 检测到停止自动拉起（限次）、面板重启按期望拉回；
+     * 关闭 = 手动停止后不再自动拉、面板重启也不拉。
+     */
+    async setBoot(enabled: boolean) {
+      const res = await api.put('/mihomo/boot', { enabled })
+      const text = res.data?.message || (enabled ? '内核守护已开启' : '内核守护已关闭')
+      if (res.data?.success === false) {
+        useNotifyStore().error(text)
+      } else {
+        useNotifyStore().success(text)
+        this.desiredRunning = enabled
+      }
     },
   },
 })

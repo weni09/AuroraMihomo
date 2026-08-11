@@ -13,6 +13,9 @@ type Status {
 	Version    string `json:"version"`
 	AppVersion string `json:"appVersion"`
 	Pid        int    `json:"pid"`
+	// DesiredRunning 内核「期望运行」：手动停止后为 false，面板重启不自动拉；
+	// 守护检测到停止时按它决定是否自动拉起（默认 true）
+	DesiredRunning bool `json:"desiredRunning"`
 	// ServerTime 宿主当前时间（RFC3339，含时区偏移），供控制台时钟与调度对齐
 	ServerTime string `json:"serverTime,optional"`
 	// Timezone IANA 时区名（如 Asia/Shanghai）；读不到时可能是 Local / UTC
@@ -62,6 +65,13 @@ type SystemStats {
 type Result {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+}
+
+// MihomoBootReq 内核「期望运行」开关请求。
+type MihomoBootReq {
+	// Enabled 是否开启内核守护：开启 = 停止自动拉起（限次）、面板重启按期望拉回；
+	// 关闭 = 手动停止后不再自动拉、面板重启也不拉
+	Enabled bool `json:"enabled"`
 }
 
 type IdPathReq {
@@ -119,6 +129,15 @@ type UpdateSubscriptionReq {
 	Enabled   *bool              `json:"enabled,optional"`
 	Interval  int                `json:"interval,optional"`
 	Operators []PipelineOperator `json:"operators,optional"`
+}
+
+// RefreshAllResult 一键刷新全部订阅缓存的结果：逐条回源，单条失败不中断整体。
+// FailedNames 供前端提示具体哪些订阅失败（明细在各自「缓存状态」列）。
+type RefreshAllResult {
+	Total       int      `json:"total"`
+	Success     int      `json:"success"`
+	Failed      int      `json:"failed"`
+	FailedNames []string `json:"failedNames"`
 }
 
 // ---------- 配置中心 ----------
@@ -855,6 +874,11 @@ service aurora-api {
 	@handler mihomoReload
 	post /api/v1/mihomo/reload returns (Result)
 
+	// 内核「期望运行」开关：手写路由注册（见 backend/api/system.go
+	// registerMihomoBootRoute），此处声明仅为对外契约同步，不参与 goctl 生成。
+	@handler mihomoBoot
+	put /api/v1/mihomo/boot (MihomoBootReq) returns (Result)
+
 	@handler getMihomoLogs
 	get /api/v1/mihomo/logs (GetMihomoLogsReq) returns ([]LogLine)
 
@@ -930,6 +954,12 @@ service aurora-api {
 
 	@handler updateSubscriptionNow
 	post /api/v1/subscriptions/:id/update (IdPathReq) returns (Result)
+
+	// 一键刷新全部订阅缓存（含已禁用订阅，与单条「刷新缓存」行为一致）。
+	// 字面路径 /subscriptions/refresh-all 优先于 goctl 的 /subscriptions/:id
+	// 参数路由，不会与单个订阅的 :id 路由冲突（与 /subscriptions/probe 同型）。
+	@handler refreshAllSubscriptions
+	post /api/v1/subscriptions/refresh-all returns (RefreshAllResult)
 
 	@handler getBaseConfig
 	get /api/v1/config/base returns (ConfigContent)

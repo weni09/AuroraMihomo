@@ -303,6 +303,45 @@ func registerSubscriptionProbeRoute(server *rest.Server, svcCtx *svc.ServiceCont
 	}, rest.WithJwt(svcCtx.Config.Auth.AccessSecret))
 }
 
+// registerMihomoBootRoute 挂内核「期望运行」开关接口。
+//
+// 与 AdGuard 的 /adguard/boot 对齐：开启 = 面板检测到内核停止时自动拉起
+// （限次）、面板重启按期望拉回；关闭 = 手动停止后不再自动拉、面板重启
+// 也不拉。走 JWT 鉴权；PUT 幂等，重复设置同一值安全。
+func registerMihomoBootRoute(server *rest.Server, svcCtx *svc.ServiceContext) {
+	server.AddRoute(rest.Route{
+		Method: http.MethodPut,
+		Path:   "/api/v1/mihomo/boot",
+		Handler: func(w http.ResponseWriter, r *http.Request) {
+			if svcCtx.MihomoGuard == nil {
+				http.Error(w, "mihomo guard unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			var req struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := svcCtx.MihomoGuard.SetDesiredRunning(req.Enabled); err != nil {
+				logx.Errorf("set mihomo desired running failed: %v", err)
+				httpx.ErrorCtx(r.Context(), w, err)
+				return
+			}
+			if req.Enabled {
+				// 重新开启守护时清掉旧的失败尝试计数，让内核能立刻被拉起
+				svcCtx.MihomoGuard.ResetAttempts()
+			}
+			httpx.OkJson(w, map[string]any{
+				"success":        true,
+				"desiredRunning": req.Enabled,
+				"message":        "内核守护已" + map[bool]string{true: "开启", false: "关闭"}[req.Enabled],
+			})
+		},
+	}, rest.WithJwt(svcCtx.Config.Auth.AccessSecret))
+}
+
 const (
 	appLogDefaultLimit = 200
 	// appLogMaxLimit 与内存缓冲上限一致：请求更多也没有意义

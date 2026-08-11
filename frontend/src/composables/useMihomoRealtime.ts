@@ -11,12 +11,19 @@ export function useMihomoRealtime(onExtra?: (type: string, data: unknown) => voi
   const store = useMihomoStore()
   return useRealtime((type, data) => {
     if (type === 'mihomo.status' && data && typeof data === 'object') {
-      const d = data as { status?: string; version?: string; pid?: number; appVersion?: string }
+      const d = data as {
+        status?: string
+        version?: string
+        pid?: number
+        appVersion?: string
+        desiredRunning?: boolean
+      }
       store.applyStatus({
         status: d.status,
         version: d.version,
         pid: d.pid,
         appVersion: d.appVersion,
+        desiredRunning: d.desiredRunning,
       })
     }
     if (type === 'log.message' && data && typeof data === 'object') {
