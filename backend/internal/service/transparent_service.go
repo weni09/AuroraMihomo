@@ -73,6 +73,19 @@ const (
 	// Apply 重入时必须先按本键拆除旧批，再按新目标追加，否则 iptables -A
 	// 会叠规则、改 A→B 会留下 A 的孤儿。
 	settingCustomRulesApplied = "transparent.custom_rules_applied"
+	// settingExemptPorts 用户配置的免代理端口（逗号分隔的数字列表，如
+	// "853,443"）。
+	//
+	// 区别于自定义防火墙规则：自定义规则按 iptables 语法追加在内置 catch-all
+	// （tproxy ... accept）之后执行，对已被内置规则接管的流量永远不会被评估到
+	// ——用它对"目的端口放行"是无效的。免代理端口走内置规则通道，生成
+	// TCP+UDP return、排在 catch-all 之前，端口级放行才真正生效。
+	// 与 KeepPorts（SSH/面板/内核 API，仅 TCP）分开字段，见 TProxyParams.ExemptPorts。
+	settingExemptPorts = "transparent.exempt_ports"
+
+	// MaxExemptPorts 免代理端口最大个数。每个端口在 prerouting 写 1 条、
+	// output 写 2 条 nft 规则；无上限时手滑粘贴会让 Apply 规则集膨胀。
+	MaxExemptPorts = 64
 )
 
 // ConfirmWindow 启用后必须确认的时限。
@@ -212,6 +225,14 @@ type TransparentService struct {
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
+	// rollbackCtx 当前活动回滚定时器的 context（与 cancel 一一对应）。
+	//
+	// 定时器 goroutine 在超时后用它判断"我是否仍是当前活动定时器"：
+	// Confirm/disable 会 cancel 并置 nil，若 goroutine 醒来时已不是自己，
+	// 说明状态已被接管（已确认/已关闭），必须放弃回滚。
+	// 单独存 context 而不比较 cancel（函数类型）——context.Context 是接口，
+	// 可以安全地 == 比较。
+	rollbackCtx context.Context
 }
 
 // NewTransparentService 构造。
@@ -684,6 +705,8 @@ func (s *TransparentService) tproxyParams(tproxyPort int) netcheck.TProxyParams 
 		// 理由见 TProxyParams.DNSPort 的注释
 		DNSPort:   s.dnsPort(),
 		KeepPorts: s.keepPorts(),
+		// 用户免代理端口：TCP+UDP，与 KeepPorts（仅 TCP 管理通道）分字段
+		ExemptPorts: s.exemptPorts(),
 		// 只在宿主确实有 IPv6 出网能力时下发 v6 规则。没有能力却下发
 		// 等于建了一条通往空路由的路；有能力却不下发则会让 v6 包被打标
 		// 后无处可去（兜底规则的家族限定处理了这一侧，见 BuildNFTRules）。
@@ -759,8 +782,10 @@ func (s *TransparentService) clearAppliedCustomRules() {
 // 自定义规则必须纳入：它直接追加进规则集，内容变了而指纹不变，
 // Resync 就不会重下发，用户保存的规则等于没生效。
 func paramsSignature(p netcheck.TProxyParams) string {
-	return fmt.Sprintf("tp=%d;dns=%d;keep=%v;v6=%t;rules=%s",
-		p.TProxyPort, p.DNSPort, p.KeepPorts, p.EnableIPv6, rulesHash(p.CustomRules))
+	// exempt 必须单独纳入：它不在 KeepPorts 里（TCP-only 管理通道 vs 用户
+	// TCP+UDP 豁免），漏掉则改免代理端口不会触发 Resync。
+	return fmt.Sprintf("tp=%d;dns=%d;keep=%v;exempt=%v;v6=%t;rules=%s",
+		p.TProxyPort, p.DNSPort, p.KeepPorts, p.ExemptPorts, p.EnableIPv6, rulesHash(p.CustomRules))
 }
 
 // rulesHash 把自定义规则列表压成指纹片段（sha256 前 4 字节的 hex）。
@@ -827,6 +852,9 @@ func (s *TransparentService) syncBootPersist(ctx context.Context) {
 // 后者来自 config.yaml 的 external-controller），所以必须取运行时的真实值。
 // 早先这里硬编码 8899/9090，用户把面板改到别的端口后启用 TProxy 就会
 // 失去面板访问——与本文件通篇在防的那类锁死是同一回事。
+//
+// 用户免代理端口不并入这里：它们走 TProxyParams.ExemptPorts（TCP+UDP），
+// 而 KeepPorts 只服务管理通道的 TCP-only 规则。
 func (s *TransparentService) keepPorts() []int {
 	// 22 是 SSH 的固定兜底：它不由本程序配置，但正是最后的救命通道。
 	ports := []int{22}
@@ -839,6 +867,138 @@ func (s *TransparentService) keepPorts() []int {
 		}
 	}
 	return dedupPorts(ports)
+}
+
+// exemptPorts 读取用户配置的免代理端口。
+//
+// 存储格式是逗号分隔的十进制端口号（可含空白，如 "853, 443"）。
+// 非法项跳过并记日志（不是整表返回 nil）：让整份规则因一个坏值而拒绝下发，
+// 比丢掉用户加的合法豁免更糟——内置规则仍会放行 SSH 与面板端口。
+func (s *TransparentService) exemptPorts() []int {
+	raw := s.getString(settingExemptPorts, "")
+	var out []int
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n <= 0 || n > 65535 {
+			s.logger.Errorf("免代理端口包含非法值 %q，已忽略（只影响该端口，不影响 TProxy）", part)
+			continue
+		}
+		out = append(out, n)
+	}
+	return dedupPorts(out)
+}
+
+// parseExemptPortsText 校验免代理端口原文，返回规范化后的存储串与端口列表。
+//
+// 空段（连续逗号、首尾逗号）跳过，与读取端一致；真正非法的是非数字、
+// 0、负数、超界。超过 MaxExemptPorts 拒绝整份，防手滑粘贴。
+// 规范化只做 trim 与去空段，不改用户端口顺序与分隔风格以外的排版意图——
+// 存的是校验通过后的逗号拼接，回填时可能与输入空格略有差异。
+func parseExemptPortsText(text string) (normalized string, ports []int, err error) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", nil, nil
+	}
+	var parts []string
+	seen := make(map[int]struct{})
+	for _, part := range strings.Split(trimmed, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, aerr := strconv.Atoi(part)
+		if aerr != nil || n <= 0 || n > 65535 {
+			return "", nil, fmt.Errorf("免代理端口 %q 非法：需为 1-65535 的整数（逗号分隔）", part)
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		ports = append(ports, n)
+		parts = append(parts, strconv.Itoa(n))
+		if len(ports) > MaxExemptPorts {
+			return "", nil, fmt.Errorf("免代理端口最多 %d 个", MaxExemptPorts)
+		}
+	}
+	return strings.Join(parts, ","), ports, nil
+}
+
+// SaveTransparentRules 原子保存自定义防火墙规则与免代理端口，并至多 Resync 一次。
+//
+// 界面「保存规则」一次提交两份数据；若先 SaveCustomRules 再 SaveExemptPorts，
+// 中间失败会出现"自定义已落库/已下发、端口被拒"的半成功，且成功路径会
+// Apply 两次（瞬时丢包加倍）。这里先校验两份、再连续写库、最后一次 Resync。
+//
+// Resync 失败向上返回（库已写入、宿主可能还是旧规则，不能谎报已生效）。
+// 待确认窗口内 Resync 会跳过下发（见 Resync 注释），调用方应用 Applied 区分文案。
+func (s *TransparentService) SaveTransparentRules(ctx context.Context, customText, exemptText string) error {
+	normalizedCustom, err := netcheck.NormalizeCustomRules(customText)
+	if err != nil {
+		s.logger.Errorf("保存自定义防火墙规则被拒绝（格式校验失败）: %v", err)
+		return err
+	}
+	normalizedExempt, _, err := parseExemptPortsText(exemptText)
+	if err != nil {
+		s.logger.Errorf("保存免代理端口被拒绝（格式校验失败）: %v", err)
+		return err
+	}
+
+	s.logger.Infof("保存透明代理规则扩展: customLines=%d exempt=%q tproxyManaged=%v",
+		len(normalizedCustom), normalizedExempt, s.tproxyManaged())
+
+	if err := s.store.SetSetting(settingCustomRules, customText); err != nil {
+		s.logger.Errorf("保存自定义防火墙规则失败: %v", err)
+		return fmt.Errorf("保存自定义防火墙规则失败: %w", err)
+	}
+	if err := s.store.SetSetting(settingExemptPorts, normalizedExempt); err != nil {
+		s.logger.Errorf("保存免代理端口失败: %v", err)
+		return fmt.Errorf("保存免代理端口失败: %w", err)
+	}
+	if err := s.Resync(ctx); err != nil {
+		s.logger.Errorf("透明代理规则扩展已落库，但重新应用失败: %v", err)
+		return fmt.Errorf("规则已保存到数据库，但重新应用到宿主失败（请检查系统设置里的「规则不同步」提示后重试）: %w", err)
+	}
+	if s.tproxyManaged() {
+		s.logger.Info("透明代理规则扩展已保存并已尝试同步到宿主")
+	} else {
+		s.logger.Info("透明代理规则扩展已保存（当前未托管 TProxy，仅落库）")
+	}
+	return nil
+}
+
+// SaveExemptPorts 仅保存免代理端口（测试与内部用）。
+// 面板保存入口走 SaveTransparentRules，避免与自定义规则分两次 Resync。
+func (s *TransparentService) SaveExemptPorts(ctx context.Context, text string) error {
+	normalized, _, err := parseExemptPortsText(text)
+	if err != nil {
+		return err
+	}
+	s.logger.Infof("保存免代理端口: %q tproxyManaged=%v", normalized, s.tproxyManaged())
+	if err := s.store.SetSetting(settingExemptPorts, normalized); err != nil {
+		s.logger.Errorf("保存免代理端口失败: %v", err)
+		return fmt.Errorf("保存免代理端口失败: %w", err)
+	}
+	if err := s.Resync(ctx); err != nil {
+		s.logger.Errorf("免代理端口已落库，但重新应用失败: %v", err)
+		return fmt.Errorf("免代理端口已保存到数据库，但重新应用到宿主失败（请检查系统设置里的「规则不同步」提示后重试）: %w", err)
+	}
+	return nil
+}
+
+// GetExemptPorts 返回用户配置的免代理端口原文（与保存时一致的字符串）。
+// 界面重新加载时回填输入框，不做任何格式化，避免用户排版被改动。
+func (s *TransparentService) GetExemptPorts() string {
+	return s.getString(settingExemptPorts, "")
+}
+
+// RulesHostApplyPending 为 true 表示 TProxy 已托管但处于待确认窗口：
+// Resync 不会重下发，保存规则/端口只会落库，宿主仍是启用时那套规则。
+func (s *TransparentService) RulesHostApplyPending() bool {
+	return s.tproxyManaged() && !s.pendingUntil().IsZero()
 }
 
 // dedupPorts 去重并保持原有顺序。
@@ -871,6 +1031,7 @@ func (s *TransparentService) Confirm(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
+		s.rollbackCtx = nil
 	}
 	s.mu.Unlock()
 
@@ -878,8 +1039,17 @@ func (s *TransparentService) Confirm(ctx context.Context) error {
 		s.logger.Errorf("透明代理确认失败（清除 pending 失败）: %v", err)
 		return err
 	}
+	// 待确认窗口内 Resync 故意跳过下发（避免打断用户验证、也避免与回滚逻辑抢规则）。
+	// 窗口内若用户改过免代理端口/自定义规则，库已更新但宿主仍是启用时那套——
+	// 确认后必须补一次同步，否则要等下次合并才带上新端口，表现为"填了不生效"。
+	if err := s.Resync(ctx); err != nil {
+		// 确认本身已成功（pending 已清）；规则同步失败单独记，界面仍显示已确认，
+		// RulesOutOfSync 会在 status 里露出，用户可再保存一次触发重试。
+		s.logger.Errorf("确认后同步防火墙规则失败（已确认，规则可能与配置不一致）: %v", err)
+	}
 	// 确认即表示规则已验证通过：此刻才把规则集写入开机链路
 	//（pending 窗口内不写——那套规则还可能被回滚，写进去就白恢复一次）。
+	// Resync 成功时内部也会 syncBootPersist；失败或无漂移时这里再对齐一次无害。
 	s.syncBootPersist(ctx)
 	s.logger.Info("透明代理已确认，自动回滚已取消")
 	return nil
@@ -890,6 +1060,7 @@ func (s *TransparentService) disable(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
+		s.rollbackCtx = nil
 	}
 	s.mu.Unlock()
 
@@ -1185,10 +1356,21 @@ func (s *TransparentService) ReconcileState(ctx context.Context) {
 // 只在已托管 TProxy 时动作。未托管（用户手填 tproxy-port、自己维护规则）时
 // 什么都不做——那些规则不属于面板。
 //
+// 并发说明：本方法用 s.mu 串行化。它会被三个来源触发——保存（SaveTransparentRules）、
+// 确认（Confirm）、合并流程（resyncTransparent），三者在"定时拉订阅合并 + 用户保存 +
+// 用户确认"并存时可能并发执行；而 Apply 是删表重建 + 策略路由 purge，两个并发 Apply
+// 会让规则在中途互相删除/重建，出现短暂断流与不确定的最终参数。串行化后第二个
+// Resync 会基于已更新的 appliedSig 重新比对，通常直接幂等返回。调用方不得在已持有
+// s.mu 时调用本方法（本方法内部不会重新获取，但 enable/disable 的 reload 回调路径
+// 都在锁外调用 Resync，契约如此）。
+//
 // 返回 error 供 SaveCustomRules 等需要如实上报"是否已立即生效"的调用方使用；
 // 合并流程末尾的 resyncTransparent 仍可忽略返回值（配置已落盘，规则同步
 // 失败不该让"保存配置"报失败）。
 func (s *TransparentService) Resync(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !s.hasApplier() {
 		return nil
 	}
@@ -1344,6 +1526,7 @@ func (s *TransparentService) startRollbackTimer(until time.Time) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
+	s.rollbackCtx = ctx
 
 	d := until.Sub(s.now())
 	go func() {
@@ -1351,6 +1534,18 @@ func (s *TransparentService) startRollbackTimer(until time.Time) {
 		case <-ctx.Done():
 			return
 		case <-time.After(d):
+		}
+		// 从 select 返回后，ctx.Done 对 Confirm 的 cancel 已不再生效——
+		// Confirm 只取消还在等 ctx.Done 的 goroutine。这里再查一次"当前
+		// 活动 timer 是否还是我"：Confirm/disable 都会把 rollbackCtx 置 nil，
+		// 若已不是，说明状态已被其它路径接管（已确认或已关闭），
+		// 必须放弃回滚，否则会与 Confirm 的 Resync 并发执行 disable，
+		// 出现"用户确认成功、规则却被拆掉"的竞态。
+		s.mu.Lock()
+		mine := s.rollbackCtx == ctx
+		s.mu.Unlock()
+		if !mine {
+			return
 		}
 		s.logger.Error("透明代理未在时限内确认，自动回滚")
 		if err := s.disable(context.Background()); err != nil {

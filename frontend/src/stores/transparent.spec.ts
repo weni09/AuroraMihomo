@@ -613,6 +613,7 @@ describe('自定义防火墙规则', () => {
     mockedApi.get.mockResolvedValue({
       data: {
         customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n',
+        exemptPorts: '853, 443',
         iptablesBackend: 'nf_tables',
         builtinNFTRules: 'table inet aurora_tproxy { }',
         policyRoutes: ['ip rule add fwmark 1 table 100'],
@@ -623,16 +624,18 @@ describe('自定义防火墙规则', () => {
     await s.fetchRules()
 
     expect(s.rules?.customRules).toContain('-t nat -A')
+    expect(s.rules?.exemptPorts).toBe('853, 443')
     expect(s.rules?.iptablesBackend).toBe('nf_tables')
     expect(s.rules?.policyRoutes).toEqual(['ip rule add fwmark 1 table 100'])
     expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules', { skipErrorToast: true })
   })
 
-  it('saveRules 提交原文并在成功后刷新展示数据', async () => {
+  it('saveRules 提交规则原文与免代理端口并在成功后刷新展示数据', async () => {
     mockedApi.put.mockResolvedValue({ data: { message: 'ok' } })
     mockedApi.get.mockResolvedValue({
       data: {
         customRules: 'iptables -A INPUT -j ACCEPT\n',
+        exemptPorts: '853, 443',
         iptablesBackend: 'legacy',
         builtinNFTRules: '',
         policyRoutes: [],
@@ -643,11 +646,12 @@ describe('自定义防火墙规则', () => {
     s.status.enabled = true
     s.status.mode = 'tproxy'
 
-    const ok = await s.saveRules('iptables -A INPUT -j ACCEPT\n')
+    const ok = await s.saveRules('iptables -A INPUT -j ACCEPT\n', '853, 443')
 
     expect(ok).toBe(true)
     expect(mockedApi.put).toHaveBeenCalledWith('/transparent/rules', {
       customRules: 'iptables -A INPUT -j ACCEPT\n',
+      exemptPorts: '853, 443',
     }, { skipErrorToast: true })
     // 保存成功后重新拉取，内置规则文本可能随参数变化
     expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules', { skipErrorToast: true })
@@ -658,6 +662,7 @@ describe('自定义防火墙规则', () => {
     mockedApi.get.mockResolvedValue({
       data: {
         customRules: 'old',
+        exemptPorts: '',
         iptablesBackend: '',
         builtinNFTRules: '',
         policyRoutes: [],
@@ -668,7 +673,7 @@ describe('自定义防火墙规则', () => {
     await s.fetchRules()
     const before = s.rules
 
-    const ok = await s.saveRules('非法行')
+    const ok = await s.saveRules('非法行', '853')
 
     expect(ok).toBe(false)
     expect(s.rules).toBe(before)

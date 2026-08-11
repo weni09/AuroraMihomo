@@ -51,7 +51,10 @@ onMounted(async () => {
     loadPolicy(),
     // 自定义规则与内置规则展示数据独立拉取（见 store 的 fetchRules 注释）
     tp.fetchRules().then(() => {
-      if (tp.rules) customRulesDraft.value = tp.rules.customRules
+      if (tp.rules) {
+        customRulesDraft.value = tp.rules.customRules
+        exemptPortsDraft.value = tp.rules.exemptPorts
+      }
     }),
     // 组件开关状态来自 /adguard/status（关组件时 status 仍可读）
     adguard.fetchStatus(),
@@ -60,6 +63,15 @@ onMounted(async () => {
 
 /** 自定义规则草稿：textarea 直接双向绑定（与 CDN 列表同款），保存时才提交 */
 const customRulesDraft = ref('')
+
+/**
+ * 免代理端口草稿（逗号分隔，如 "853,443"）。
+ *
+ * 与自定义规则分开：端口走内置规则通道（与 SSH/面板/内核 API 一样生成
+ * return 规则、排在 catch-all 之前），对目的端口放行才真正生效；自定义规则
+ * 追加在 catch-all 之后，对已被接管的流量无效（见设置项下方说明）。
+ */
+const exemptPortsDraft = ref('')
 
 /**
  * iptables 后端徽章文案。
@@ -80,9 +92,10 @@ const backendIsLegacy = computed(
 )
 
 const onSaveCustomRules = async () => {
-  if (await tp.saveRules(customRulesDraft.value)) {
+  if (await tp.saveRules(customRulesDraft.value, exemptPortsDraft.value)) {
     // 后端存原文，保存成功后把服务端原文回填草稿（含注释排版）
     customRulesDraft.value = tp.rules?.customRules ?? customRulesDraft.value
+    exemptPortsDraft.value = tp.rules?.exemptPorts ?? exemptPortsDraft.value
   }
 }
 
@@ -1010,12 +1023,42 @@ const navOpen = ref(false)
               class="mt-2 font-mono text-xs"
               placeholder="# 示例：放行内网回程&#10;iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN"
             />
+
+            <!-- 免代理端口：与自定义规则是两条通道。端口走内置规则通道，
+                 与 SSH/面板/内核 API 一样生成 return 规则、排在 catch-all 之前，
+                 目的端口放行才真正生效；自定义规则追加在 catch-all 之后，
+                 对已被接管流量的放行无效。 -->
+            <div class="mt-3">
+              <Label for="transparent-exempt-ports" class="text-xs font-medium text-fg-strong">
+                免代理端口
+              </Label>
+              <Input
+                id="transparent-exempt-ports"
+                v-model="exemptPortsDraft"
+                class="mt-1 font-mono text-xs"
+                placeholder="853, 443（逗号分隔，空串清空）"
+              />
+              <p class="text-xs text-fg-subtle mt-1">
+                这些端口的 TCP/UDP 流量不经代理（内置规则在 catch-all 之前 return）。
+                需要按目的端口放行时请用这里；自定义防火墙规则追加在内置规则之后，
+                对已被接管的流量无效。
+              </p>
+            </div>
             <div class="mt-2 flex flex-wrap items-center gap-2">
               <Button size="sm" :disabled="tp.savingRules" @click="onSaveCustomRules">
                 {{ tp.savingRules ? '保存中…' : '保存规则' }}
               </Button>
-              <span v-if="tp.status.enabled && tp.status.mode === 'tproxy'" class="text-xs text-fg-subtle">
+              <span
+                v-if="tp.status.enabled && tp.status.mode === 'tproxy' && !tp.status.pendingConfirm"
+                class="text-xs text-fg-subtle"
+              >
                 保存后立即重新应用
+              </span>
+              <span
+                v-else-if="tp.status.enabled && tp.status.mode === 'tproxy'"
+                class="text-xs text-fg-subtle"
+              >
+                待确认网络期间仅写入数据库，确认后会同步到宿主
               </span>
             </div>
 

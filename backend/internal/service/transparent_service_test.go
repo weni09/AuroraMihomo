@@ -1727,3 +1727,213 @@ func TestSaveCustomRulesReturnsResyncError(t *testing.T) {
 		t.Fatalf("错误应说明重应用失败: %v", err)
 	}
 }
+
+// ---------- 免代理端口 ----------
+
+// 保存后指纹变化，Resync 重下发；端口进入 ExemptPorts 而非 KeepPorts
+// （KeepPorts 仅 TCP 管理通道，Exempt 走 TCP+UDP 规则）。
+func TestSaveExemptPortsGoesToExemptField(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	s.SetManagementPorts(8899, func() int { return 9090 })
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	for _, want := range []int{22, 8899, 9090} {
+		if !containsInt(app.lastParams.KeepPorts, want) {
+			t.Fatalf("初始 KeepPorts 应含 %d，实际 %v", want, app.lastParams.KeepPorts)
+		}
+	}
+
+	if err := s.SaveExemptPorts(context.Background(), "853, 443"); err != nil {
+		t.Fatalf("保存免代理端口失败: %v", err)
+	}
+	if applied, _, _ := app.counts(); applied != 2 {
+		t.Fatalf("保存后应立即重下发，实际下发 %d 次", applied)
+	}
+	for _, want := range []int{853, 443} {
+		if !containsInt(app.lastParams.ExemptPorts, want) {
+			t.Errorf("重下发应带 ExemptPorts %d，实际 %v", want, app.lastParams.ExemptPorts)
+		}
+		if containsInt(app.lastParams.KeepPorts, want) {
+			t.Errorf("用户免代理端口不应并入 KeepPorts（仅 TCP），实际 KeepPorts=%v", app.lastParams.KeepPorts)
+		}
+	}
+	for _, want := range []int{22, 8899, 9090} {
+		if !containsInt(app.lastParams.KeepPorts, want) {
+			t.Errorf("固定放行端口 %d 不应丢失，实际 %v", want, app.lastParams.KeepPorts)
+		}
+	}
+
+	if err := s.SaveExemptPorts(context.Background(), ""); err != nil {
+		t.Fatalf("清空免代理端口失败: %v", err)
+	}
+	if len(app.lastParams.ExemptPorts) != 0 {
+		t.Errorf("清空后 ExemptPorts 应为空，实际 %v", app.lastParams.ExemptPorts)
+	}
+}
+
+// SaveTransparentRules 一次校验两份、一次 Resync：免代理非法时自定义规则也不落库。
+func TestSaveTransparentRulesAtomicReject(t *testing.T) {
+	s, store, _, _ := newResyncSvc(t)
+	err := s.SaveTransparentRules(context.Background(),
+		"iptables -A INPUT -j ACCEPT\n", "not-a-port")
+	if err == nil {
+		t.Fatal("非法免代理端口应拒绝整次保存")
+	}
+	if _, err := store.GetSetting(settingCustomRules); err == nil {
+		t.Fatal("免代理校验失败时自定义规则也不应落库")
+	}
+	if _, err := store.GetSetting(settingExemptPorts); err == nil {
+		t.Fatal("免代理校验失败时不应落库")
+	}
+}
+
+// 成功路径只 Apply 一次（原子保存，不是先规则后端口各 Resync 一次）。
+func TestSaveTransparentRulesSingleResync(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	before, _, _ := app.counts()
+	if err := s.SaveTransparentRules(context.Background(),
+		"iptables -t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN\n", "853,443"); err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+	after, _, _ := app.counts()
+	if after-before != 1 {
+		t.Fatalf("原子保存应只重下发 1 次，实际 +%d", after-before)
+	}
+	if !containsInt(app.lastParams.ExemptPorts, 853) || !containsInt(app.lastParams.ExemptPorts, 443) {
+		t.Errorf("应带上免代理端口，实际 %v", app.lastParams.ExemptPorts)
+	}
+	if len(app.lastParams.CustomRules) != 1 {
+		t.Errorf("应带上自定义规则，实际 %v", app.lastParams.CustomRules)
+	}
+}
+
+// 待确认窗口内保存只落库、不 Apply；确认后补一次同步。
+func TestSaveDuringPendingThenConfirmResyncs(t *testing.T) {
+	s, store, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	// 未 Confirm：仍在 pending
+	if !s.RulesHostApplyPending() {
+		t.Fatal("启用后应处于待确认")
+	}
+	before, _, _ := app.counts()
+	if err := s.SaveTransparentRules(context.Background(), "", "853"); err != nil {
+		t.Fatalf("pending 内保存应成功（仅落库）: %v", err)
+	}
+	if mid, _, _ := app.counts(); mid != before {
+		t.Fatalf("pending 内 Resync 不应下发，Apply %d→%d", before, mid)
+	}
+	v, _ := store.GetSetting(settingExemptPorts)
+	if v != "853" {
+		t.Fatalf("应已落库 exempt=853，实际 %q", v)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	if after, _, _ := app.counts(); after != before+1 {
+		t.Fatalf("确认后应补一次下发，Apply %d→%d", before, after)
+	}
+	if !containsInt(app.lastParams.ExemptPorts, 853) {
+		t.Errorf("确认后规则应含 853，实际 %v", app.lastParams.ExemptPorts)
+	}
+}
+
+// 非法端口（非数字、0、超界）必须拒绝整份保存，且不落库。
+func TestSaveExemptPortsRejectsInvalid(t *testing.T) {
+	s, store, _, _ := newResyncSvc(t)
+
+	// 空段（如 "853,,443"、尾部逗号）按"正常化"容忍，与读取端解析一致；
+	// 真正非法的是非数字、0、负数和超界端口。
+	for _, bad := range []string{"853,abc", "0", "65536", "853,-1"} {
+		if err := s.SaveExemptPorts(context.Background(), bad); err == nil {
+			t.Errorf("应拒绝非法端口列表 %q", bad)
+		}
+	}
+	if _, err := store.GetSetting(settingExemptPorts); err == nil {
+		t.Fatal("校验失败时不应落库")
+	}
+}
+
+// 重应用失败时必须返回 error，不能谎报"已保存并已生效"。
+func TestSaveExemptPortsReturnsResyncError(t *testing.T) {
+	s, _, app, _ := newResyncSvc(t)
+	if err := s.Update(context.Background(), true, "tproxy", 7893, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	app.applyErr = errors.New("模拟下发失败")
+	err := s.SaveExemptPorts(context.Background(), "853")
+	if err == nil {
+		t.Fatal("重应用失败时应返回 error")
+	}
+	if !strings.Contains(err.Error(), "重新应用") && !strings.Contains(err.Error(), "重新下发") {
+		t.Fatalf("错误应说明重应用失败: %v", err)
+	}
+}
+
+// 存储被外部写坏（含非数字端口）时，读取应容忍并跳过坏值：
+// 让整份规则因一个坏值拒绝下发，比丢豁免更糟（内置规则仍放行 SSH 与面板）。
+func TestExemptPortsToleratesCorruptStore(t *testing.T) {
+	s, store, _, _ := newResyncSvc(t)
+	if err := store.SetSetting(settingExemptPorts, "853,bad,443"); err != nil {
+		t.Fatalf("预置坏数据失败: %v", err)
+	}
+	got := s.exemptPorts()
+	for _, want := range []int{853, 443} {
+		if !containsInt(got, want) {
+			t.Errorf("应保留合法端口 %d，实际 %v", want, got)
+		}
+	}
+}
+
+func containsInt(list []int, v int) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// 确认后旧回滚定时器必须失效：不能出现"用户确认成功、定时器随后仍触发 disable"
+// 的竞态。enabled 时 Update 会启动 90 秒 timer，Confirm 把它取消并置空
+// rollbackCtx；这里等一段远超"并发窗口"的时间，断言没有发生回滚（tornDown 不增、
+// 状态仍启用）。
+//
+// 竞态本体（timer 在超时瞬间恰好赶上 Confirm 的 cancel）无法用真实时钟
+// 确定性构造，本用例至少覆盖"Confirm 后旧 timer 彻底失效"的可观测行为；
+// 超时分支的 rollbackCtx 校验由 startRollbackTimer 的注释与 race 测试兜底。
+func TestConfirmedEnableDoesNotAutoRollback(t *testing.T) {
+	s, _, app, _ := newSvcWithBase(t, reportWith("linux", netcheck.ModeTProxy), "")
+	if err := s.Update(context.Background(), true, "tproxy", 0, ""); err != nil {
+		t.Fatalf("启用失败: %v", err)
+	}
+	if !s.RulesHostApplyPending() {
+		t.Fatal("启用后应处于待确认")
+	}
+	if err := s.Confirm(context.Background()); err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	_, before, _ := app.counts()
+	time.Sleep(300 * time.Millisecond)
+	_, after, _ := app.counts()
+	if after != before {
+		t.Errorf("确认后定时器不应触发回滚拆除，tornDown %d→%d", before, after)
+	}
+	if st, _ := s.Status(); !st.Enabled || st.PendingConfirm {
+		t.Errorf("确认后应保持启用且无 pending，实际 enabled=%v pending=%v", st.Enabled, st.PendingConfirm)
+	}
+}

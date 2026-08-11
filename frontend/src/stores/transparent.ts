@@ -129,6 +129,12 @@ const emptyEnv = (): TransparentEnvReport => ({
 export interface TransparentRules {
   /** 用户自定义规则原文（未规范化，保留注释与空行） */
   customRules: string
+  /**
+   * 用户配置的免代理端口（逗号分隔的原文，如 "853,443"）。
+   * 生成 TCP+UDP 内置 return，排在 catch-all 之前；自定义规则追加在
+   * catch-all 之后，对已被接管流量的放行无效。
+   */
+  exemptPorts: string
   /** iptables 命令的后端类型：nf_tables / legacy / 空 */
   iptablesBackend: string
   /** 面板内置 nft 规则文本（按当前配置参数生成） */
@@ -515,17 +521,17 @@ export const useTransparentStore = defineStore('transparent', {
     },
 
     /**
-     * 保存自定义防火墙规则（PUT /transparent/rules）。
+     * 保存自定义防火墙规则与免代理端口（PUT /transparent/rules）。
      *
-     * 后端会校验每行格式并在 TProxy 运行中时立即重新应用；
-     * 保存成功后重新拉取展示数据（内置规则文本可能随参数变化）。
+     * 后端会校验自定义规则每行格式与免代理端口合法性，并在 TProxy 运行中时
+     * 立即重新应用；保存成功后重新拉取展示数据（内置规则文本可能随参数变化）。
      */
-    async saveRules(text: string): Promise<boolean> {
+    async saveRules(text: string, exemptPorts: string): Promise<boolean> {
       this.savingRules = true
       try {
         const res = await api.put<{ message?: string }>(
           '/transparent/rules',
-          { customRules: text },
+          { customRules: text, exemptPorts },
           { skipErrorToast: true },
         )
         // 成功文案以后端为准：重应用失败时后端会返回错误，不会走到这里

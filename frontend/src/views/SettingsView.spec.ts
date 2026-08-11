@@ -47,6 +47,7 @@ function stubApi() {
       return Promise.resolve({
         data: {
           customRules: '',
+          exemptPorts: '853, 443',
           iptablesBackend: 'nf_tables',
           builtinNFTRules: 'table inet aurora_tproxy { }',
           policyRoutes: ['ip rule add fwmark 1 table 100'],
@@ -267,11 +268,14 @@ describe('SettingsView 自定义防火墙规则', () => {
     return wrapper
   }
 
-  it('渲染规则编辑器、iptables 后端徽章与内置规则查看入口', async () => {
+  it('渲染规则编辑器、免代理端口输入、iptables 后端徽章与内置规则查看入口', async () => {
     const wrapper = await mountLoaded()
 
     expect(wrapper.text()).toContain('iptables 后端：nf_tables（与 nftables 互通）')
     expect(wrapper.find('textarea').exists()).toBe(true)
+    expect(wrapper.text()).toContain('免代理端口')
+    // 免代理端口由接口数据回填
+    expect(wrapper.find('input#transparent-exempt-ports').element as HTMLInputElement).toHaveProperty('value', '853, 443')
     expect(wrapper.text()).toContain('查看面板内置防火墙规则')
     // 内置规则文本按当前配置参数生成，应已渲染
     expect(wrapper.text()).toContain('table inet aurora_tproxy { }')
@@ -279,11 +283,12 @@ describe('SettingsView 自定义防火墙规则', () => {
     wrapper.unmount()
   })
 
-  it('点保存规则提交 PUT 并提示已保存', async () => {
+  it('点保存规则提交 PUT（含免代理端口）并提示已保存', async () => {
     mockedApi.put.mockResolvedValue({ data: { message: 'ok' } })
     const wrapper = await mountLoaded()
 
     await wrapper.find('textarea').setValue('-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN')
+    await wrapper.find('input#transparent-exempt-ports').setValue('853, 443')
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === '保存规则')
     expect(saveBtn).toBeDefined()
     await saveBtn!.trigger('click')
@@ -293,6 +298,7 @@ describe('SettingsView 自定义防火墙规则', () => {
         '/transparent/rules',
         {
           customRules: '-t nat -A PREROUTING -d 10.0.0.0/8 -j RETURN',
+          exemptPorts: '853, 443',
         },
         // transparent store 对这类后台保存统一跳过错误 toast（拦截器不再弹第二遍）
         { skipErrorToast: true },

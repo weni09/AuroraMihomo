@@ -63,7 +63,15 @@ type TProxyParams struct {
 	// KeepPorts 必须直连的本机端口（SSH、面板、内核 API）。
 	// 这是防"锁死自己"的第一道保障：规则里最先为它们放行，
 	// 顺序错了就可能在 SSH 会话中把自己关在门外。
+	// 仅 TCP：这些管理通道都是 TCP，不写 UDP 以免无谓放宽。
 	KeepPorts []int
+	// ExemptPorts 用户配置的免代理端口（目的端口放行）。
+	//
+	// 与 KeepPorts 分开而不是混进同一列表：管理端口只放行 TCP，用户端口
+	// 必须同时覆盖 TCP 与 UDP（QUIC、游戏、DoQ 等）。混在一起会让 SSH/面板
+	// 也写成 UDP return，或让用户端口只剩 TCP——两种都是错的。
+	// 规则位置仍在 catch-all 之前（与 KeepPorts 同级），才能真正生效。
+	ExemptPorts []int
 	// EnableIPv6 是否同时下发 IPv6 规则。
 	//
 	// 由调用方按宿主是否真的有 IPv6 出网能力决定（见 Report.HasIPv6Egress）。
@@ -173,6 +181,8 @@ func BuildNFTRules(p TProxyParams) (string, error) {
 	for _, port := range p.KeepPorts {
 		w("    meta l4proto tcp tcp dport %d return", port)
 	}
+	// 用户免代理端口：TCP+UDP 目的端口都放行（见 ExemptPorts 字段注释）
+	p.writeExemptPortReturns(w, true)
 	w("    meta mark 0x%x return", KernelMark)
 	w("    meta mark 0x%x return", PanelMark)
 	// DNS 劫持必须排在 socket 匹配与局域网放行之前。
@@ -210,6 +220,8 @@ func BuildNFTRules(p TProxyParams) (string, error) {
 	for _, port := range p.KeepPorts {
 		w("    meta l4proto tcp tcp dport %d return", port)
 	}
+	// 用户免代理端口：本机出站 sport/dport 的 TCP+UDP 一并放行
+	p.writeExemptPortReturns(w, false)
 	w("    meta mark 0x%x return", KernelMark)
 	w("    meta mark 0x%x return", PanelMark)
 	// 本机自身的 DNS 查询在这条链上必须**放行**，交给下面的 nat 链改写目的端口。
@@ -257,6 +269,33 @@ func BuildNFTRules(p TProxyParams) (string, error) {
 	w("}")
 
 	return b.String(), nil
+}
+
+// writeExemptPortReturns 为用户配置的免代理端口写 return 规则。
+//
+// prerouting=true：只按 dport 放行（局域网设备访问该端口的流量不进 TPROXY）。
+// prerouting=false（output 链）：sport 与 dport 都写——本机服务回包是 sport，
+// 本机主动访问对端端口是 dport，与 KeepPorts 在 output 链上的双写一致。
+//
+// 用 th dport/sport 一次覆盖 TCP+UDP：与 DNS 劫持写法同构，避免 tcp/udp 各写
+// 一条导致规则膨胀、读起来像漏写。
+//
+// 注意端口 53 的不对称：prerouting 里免代理 return 排在 DNS 劫持之前，
+// 局域网设备的 53 查询会被直接放行；但本机出站 53 在 mangle output 放行后，
+// nat_output 链仍会把它 redirect 到 mihomo 的 DNS 端口——本机豁免 53 并不
+// 真正生效（也正好避免用户把面板的 DNS 劫持误关掉）。
+func (p TProxyParams) writeExemptPortReturns(w func(string, ...interface{}), prerouting bool) {
+	for _, port := range p.ExemptPorts {
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		if prerouting {
+			w("    meta l4proto { tcp, udp } th dport %d return", port)
+			continue
+		}
+		w("    meta l4proto { tcp, udp } th sport %d return", port)
+		w("    meta l4proto { tcp, udp } th dport %d return", port)
+	}
 }
 
 // writeLANReturns 放行局域网网段。

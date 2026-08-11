@@ -685,3 +685,47 @@ func TestNATChainUsesConfiguredDNSPort(t *testing.T) {
 		t.Errorf("redirect 应指向配置的 DNS 端口 5353，实际:\n%s", nat)
 	}
 }
+
+// 用户免代理端口：TCP+UDP return，且必须在 tproxy catch-all 之前。
+func TestNFTRulesExemptUserPortsTCPUDPBeforeTProxy(t *testing.T) {
+	p := sampleParams()
+	p.ExemptPorts = []int{853, 443}
+	out, err := BuildNFTRules(p)
+	if err != nil {
+		t.Fatalf("生成规则失败: %v", err)
+	}
+	pre := chainBody(t, out, "prerouting")
+	outChain := chainBody(t, out, "output")
+	firstTProxy := strings.Index(pre, "tproxy ")
+	if firstTProxy < 0 {
+		t.Fatalf("prerouting 缺少 tproxy:\n%s", pre)
+	}
+	for _, port := range []int{853, 443} {
+		needle := "th dport " + itoa(port) + " return"
+		idx := strings.Index(pre, needle)
+		if idx < 0 {
+			t.Errorf("prerouting 缺少 UDP/TCP 目的端口放行 %d:\n%s", port, pre)
+			continue
+		}
+		if idx > firstTProxy {
+			t.Errorf("免代理端口 %d 出现在 tproxy 之后", port)
+		}
+		if !strings.Contains(pre, "meta l4proto { tcp, udp } th dport "+itoa(port)) {
+			t.Errorf("prerouting 端口 %d 应为 tcp+udp", port)
+		}
+		// output：sport 与 dport
+		if !strings.Contains(outChain, "th sport "+itoa(port)+" return") {
+			t.Errorf("output 缺少 sport 放行 %d:\n%s", port, outChain)
+		}
+		if !strings.Contains(outChain, "th dport "+itoa(port)+" return") {
+			t.Errorf("output 缺少 dport 放行 %d:\n%s", port, outChain)
+		}
+	}
+	// 管理端口仍仅 TCP，不因 Exempt 改写
+	if strings.Contains(pre, "th dport 22 return") {
+		t.Error("SSH 22 不应写成 th dport（应保持 tcp dport）")
+	}
+	if !strings.Contains(pre, "tcp dport 22 return") {
+		t.Error("SSH 22 应仍为 tcp dport return")
+	}
+}

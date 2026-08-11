@@ -36,10 +36,12 @@ func (l *GetTransparentRulesLogic) GetTransparentRules() (resp *types.Transparen
 		return nil, err
 	}
 	custom := l.svcCtx.TransparentService.GetCustomRules()
+	exemptPorts := l.svcCtx.TransparentService.GetExemptPorts()
 	// l.Infof("面板操作：查询透明代理规则完成 customBytes=%d activeBytes=%d backend=%s",
 	// 	len(custom), len(active), l.svcCtx.TransparentService.IPTablesBackend())
 	return &types.TransparentRulesResp{
 		CustomRules:     custom,
+		ExemptPorts:     exemptPorts,
 		IptablesBackend: l.svcCtx.TransparentService.IPTablesBackend(),
 		BuiltinNFTRules: builtin,
 		PolicyRoutes:    policyRoutes,

@@ -507,10 +507,15 @@ type TransparentProvisionStep struct {
 
 type TransparentRulesReq struct {
 	CustomRules string `json:"customRules"`
+	// ExemptPorts 免代理端口（逗号分隔的数字列表，如 "853,443"；空串清空）
+	ExemptPorts string `json:"exemptPorts"`
 }
 
 type TransparentRulesResp struct {
-	CustomRules     string   `json:"customRules"`
+	CustomRules string `json:"customRules"`
+	// ExemptPorts 用户配置的免代理端口（逗号分隔的原文，如 "853,443"）。
+	// 生成 TCP+UDP 内置 return、排在 catch-all 之前；与 KeepPorts（仅 TCP）分字段。
+	ExemptPorts     string   `json:"exemptPorts"`
 	IptablesBackend string   `json:"iptablesBackend"`
 	BuiltinNFTRules string   `json:"builtinNFTRules"`
 	PolicyRoutes    []string `json:"policyRoutes"`
