@@ -118,3 +118,23 @@ func IsLocalDialableHost(host string) bool {
 	}
 	return false
 }
+
+// IsAllowedKernelUpstream 判断 mihomo 反代上游是否允许：回环 / localhost /
+// 本机接口 IP / 私网地址（RFC1918、ULA、链路本地）。域名与公网 IP 拒绝。
+//
+// 与 IsLocalDialableHost 的区别：external-controller 可能配置为「nginx/内核在
+// 出网口机器、管理端在另一台」这类分机部署下的私网地址——此时回环与本机
+// 接口都不满足，但该地址仍是用户自己配置的本地内核服务，应当放行。
+// 公网 IP 与域名继续拒绝：external-controller 来自 config.yaml，攻击者无法
+// 通过请求参数指定上游，真正的风险是配置被订阅/污染改写，私网放行不影响
+// 这层防护，公网仍被挡在门外。
+func IsAllowedKernelUpstream(host string) bool {
+	if IsLocalDialableHost(host) {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}

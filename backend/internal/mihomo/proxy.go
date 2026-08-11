@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"auroramihomo/backend/internal/auth"
+
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // 同源反代前缀。zashboard 通过 secondaryPath=/mihomo-api 把 API 与 WebSocket
@@ -66,15 +68,17 @@ func NewKernelAPIProxyHandler(jwtSecret string, ver *auth.PasswordVer, targetRes
 			http.Error(w, "mihomo external-controller unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		// 上游须为本机可达地址（回环 / 本机接口 IP）。
-		// 与 /adguard-ui 同策略：拒绝域名与外网 IP，防 SSRF。
-		if host, _, err := net.SplitHostPort(addr); err == nil && !auth.IsLocalDialableHost(host) {
-			http.Error(w, "upstream must be a local IP address", http.StatusBadGateway)
+		// 上游白名单：回环 / 本机接口 IP / 私网地址（分机部署的内核常配置成
+		// 其它机器的私网 IP）。域名与公网 IP 拒绝，防配置被污染成 SSRF 跳板。
+		if host, _, err := net.SplitHostPort(addr); err == nil && !auth.IsAllowedKernelUpstream(host) {
+			logx.Errorf("mihomo-api proxy rejected upstream %q (path=%s): not local/private", addr, r.URL.Path)
+			http.Error(w, "upstream must be a local or private IP address", http.StatusBadGateway)
 			return
 		}
 
 		target, err := url.Parse("http://" + addr)
 		if err != nil || target.Host == "" {
+			logx.Errorf("mihomo-api proxy invalid upstream %q (path=%s): %v", addr, r.URL.Path, err)
 			http.Error(w, "invalid upstream", http.StatusBadGateway)
 			return
 		}
@@ -141,7 +145,9 @@ func NewKernelAPIProxyHandler(jwtSecret string, ver *auth.PasswordVer, targetRes
 			resp.Header.Set("Cache-Control", "no-store")
 			return nil
 		}
-		proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, _ error) {
+		proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+			// 上游 dial / 请求失败：打日志便于排查「内核没跑 / 端口不对 / 私网不通」。
+			logx.Errorf("mihomo-api proxy upstream error (path=%s): %v", req.URL.Path, err)
 			http.Error(rw, "bad gateway", http.StatusBadGateway)
 		}
 

@@ -142,20 +142,40 @@ func TestKernelAPIProxy_Unavailable_503(t *testing.T) {
 	}
 }
 
-// SSRF 防线：external-controller 被改写成外网地址时必须拒绝，
-// 与 /adguard-ui 的反代白名单同源。
-func TestKernelAPIProxy_RejectsNonLoopbackUpstream_502(t *testing.T) {
+// SSRF 防线：external-controller 被改写成公网地址时必须拒绝，
+// 与 /adguard-ui 的反代白名单同源（公网 IP 与域名拒绝）。
+func TestKernelAPIProxy_RejectsPublicUpstream_502(t *testing.T) {
+	for _, upstream := range []string{"8.8.8.8:9090", "example.com:9090"} {
+		h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
+			func() (string, string) { return upstream, "" }, nil)
+		req := httptest.NewRequest(http.MethodGet, "/mihomo-api/version", nil)
+		req.AddCookie(authCookie(t, 0))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("upstream %q: status = %d, want 502", upstream, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "local or private") {
+			t.Fatalf("upstream %q: body = %q, want local/private hint", upstream, rec.Body.String())
+		}
+	}
+}
+
+// 分机部署：内核配置成其它机器的私网 IP（如 nginx/内核在 192.168.1.252、
+// 管理端在别处）。白名单必须放行私网地址——本用例只断言「未被白名单拒绝」，
+// 不对 dial 结果做假设（本机若恰好可达该 mihomo 会返回 200，否则 502）。
+func TestKernelAPIProxy_AllowsPrivateUpstream(t *testing.T) {
 	h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
-		func() (string, string) { return "8.8.8.8:9090", "" }, nil)
+		func() (string, string) { return "192.168.1.252:9090", "" }, nil)
 	req := httptest.NewRequest(http.MethodGet, "/mihomo-api/version", nil)
 	req.AddCookie(authCookie(t, 0))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502", rec.Code)
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusServiceUnavailable {
+		t.Fatalf("私网上游不应在鉴权/可用性阶段被拒，status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "local IP") {
-		t.Fatalf("body = %q, want local IP hint", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "local or private") {
+		t.Fatalf("私网上游不应被白名单拒绝，body = %q", rec.Body.String())
 	}
 }
 
