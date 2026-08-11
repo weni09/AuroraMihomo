@@ -51,6 +51,10 @@ func (m *mockMihomo) AttachExternal(pid int, version string) (bool, error) {
 	return false, nil
 }
 
+func (m *mockMihomo) DiscoverAndAttach() (bool, error) {
+	return false, nil
+}
+
 func (m *mockMihomo) Status() mihomo.Status { return mihomo.Status{} }
 
 func (m *mockMihomo) ValidateConfig(ctx context.Context, configPath string) error {

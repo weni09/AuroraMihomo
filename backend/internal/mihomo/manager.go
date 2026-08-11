@@ -57,6 +57,11 @@ type Manager interface {
 	// 用此方法接管旧 PID，避免重复拉起、也避免状态面板误报「已停止」。
 	// 进程不存在或 PID 无效时返回 false,nil，调用方应退回 Start。
 	AttachExternal(pid int, version string) (bool, error)
+	// DiscoverAndAttach 在 Start 前探测是否已有外部 mihomo 进程在跑
+	// （自升级遗留 / 孤儿内核），找到则纳入托管并返回 true。
+	// 用于「库 PID 缺失或失效」的兜底：直接 Start 会与在跑内核双开抢端口。
+	// 找不到或平台不支持时返回 false,nil，调用方退回 Start。
+	DiscoverAndAttach() (bool, error)
 	Status() Status
 	ValidateConfig(ctx context.Context, configPath string) error
 	Version(ctx context.Context) (string, error)
@@ -227,6 +232,34 @@ func (m *ProcessManager) AttachExternal(pid int, version string) (bool, error) {
 	return true, nil
 }
 
+// DiscoverAndAttach 在 Start 前探测是否已有外部 mihomo 进程在跑并接管。
+//
+// 背景：启动路径在「库 PID 缺失或失效」时仍可能面对一个正在监听
+// 代理/DNS/external-controller 端口的外部内核（自升级遗留、旧主进程异常
+// 退出后留下的孤儿）。此时直接 Start 会双开抢端口——两个进程一个 bind
+// 失败退出、TProxy 规则对不上端口 → 面板闪断 + 全面断网。
+//
+// 先按进程表找 mihomo 再 AttachExternal；已在托管时幂等返回 true。
+// 找不到（无 /proc、Windows、确实没有内核在跑）返回 false,nil，由调用方
+// 退回 Start。平台差异见 findRunningMihomoPid（Linux 扫 /proc，其余返回 0）。
+func (m *ProcessManager) DiscoverAndAttach() (bool, error) {
+	m.mu.RLock()
+	managed := m.cmd != nil && m.cmd.Process != nil
+	m.mu.RUnlock()
+	if managed {
+		return true, nil // 已在托管（含已托管的孤儿），无需重复接管
+	}
+
+	pid, err := findRunningMihomoPid(filepath.Base(m.config.BinaryPath))
+	if err != nil {
+		return false, nil
+	}
+	if pid <= 0 {
+		return false, nil
+	}
+	return m.AttachExternal(pid, "")
+}
+
 func (m *ProcessManager) startLocked(ctx context.Context) error {
 	m.mu.Lock()
 	if m.isProcessAliveLocked() {
@@ -388,22 +421,36 @@ func (m *ProcessManager) Reload(ctx context.Context) error {
 
 // ReloadConfig 优先走 mihomo 官方的 external-controller RESTful API
 // (PUT /configs?force=true) 做热重载：不重启进程、不断开代理连接。
-// 该接口仅在进程已在运行且 controller 地址可达时才有意义，
-// 其余情况（未运行 / 未配置 controller / 请求失败）一律回退到 Reload（即 Restart）。
+//
+// 关键：即使本管理器尚未托管任何进程，也先尝试 API。
+// 自升级 / supervisor 再起时旧内核常仍在跑（故意不杀以免 TProxy 断网），
+// 但尚未 Attach——若把「未托管」当成「未运行」直接 Restart，会再 spawn
+// 一份 mihomo 与旧进程抢端口，表现为面板闪断、网络不可用。
+// API 能通说明端口上已有内核在听，热重载即可，绝不能再 Restart。
+//
+// 回退 Restart 仅在：未配置 controller，或 API 明确失败（无进程在听 /
+// 密钥错误等）。密钥错误时 Restart 也可能因端口占用失败，由调用方处理。
 func (m *ProcessManager) ReloadConfig(ctx context.Context, controller, secret, configPath string) error {
 	if strings.TrimSpace(controller) == "" {
 		m.appendLog("system", "external-controller 未配置，回退为重启进程")
 		return m.Reload(ctx)
 	}
-	if !m.isProcessAliveLocked2() {
-		return m.Reload(ctx)
-	}
 
+	managed := m.isProcessAliveLocked2()
 	if err := putConfigsAPI(ctx, controller, secret, configPath); err != nil {
+		// 未托管时 API 失败：可能是真的没内核，才允许 Restart 拉起；
+		// 若是「连接被拒绝」之外的错误（如 401），Restart 仍可能双开，
+		// 但比「成功热重载却又 Restart」安全——后者是确定的双开。
 		m.appendLog("system", "热重载 API 调用失败，回退为重启进程: "+err.Error())
 		return m.Reload(ctx)
 	}
-	m.appendLog("system", "已通过 external-controller API 热重载配置")
+	if managed {
+		m.appendLog("system", "已通过 external-controller API 热重载配置")
+	} else {
+		// 热重载成功但本管理器还没接管：说明有外部/自升级遗留的内核。
+		// 只记日志，不在这里 Attach（没有 PID）；启动路径会用库里的 PID Attach。
+		m.appendLog("system", "已通过 external-controller API 热重载外部内核配置（尚未纳入托管）")
+	}
 	return nil
 }
 

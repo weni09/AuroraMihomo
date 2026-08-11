@@ -27,6 +27,7 @@ func (f *logicMihomoFake) ReloadConfig(ctx context.Context, controller, secret, 
 	return nil
 }
 func (f *logicMihomoFake) AttachExternal(pid int, version string) (bool, error) { return false, nil }
+func (f *logicMihomoFake) DiscoverAndAttach() (bool, error)                     { return false, nil }
 func (f *logicMihomoFake) Status() mihomo.Status {
 	return mihomo.Status{IsRunning: f.running}
 }

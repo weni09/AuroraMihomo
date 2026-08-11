@@ -514,7 +514,9 @@ func TestSelfUpdateFailureClearsInProgress(t *testing.T) {
 	}
 }
 
-// CleanupStaleSelf 删 .old 残留、保留待生效的 .new。
+// CleanupStaleSelf 删 .old 残留；.new 仅在「仍是更高版本的升级」时保留。
+// 这里 .new 是不可执行内容（无法通过 -version 探测），必须被清理，
+// 否则下次关停 SwapSelfBinary 会换入坏版本。
 func TestCleanupStaleSelf(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "auroramihomo")
@@ -528,7 +530,118 @@ func TestCleanupStaleSelf(t *testing.T) {
 	if _, err := os.Stat(target + ".old"); !os.IsNotExist(err) {
 		t.Fatal(".old 残留应被清理")
 	}
+	if _, err := os.Stat(target + ".new"); !os.IsNotExist(err) {
+		t.Fatal("无法探测版本的 .new 应被清理（避免换入坏版本）")
+	}
+}
+
+// CleanupStaleSelf 对「版本高于当前的待生效升级」必须保留，等待下次关停交换：
+// 崩溃恢复语义（暂存后异常退出 → 下次启动继续完成升级）仍然成立。
+func TestCleanupStaleSelfKeepsValidUpgrade(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("版本探测需要执行二进制，Windows 用真实 exe，测试不便构造")
+	}
+	orig := version.AppVersion
+	defer func() { version.AppVersion = orig }()
+	version.AppVersion = "v1.0.0"
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "auroramihomo")
+	_ = os.WriteFile(target, []byte("x"), 0o755)
+	_ = os.WriteFile(target+".new", paddedShellScript("echo auroramihomo-v2.0.0"), 0o755)
+
+	m := New(Config{DataDir: dir, SelfBinaryPath: target})
+	m.CleanupStaleSelf()
+
 	if _, err := os.Stat(target + ".new"); err != nil {
-		t.Fatal(".new 待生效文件应保留")
+		t.Fatal("更高版本的待生效 .new 应保留，等待下次关停交换")
+	}
+}
+
+// stagedSelfStatus 在交换/启动时核验待生效版本，防止降级或换入坏版本。
+func TestStagedSelfStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("版本探测需要执行二进制，Windows 用真实 exe，测试不便构造")
+	}
+	orig := version.AppVersion
+	defer func() { version.AppVersion = orig }()
+	version.AppVersion = "v1.0.0"
+
+	dir := t.TempDir()
+	m := New(Config{DataDir: dir})
+	stage := filepath.Join(dir, "auroramihomo.new")
+
+	t.Run("更高版本保留", func(t *testing.T) {
+		if err := os.WriteFile(stage, paddedShellScript("echo auroramihomo-v2.0.0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(stage)
+		keep, reason := m.stagedSelfStatus(stage)
+		if !keep {
+			t.Fatalf("更高版本应保留，继续完成升级，got reason=%q", reason)
+		}
+	})
+	t.Run("同版本丢弃", func(t *testing.T) {
+		if err := os.WriteFile(stage, paddedShellScript("echo auroramihomo-v1.0.0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(stage)
+		keep, reason := m.stagedSelfStatus(stage)
+		if keep {
+			t.Fatalf("同版本应丢弃（无降级也不重复升级），got reason=%q", reason)
+		}
+	})
+	t.Run("旧版本丢弃", func(t *testing.T) {
+		if err := os.WriteFile(stage, paddedShellScript("echo auroramihomo-v0.9.0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(stage)
+		keep, reason := m.stagedSelfStatus(stage)
+		if keep {
+			t.Fatalf("旧版本应丢弃，避免降级，got reason=%q", reason)
+		}
+	})
+	t.Run("损坏丢弃", func(t *testing.T) {
+		if err := os.WriteFile(stage, []byte("not a binary"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(stage)
+		keep, reason := m.stagedSelfStatus(stage)
+		if keep {
+			t.Fatalf("损坏的 .new 应丢弃，got reason=%q", reason)
+		}
+	})
+	t.Run("两侧均无版本号保留", func(t *testing.T) {
+		// .new 输出无版本号（dev），当前也是 dev：无法判断，保留崩溃恢复语义
+		if err := os.WriteFile(stage, paddedShellScript("echo dev"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(stage)
+		version.AppVersion = "dev"
+		defer func() { version.AppVersion = "v1.0.0" }()
+		keep, reason := m.stagedSelfStatus(stage)
+		if !keep {
+			t.Fatalf("两侧均无版本号时不应丢弃，保持崩溃恢复语义，got reason=%q", reason)
+		}
+	})
+}
+
+// selfVersionNumeric 从 -version 输出形态的字符串里提取主.次.补丁数值。
+func TestSelfVersionNumeric(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"v1.2.3", "1002003"},
+		{"auroramihomo-v2.0.0", "2000000"},
+		{"v0.9.4", "9004"},
+		{"dev", "0"},
+		{"", "0"},
+	}
+	for _, c := range cases {
+		if got := selfVersionNumeric(c.in); fmt.Sprint(got) != c.want {
+			t.Errorf("selfVersionNumeric(%q) = %d, want %s", c.in, got, c.want)
+		}
+	}
+	// 数值大小关系：主版本优先于补丁
+	if selfVersionNumeric("v2.0.0") <= selfVersionNumeric("v1.999.999") {
+		t.Fatal("主版本号应优先于补丁版本号")
 	}
 }

@@ -41,6 +41,7 @@ func (f *fakeMihomoManager) ReloadConfig(ctx context.Context, controller, secret
 	return nil
 }
 func (f *fakeMihomoManager) AttachExternal(pid int, version string) (bool, error) { return false, nil }
+func (f *fakeMihomoManager) DiscoverAndAttach() (bool, error)                     { return false, nil }
 func (f *fakeMihomoManager) Status() mihomo.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -534,8 +534,10 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 3. 关停流程在释放数据库后调用 `SwapSelfBinary`：Unix 直接 rename 覆盖自身，
    Windows 先把自身改名为 `.old` 再把 `.new` 改回（运行中 exe 无法覆盖、
    但可重命名）；随后由进程管理器拉起新版；
-4. 启动早期 `CleanupStaleSelf` 清理 `.old` 残留，并保留待生效的 `.new`
-   （上次异常退出未及交换时，下次关停会继续完成升级）。
+4. 启动早期 `CleanupStaleSelf` 清理 `.old` 残留，并核验待生效的 `.new`：
+   仅当它是「可执行且版本高于当前」的升级时才保留（崩溃恢复：上次异常
+   退出未及交换，下次关停继续完成升级）；损坏或版本不高于当前的丢弃——
+   否则用户手工升级主程序后，下一次关停会被这份陈旧 `.new` 降级。
 
 **停机窗口说明**：自升级与 `/api/v1/system/restart` 相同，是「优雅退出、
 等进程管理器拉起」的语义（进程刻意不做 fork 自重启，见 Makefile 注释）。
@@ -556,6 +558,12 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
   用数据库里记下的 PID `AttachExternal` 接管仍在跑的内核（对非亲子
   进程用存活轮询，**不能** `Wait`——否则 Linux 上 ECHILD 会误判已退出
   并跳过 Start，表现为「面板起来了、mihomo 没起来」）。
+- **启动顺序必须是 Attach → MergeAndApply →（必要时）Start**：
+  若先合并再 Attach，管理器尚未托管时 `ReloadConfig` 会把「未托管」当成
+  「未运行」并 `Restart` 再 spawn 一份 mihomo，与自升级保留的旧内核抢
+  代理/DNS/controller 端口 → 全面断网、面板 WS 频繁闪断（v0.10.0 及更早
+  自升级后的典型症状）。≥ 本修复版本会先 Attach，且未托管时也先尝试
+  external-controller 热重载，API 成功则绝不 Restart。
 - 确认服务形态：
 
 ```bash

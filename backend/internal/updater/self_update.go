@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -392,6 +393,67 @@ func verifySelfBinary(ctx context.Context, path string) error {
 	return fmt.Errorf("binary did not respond to -version: %w", err)
 }
 
+// stagedSelfStatus 判断 <target>.new 是否仍是「应继续完成」的升级。
+//
+// 崩溃恢复的设计本意：暂存后异常退出，下次启动应继续交换完成升级。但
+// .new 可能已失去意义——损坏（无法执行 -version）、与当前版本相同、或比
+// 当前版本旧（用户可能已在两次启动之间手工升级了主程序）——继续交换会
+// 降级或换入坏版本，必须丢弃。返回 (是否保留, 原因)。
+func (m *Manager) stagedSelfStatus(stage string) (keep bool, reason string) {
+	out, err := m.selfBinaryVersion(stage)
+	if err != nil {
+		return false, "新二进制无法执行 -version（可能损坏），丢弃避免换入坏版本"
+	}
+	cur := version.Get()
+	o, c := selfVersionNumeric(out), selfVersionNumeric(cur)
+	if o == 0 && c == 0 {
+		// 两侧都无版本号（dev 构建），无法判断新旧，保持旧的崩溃恢复语义
+		return true, "暂存版本与当前均无版本号，无法比对，保持待交换"
+	}
+	if o <= c {
+		return false, fmt.Sprintf("暂存版本 %s 不高于当前 %s，丢弃避免降级", out, cur)
+	}
+	return true, fmt.Sprintf("暂存版本 %s 高于当前 %s，继续完成升级", out, cur)
+}
+
+// selfBinaryVersion 运行二进制 -version 取版本输出。
+// 语义与 verifySelfBinary 一致：进程能启动并给出输出即视为可用，输出为空
+// 才判失败（兼容测试用 shell 脚本与 Windows 测试进程）。调用方只把它当
+// 「能否运行」的判据，版本比对失败（解析不出数字）由 selfVersionNumeric
+// 返回 0 兜底，不会造成误判降级。
+func (m *Manager) selfBinaryVersion(path string) (string, error) {
+	execCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(execCtx, path, "-version")
+	out, err := cmd.CombinedOutput()
+	if err != nil && strings.TrimSpace(string(out)) == "" {
+		return "", fmt.Errorf("binary did not respond to -version: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// selfVersionNumeric 把版本串解析为可比较数值。
+// 兼容 "v1.2.3"、"auroramihomo-v2.0.0"（-version 输出的常见形态）等：
+// 从首个数字开始解析 主.次.补丁 三段；无数字（"dev"）返回 0。
+func selfVersionNumeric(s string) int64 {
+	idx := strings.IndexFunc(strings.TrimSpace(s), func(r rune) bool { return r >= '0' && r <= '9' })
+	if idx < 0 {
+		return 0
+	}
+	parts := strings.SplitN(s[idx:], ".", 3)
+	var major, minor, patch int64
+	if len(parts) > 0 {
+		major, _ = strconv.ParseInt(parts[0], 10, 64)
+	}
+	if len(parts) > 1 {
+		minor, _ = strconv.ParseInt(parts[1], 10, 64)
+	}
+	if len(parts) > 2 {
+		patch, _ = strconv.ParseInt(parts[2], 10, 64)
+	}
+	return major*1_000_000 + minor*1_000 + patch
+}
+
 // SwapSelfBinary 在关停时把 .new 换成自身二进制。无待生效的 .new 时为空操作。
 //
 // Unix 上运行中的可执行文件可以直接被 rename 覆盖（旧 inode 继续存活到
@@ -411,6 +473,17 @@ func (m *Manager) SwapSelfBinary() error {
 	stage := target + ".new"
 	if !fileExists(stage) {
 		return nil // 没有待生效的更新，无需交换
+	}
+
+	// 交换前核验待生效版本：崩溃恢复语义是「继续完成上次没完成的升级」，
+	// 但用户可能已在两次启动之间手工升级了主程序（或下载的 .new 损坏），
+	// 此时继续交换会造成降级或换入坏版本，必须丢弃并跳过本次交换。
+	if keep, reason := m.stagedSelfStatus(stage); !keep {
+		m.logger.Infof("跳过自升级交换：%s", reason)
+		if err := os.Remove(stage); err != nil {
+			m.logger.Errorf("清理待生效 .new 失败: %v", err)
+		}
+		return nil
 	}
 
 	if runtime.GOOS == "windows" {
@@ -441,9 +514,10 @@ func (m *Manager) SwapSelfBinary() error {
 //
 //   - .old：上次 SwapSelfBinary 在 Windows 上成功后留下的旧版自身，
 //     此时它已不再被运行中的进程引用，可以安全删除；
-//   - .new：上次下载但未及交换（异常退出）的待生效版本，保留它，
-//     下次关停时 SwapSelfBinary 会继续完成升级；若用户改主意，
-//     手工删掉该文件即可放弃本次升级。
+//   - .new：上次下载后未及交换（异常退出）的待生效版本。先核验它仍是
+//     「高于当前版本的升级」才保留（崩溃恢复继续完成）；损坏或版本不高于
+//     当前的丢弃——否则用户手工升级后，下一次关停会被这份陈旧 .new 降级。
+//     若用户改主意放弃升级，手工删掉该文件即可。
 func (m *Manager) CleanupStaleSelf() {
 	target := m.SelfBinaryPath()
 	if target == "" {
@@ -457,6 +531,15 @@ func (m *Manager) CleanupStaleSelf() {
 		}
 	}
 	if fileExists(target + ".new") {
-		m.logger.Infof("检测到待生效的自升级 .new，将在下次关停时交换生效")
+		keep, reason := m.stagedSelfStatus(target + ".new")
+		if keep {
+			m.logger.Infof("检测到待生效的自升级 .new，将在下次关停时交换生效（%s）", reason)
+		} else {
+			if err := os.Remove(target + ".new"); err != nil {
+				m.logger.Errorf("清理无效 .new 残留失败: %v", err)
+			} else {
+				m.logger.Infof("已清理无效 .new 残留：%s", reason)
+			}
+		}
 	}
 }

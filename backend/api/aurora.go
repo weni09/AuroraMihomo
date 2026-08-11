@@ -304,9 +304,52 @@ func main() {
 	// 而实际网络根本没被接管。同样要在合并之前，理由与上面一致。
 	svcCtx.TransparentService.ReconcileState(rootCtx)
 
-	// 部署设计 §7：启动流程应为 merge config → validate → start mihomo，
-	// 此前直接跳过合并/校验直接起内核，若磁盘上的 config.yaml 因外部改动
-	// 损坏或缺失，内核会带着坏配置启动且无自愈路径。
+	// 内核「期望运行」守卫：读用户期望（默认 true）。手动 Stop 过会清成
+	// false——此时面板重启不得自动拉内核（尊重手动停止）。
+	desiredRunning := svcCtx.MihomoGuard == nil || svcCtx.MihomoGuard.DesiredRunning()
+
+	// 必须先于 MergeAndApply 接管已有内核。
+	//
+	// 自升级 / OpenRC 再拉起时旧主进程故意不杀 mihomo（TProxy 不断网）。
+	// 若先合并：此时管理器尚未托管任何进程，MergeAndApply 内的
+	// ReloadConfig 会把「未托管」当成「未运行」并回退 Restart，再拉起
+	// 第二份 mihomo。两份抢代理/DNS/external-controller 端口，旧内核
+	// 或新内核之一失败退出，TProxy 规则仍在 → 全面断网；面板 WS/API
+	// 也因内核半死不活而频繁闪断。
+	//
+	// Attach 成功后仍以 Status 复核——历史上用 Wait 盯非亲子进程会立刻
+	// ECHILD 并清空托管，出现「Attach 报成功、实际没人管」的假象。
+	// desired=false 时同样先 Attach：后面合并若误拉起，或 Stop 需要
+	// 真正拥有该进程才能关掉孤儿内核。
+	//
+	// PID 复核：数据库记录的 PID 在「关停保存 → 新进程接管」窗口内可能被
+	// 系统回收并复用给无关进程，Attach 前按二进制名比对 cmdline，防误托管
+	// 导致后续 Stop 对无辜进程发信号。
+	mihomoBinName := filepath.Base(svcCtx.Updater.MihomoBinaryPath())
+	attached := false
+	if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
+		if mihomo.PIDMatchesBinary(st.PID, mihomoBinName) {
+			ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
+			if aerr != nil {
+				logx.Errorf("接管已有 mihomo 失败: %v", aerr)
+			} else if ok {
+				cur := svcCtx.MihomoManager.Status()
+				if cur.IsRunning && cur.PID == st.PID {
+					attached = true
+					logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
+				} else {
+					logx.Errorf("接管 mihomo pid=%d 后状态异常（running=%v pid=%d）",
+						st.PID, cur.IsRunning, cur.PID)
+				}
+			}
+		} else {
+			logx.Errorf("记录的 mihomo pid=%d 与二进制名不匹配（疑似 PID 复用），跳过接管", st.PID)
+		}
+	}
+
+	// 部署设计 §7：启动流程为 merge config → validate → start/reload mihomo。
+	// 已先 Attach 时，MergeAndApply 走 external-controller 热重载，不会
+	// 再 spawn 第二份进程；未 Attach 时才可能 Start/Restart。
 	// MergeAndApplyDetailed 内部已有"写入前备份 + 校验失败自动回滚"机制，
 	// 因此这里合并失败也不阻断启动：回滚会保留磁盘上原有的可用配置，
 	// 首次启动（配置文件不存在）失败则退化为无配置启动，交由用户手动处理。
@@ -325,42 +368,35 @@ func main() {
 	}
 	mergeCancel()
 
-	// 内核「期望运行」守卫：读用户期望（默认 true）。手动 Stop 过会清成
-	// false——此时面板重启不得自动拉内核（尊重手动停止）。
-	desiredRunning := svcCtx.MihomoGuard == nil || svcCtx.MihomoGuard.DesiredRunning()
-
-	// 优先接管自升级关停时保留下来的内核：旧主进程故意不杀 mihomo，
-	// 避免 TProxy 规则仍在、内核已死造成的全面断网。
-	// Attach 成功后仍以 Status 复核——历史上用 Wait 盯非亲子进程会立刻
-	// ECHILD 并清空托管，出现「Attach 报成功、实际没人管」的假象。
-	attached := false
 	if desiredRunning {
-		if st, err := svcCtx.Database.GetMihomoState(); err == nil && st != nil && st.PID > 0 {
-			ok, aerr := svcCtx.MihomoManager.AttachExternal(st.PID, st.Version)
-			if aerr != nil {
-				logx.Errorf("接管已有 mihomo 失败: %v", aerr)
-			} else if ok {
-				cur := svcCtx.MihomoManager.Status()
-				if cur.IsRunning && cur.PID == st.PID {
-					attached = true
-					logx.Infof("已接管既有 mihomo 进程 pid=%d", st.PID)
-				} else {
-					logx.Errorf("接管 mihomo pid=%d 后状态异常（running=%v pid=%d），将重新 Start",
-						st.PID, cur.IsRunning, cur.PID)
+		// 合并可能已通过热重载/Restart 把内核拉起来。
+		if svcCtx.MihomoManager.Status().IsRunning {
+			if attached {
+				logx.Infof("内核已由接管+合并路径保持运行，跳过 Start")
+			}
+		} else {
+			// 库 PID 缺失/失效但仍可能有外部内核在跑（自升级遗留/孤儿）：
+			// 先按进程表接管，避免 Start 双开抢端口 → 面板闪断 + 断网。
+			ok, derr := svcCtx.MihomoManager.DiscoverAndAttach()
+			switch {
+			case derr != nil:
+				logx.Errorf("探测外部 mihomo 失败: %v", derr)
+			case ok:
+				logx.Info("已按进程表接管既有 mihomo，跳过 Start")
+			default:
+				if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
+					logx.Errorf("mihomo start skipped: %v", err)
 				}
 			}
 		}
-		if !attached {
-			if err := svcCtx.MihomoManager.Start(rootCtx); err != nil {
-				logx.Errorf("mihomo start skipped: %v", err)
-			}
+	} else {
+		// 用户手动停过内核：合并流程可能经 ReloadConfig 热重载/拉起了
+		// 已接管的内核，这里显式停掉，保持「手动停止 = 面板重启也不拉」。
+		if svcCtx.MihomoManager.Status().IsRunning {
+			stopCtx, stopCancel := context.WithTimeout(rootCtx, kernelStopTimeout)
+			_ = svcCtx.MihomoManager.Stop(stopCtx)
+			stopCancel()
 		}
-	} else if !svcCtx.MihomoManager.Status().IsRunning {
-		// 用户手动停过内核：上面的合并流程会经 ReloadConfig→Restart 把内核
-		// 拉起来，这里显式停掉，保持「手动停止 = 面板重启也不拉」。幂等。
-		stopCtx, stopCancel := context.WithTimeout(rootCtx, kernelStopTimeout)
-		_ = svcCtx.MihomoManager.Stop(stopCtx)
-		stopCancel()
 		logx.Info("内核期望运行为关（手动停止过），启动时不自动拉起")
 	}
 
