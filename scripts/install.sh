@@ -277,9 +277,13 @@ EOF
 # install_openrc_service 装 Alpine 用的服务脚本。
 #
 # 必须用 supervise-daemon 而非默认的 start-stop-daemon：面板的
-# POST /api/v1/system/restart 的约定是"优雅退出，等进程管理器拉起"
-# （进程刻意不做 fork 自重启），start-stop-daemon 不做重新拉起，
-# 会让重启接口变成单向关机。
+# POST /api/v1/system/restart 与自升级关停的约定是"优雅退出，等进程
+# 管理器拉起"（进程刻意不做 fork 自重启），start-stop-daemon 不做
+# 重新拉起，会让重启/升级接口变成单向关机。
+#
+# 自升级在 Linux 上优先 syscall.Exec 同 PID 热替换，mihomo 子进程不丢；
+# Exec 失败时才退出，由 supervise-daemon 再拉起，新进程再 Attach 旧内核。
+# 这里没有 systemd 的 KillMode 概念，也不需要 /etc/systemd 下的 unit。
 install_openrc_service() {
 	script=/etc/init.d/auroramihomo
 	if [ -f "$script" ]; then
@@ -300,7 +304,7 @@ command_args="-f etc/aurora-api.yaml"
 command_user="root:root"
 
 # supervise-daemon 才有进程退出后重新拉起的能力，
-# /api/v1/system/restart 依赖这一点。
+# /api/v1/system/restart 与面板自升级（Exec 失败回退路径）依赖这一点。
 # 不重定向 stdout/stderr（supervise-daemon 会丢弃）：面板自身已把应用
 # 日志写入 $INSTALL_DIR/data/logs/aurora.log（AppLog.ToFile 默认开启），
 # 且受「系统设置 · 日志」的清理任务管理；再往 /var/log 写一份既重复

@@ -537,34 +537,63 @@ setcap cap_net_admin,cap_net_bind_service=+ep /opt/auroramihomo/data/bin/mihomo
 4. 启动早期 `CleanupStaleSelf` 清理 `.old` 残留，并保留待生效的 `.new`
    （上次异常退出未及交换时，下次关停会继续完成升级）。
 
-**停机窗口说明**：自升级与 `/api/v1/system/restart` 相同，是"优雅退出、
-等进程管理器拉起"的语义（进程刻意不做 fork 自重启，见 Makefile 注释）。
-从关停到 supervisor（systemd `Restart=always` / docker `restart` /
-OpenRC `supervise-daemon` / NSSM）拉起新版之间，**面板 API 有秒级中断**，属预期。
+**停机窗口说明**：自升级与 `/api/v1/system/restart` 相同，是「优雅退出、
+等进程管理器拉起」的语义（进程刻意不做 fork 自重启，见 Makefile 注释）。
+从关停到 supervisor 拉起新版之间，**面板 API 可能有秒级中断**，属预期；
+代理内核应尽量不停。
 
 自升级关停路径**不会**主动 Stop mihomo / AdGuard：TProxy 规则仍在宿主上，
-若先杀内核再等 supervisor 拉起主进程，会出现"规则在、内核死"的全面断网。
+若先杀内核再等 supervisor 拉起主进程，会出现「规则在、内核死」的全面断网。
 
-Unix 上自升级成功后优先 `syscall.Exec` 同 PID 热替换新二进制（子进程
-mihomo 的父子关系不变）；Exec 失败才退回普通退出。systemd 单元必须设
-`KillMode=process`，否则默认 `control-group` 仍会在主进程退出时把 cgroup
-里的 mihomo 一并杀掉——这是「面板起来了、内核没了」的常见根因。
+**Alpine / OpenRC（主推生产形态）**
 
-新主进程启动后会按数据库里记录的 PID 接管仍在运行的内核（`AttachExternal`，
-对非亲子进程用存活轮询而非 `Wait`），接管失败再 `Start`。
-普通 `/system/restart` 与信号退出仍会停内核。
-
-**已安装机器升级后请补一行**（install.sh 默认「保留现有单元」不会自动改）：
+- 服务脚本是 `/etc/init.d/auroramihomo`，用 `supervise-daemon` 监管，
+  **没有** `/etc/systemd/system/auroramihomo.service`，也不需要 `KillMode`。
+- Unix 上自升级成功后优先 `syscall.Exec` 同 PID 热替换新二进制：
+  mihomo 仍是同一父进程下的子进程，OpenRC 只看到「主进程还在」，
+  不会去拆内核。
+- Exec 失败才普通退出，由 `supervise-daemon` 再拉起主进程；新主进程
+  用数据库里记下的 PID `AttachExternal` 接管仍在跑的内核（对非亲子
+  进程用存活轮询，**不能** `Wait`——否则 Linux 上 ECHILD 会误判已退出
+  并跳过 Start，表现为「面板起来了、mihomo 没起来」）。
+- 确认服务形态：
 
 ```bash
-# /etc/systemd/system/auroramihomo.service 的 [Service] 段
+rc-service auroramihomo status
+ps | grep -E 'supervise-daemon|auroramihomo|mihomo'
+# 正常应类似：
+#   supervise-daemon ... auroramihomo
+#     auroramihomo -f etc/aurora-api.yaml
+#       data/bin/mihomo -d ...
+```
+
+- 升到含本修复的版本（≥ v0.9.3）后建议：
+
+```bash
+# 用 install.sh 或手工替换二进制后
+rc-service auroramihomo restart
+# 或面板内再测一次自升级；看日志
+tail -f /opt/auroramihomo/data/logs/aurora.log
+# 应出现「已接管既有 mihomo」或「mihomo started」，且 pgrep mihomo 有进程
+```
+
+**Debian/Ubuntu + systemd（若用）**
+
+- 单元文件在 `/etc/systemd/system/auroramihomo.service`。
+- 除上述 Exec / Attach 逻辑外，单元必须设 `KillMode=process`：
+  默认 `control-group` 会在主进程退出时把 cgroup 里的 mihomo 一并杀掉。
+- install.sh 默认「保留现有单元」，已装机器需手工补：
+
+```bash
+# [Service] 段增加
 KillMode=process
 systemctl daemon-reload
 ```
 
 **升级路径约束**：
 
-- 依赖进程管理器拉起，`start-stop-daemon` 不满足（见 §OpenRC 单元）；
+- 依赖进程管理器拉起，OpenRC 必须用 `supervise-daemon` 而非
+  `start-stop-daemon`（见 §OpenRC 单元）；
 - Windows 上替换成功后遗留的 `.old` 由下次启动清理，两个文件共存只是中间态；
 - 升级前的数据库自动备份失败仅记录不阻断（备份目录权限问题不该卡死升级，
   升级本身已通过 sha256 与可执行性校验）。
