@@ -1,4 +1,13 @@
-export type FieldType = 'switch' | 'text' | 'number' | 'select' | 'textarea' | 'string-array' | 'yaml-object' | 'hosts-map'
+export type FieldType =
+  | 'switch'
+  | 'text'
+  | 'number'
+  | 'select'
+  | 'textarea'
+  | 'string-array'
+  | 'yaml-object'
+  | 'hosts-map'
+  | 'url-preset'
 
 /** 下拉选项：value 是写入配置的真实值，label 仅用于界面展示 */
 export interface FieldOption {
@@ -12,6 +21,11 @@ export interface FormField {
   type: FieldType
   /** 字符串写法等价于 { value: x, label: x } */
   options?: (string | FieldOption)[]
+  /**
+   * url-preset 类型字段的预设地址：下拉选中即写入该 value，
+   * 未命中任何预设时下拉显示「自定义」，由输入框自由填写。
+   */
+  presets?: (string | FieldOption)[]
   help?: string
   /**
    * 输入框占位提示，用于展示官方默认值或填写示例。
@@ -166,9 +180,39 @@ export const baseConfigSchema: FormSection[] = [
       },
       { key: 'geo-auto-update', title: '自动更新 GeoData', type: 'switch', help: '开启后内核按下方间隔自动更新 GeoIP/GeoSite 数据库。官方默认关闭。' },
       { key: 'geo-update-interval', title: '更新间隔 (小时)', type: 'number', placeholder: '24', help: 'Geo 数据库自动更新间隔（小时），官方默认 24。' },
-      { key: 'geox-url.geoip', title: 'GeoIP 数据下载地址', type: 'text', placeholder: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat', help: 'GeoIP 数据库下载地址，可改为国内镜像加速。' },
-      { key: 'geox-url.geosite', title: 'GeoSite 数据下载地址', type: 'text', placeholder: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat', help: 'GeoSite 数据库下载地址，可改为国内镜像加速。' },
-      { key: 'geox-url.mmdb', title: 'MMDB 数据下载地址', type: 'text', placeholder: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb', help: 'MMDB 格式 IP 数据库下载地址。' },
+      {
+        key: 'geox-url.geoip',
+        title: 'GeoIP 数据下载地址',
+        type: 'url-preset',
+        presets: [
+          { value: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat', label: '国内镜像 (jsDelivr)' },
+          { value: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat', label: '官方源 (GitHub)' },
+        ],
+        placeholder: '或粘贴自定义下载地址',
+        help: 'GeoIP 数据库下载地址。国内网络建议选「国内镜像」；选「自定义」后可在输入框粘贴任意地址。留空表示不设置，内核用内置默认。',
+      },
+      {
+        key: 'geox-url.geosite',
+        title: 'GeoSite 数据下载地址',
+        type: 'url-preset',
+        presets: [
+          { value: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat', label: '国内镜像 (jsDelivr)' },
+          { value: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat', label: '官方源 (GitHub)' },
+        ],
+        placeholder: '或粘贴自定义下载地址',
+        help: 'GeoSite 数据库下载地址。国内网络建议选「国内镜像」；选「自定义」后可在输入框粘贴任意地址。留空表示不设置。',
+      },
+      {
+        key: 'geox-url.mmdb',
+        title: 'MMDB 数据下载地址',
+        type: 'url-preset',
+        presets: [
+          { value: 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb', label: '国内镜像 (jsDelivr)' },
+          { value: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb', label: '官方源 (GitHub)' },
+        ],
+        placeholder: '或粘贴自定义下载地址',
+        help: 'MMDB 格式 IP 数据库下载地址。国内网络建议选「国内镜像」；选「自定义」后可在输入框粘贴任意地址。留空表示不设置。',
+      },
     ],
   },
   {

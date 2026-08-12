@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useConfigStore } from '../stores/config'
-import { baseConfigSchema, getByPath, setByPath, deleteByPath, normalizeOptions, advancedExcludedKeys } from '../schemas/baseConfig'
+import { baseConfigSchema, getByPath, setByPath, deleteByPath, normalizeOptions, advancedExcludedKeys, type FieldOption } from '../schemas/baseConfig'
 import CodeEditor from '../components/CodeEditor.vue'
 import HostsEditor from '../components/HostsEditor.vue'
 import { loadYaml, dumpYaml } from '../utils/yaml'
@@ -155,9 +155,32 @@ const onSourceTypeChange = () => {
 // model-value/update:model-value 这一层做，onInput/displayValue 仍按空
 // 字符串语义读写 model，不需要跟着改
 const UNSET_SELECT_VALUE = '__unset__'
+const CUSTOM_SELECT_VALUE = '__custom__'
 const selectDisplayValue = (key: string, type: string) => displayValue(key, type) || UNSET_SELECT_VALUE
 const onSelectChange = (key: string, type: string, value: string) =>
   onInput(key, value === UNSET_SELECT_VALUE ? '' : value, type)
+
+/**
+ * url-preset（下拉预设 + 输入）字段的下拉回显：
+ * 当前值命中某个预设时选中它；非空但没命中（自定义地址）显示「自定义」；
+ * 未设置显示「未设置」。
+ */
+const presetSelectValue = (key: string, presets?: (string | FieldOption)[]) => {
+  const v = displayValue(key, 'text')
+  if (!v) return UNSET_SELECT_VALUE
+  return normalizeOptions(presets).some((o) => o.value === v) ? v : CUSTOM_SELECT_VALUE
+}
+
+/** url-preset 下拉选择：预设直接写入；「未设置」删键；「自定义」不动（由输入框编辑） */
+const onPresetSelect = (key: string, presets: (string | FieldOption)[] | undefined, value: string) => {
+  if (value === UNSET_SELECT_VALUE) {
+    deleteByPath(store.model, key)
+    return
+  }
+  if (value === CUSTOM_SELECT_VALUE) return
+  // 预设值非空，直接写入（normalizeOptions 保证 value 与下拉 item 一致）
+  setByPath(store.model, key, value)
+}
 
 // 常用调度预设。6 段式（含秒），与后端规范化后的存储形态一致，
 // 便于高亮当前选中项
@@ -652,6 +675,33 @@ const displayValue = (key: string, type: string) => {
                     </SelectItem>
                   </SelectContent>
                 </Select>
+                <!-- url-preset：预设地址下拉 + 自定义输入框。下拉负责「国内镜像 /
+                     官方源」一键填入与「未设置」清空，输入框始终可编辑当前值。 -->
+                <div v-else-if="f.type === 'url-preset'" class="flex flex-col sm:flex-row gap-2">
+                  <Select
+                    :model-value="presetSelectValue(f.key, f.presets)"
+                    @update:model-value="onPresetSelect(f.key, f.presets, $event as string)"
+                  >
+                    <SelectTrigger :id="fieldId(f.key)" class="w-full sm:w-44 shrink-0" :aria-describedby="f.help ? helpId(f.key) : undefined">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem v-for="opt in normalizeOptions(f.presets)" :key="opt.value" :value="opt.value">
+                        {{ opt.label }}
+                      </SelectItem>
+                      <SelectItem :value="CUSTOM_SELECT_VALUE">自定义…</SelectItem>
+                      <SelectItem :value="UNSET_SELECT_VALUE">未设置（使用内核默认）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    type="text"
+                    class="flex-1 min-w-0"
+                    :placeholder="f.placeholder"
+                    :aria-label="f.title + '（自定义地址）'"
+                    :model-value="displayValue(f.key, f.type)"
+                    @input="onInput(f.key, ($event.target as HTMLInputElement).value, f.type)"
+                  />
+                </div>
                 <!-- 顶层 hosts：键值行编辑器。它自己维护编辑期状态，
                      不走 drafts / 失焦提交那套（域名是 map 的键，逐字符
                      改键会碰撞，理由见 HostsEditor.vue 的文件头注释）。 -->

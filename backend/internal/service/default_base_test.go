@@ -38,7 +38,6 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		"2001::/32",
 		"tun:",
 		"MATCH,DIRECT",
-		"geodata-mode: false",
 		"google.com, github.com",
 		"geoip: false",
 		"223.5.5.5",
@@ -48,20 +47,26 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 			t.Errorf("默认 base 缺少开箱项 %q", need)
 		}
 	}
-	// 默认 base 不得引用 geosite/geoip 与 geox-url：引用会让 mihomo 校验时
-	// 联网下载规则库（GeoSite.dat 等），弱网/离线环境直接失败
-	// （can't download GeoSite.dat ... test failed）。零引用才零下载。
-	// 用行首正则排除注释行（注释里允许出现讲解性字样）。
+	// 默认 base 不得出现任何 GeoData 配置键与 geosite/geoip 引用：
+	// 前者是初始化不该带出的 geo 配置，后者会让 mihomo 校验时联网下载规则库
+	// （GeoSite.dat 等），弱网/离线环境直接失败（can't download GeoSite.dat
+	// ... test failed）。零引用才零下载。用行首正则排除注释行（注释里允许
+	// 出现讲解性字样）。
 	for _, re := range []*regexp.Regexp{
 		regexp.MustCompile(`(?m)^\s*"?geosite:`),
 		regexp.MustCompile(`(?m)^\s*geoip:\s*true`),
 		regexp.MustCompile(`(?m)^\s*geox-url:`),
+		regexp.MustCompile(`(?m)^\s*geodata-mode:`),
+		regexp.MustCompile(`(?m)^\s*geodata-loader:`),
+		regexp.MustCompile(`(?m)^\s*geosite-matcher:`),
+		regexp.MustCompile(`(?m)^\s*geo-auto-update:`),
+		regexp.MustCompile(`(?m)^\s*geo-update-interval:`),
 	} {
 		if re.MatchString(raw) {
-			t.Errorf("默认 base 不应引用 geosite/geoip/geox-url（会触发规则库下载）: %v", re)
+			t.Errorf("默认 base 不应包含 GeoData 配置/geosite/geoip/geox-url（初始化不带 geo 配置、校验不下载规则库）: %v", re)
 		}
 	}
-	// 四项「交由用户开启」：通用 ipv6、geodata-mode、dns.enable、dns.ipv6
+	// 三项「交由用户开启」：通用 ipv6、dns.enable、dns.ipv6
 	// 顶层 ipv6 在 dns: 块之前；dns 内 enable/ipv6 在 listen 附近。
 	beforeDNS, afterDNS, ok := strings.Cut(raw, "\ndns:")
 	if !ok {
@@ -72,9 +77,6 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		if !strings.Contains(beforeDNS, "\nipv6: false") {
 			t.Error("顶层 ipv6 默认应为 false")
 		}
-	}
-	if !strings.Contains(beforeDNS, "geodata-mode: false") {
-		t.Error("geodata-mode 默认应为 false")
 	}
 	if !strings.Contains(afterDNS, "enable: false") {
 		t.Error("dns.enable 默认应为 false")

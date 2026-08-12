@@ -25,23 +25,13 @@ mixed-port: 7890
 port: 7889
 external-controller: 0.0.0.0:9090
 
-# 默认关闭：.dat GeoData 体积与加载策略因设备而异，交由用户开启
-geodata-mode: false
-geodata-loader: memconservative
-geosite-matcher: succinct
-geo-auto-update: true
-geo-update-interval: 24
-# 注意：开箱 base 刻意不引用 geosite:/geoip:（见下方 nameserver-policy 与
-# fallback-filter），因此校验配置时 mihomo 不会去找/下载 GeoSite.dat 等规则
-# 库，弱网与离线环境也能通过校验。一旦配置里出现 geosite/geoip 引用，
-# mihomo 会按 geox-url 下载缺失库（默认 GitHub，直连超时即报
-# "can't download GeoSite.dat ... test failed"）。需要时取消下面注释换源，
-# 或把库文件手工放到 ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
-# geox-url:
-#   geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
-#   geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-#   mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
-#   asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
+# 注意：开箱 base 不含任何 GeoData 配置键（geodata-mode / geodata-loader /
+# geosite-matcher / geo-auto-update / geox-url 等），也不引用 geosite:/geoip:
+# （见下方 nameserver-policy 与 fallback-filter），因此校验配置时 mihomo
+# 不会去找或下载 GeoSite.dat 等规则库，弱网与离线环境也能通过校验。
+# 需要规则库功能时，在「配置中心 · 基础配置」的「GeoData 规则库」分组开启
+# （下载地址可选国内镜像 / 官方源 / 自定义），或把库文件手工放到
+# ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
 
 dns:
   # 默认关闭：启用 TUN/TProxy 或需要内核 DNS 时由用户打开
