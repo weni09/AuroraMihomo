@@ -38,7 +38,7 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		"2001::/32",
 		"tun:",
 		"MATCH,DIRECT",
-		"google.com, github.com",
+		"google.com,github.com",
 		"geoip: false",
 		"223.5.5.5",
 		"119.29.29.29",
@@ -46,6 +46,11 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		if !strings.Contains(raw, need) {
 			t.Errorf("默认 base 缺少开箱项 %q", need)
 		}
+	}
+	// nameserver-policy 多域名键不得含 ", "：带空格会被 mihomo 拆成非法域名
+	// （invalid domain: github.com 前导空格），配置校验直接失败。
+	if strings.Contains(raw, "google.com, ") || strings.Contains(raw, ", github.com") {
+		t.Error("nameserver-policy 多域名键不得含逗号后空格")
 	}
 	// 默认 base 不得出现任何 GeoData 配置键与 geosite/geoip 引用：
 	// 前者是初始化不该带出的 geo 配置，后者会让 mihomo 校验时联网下载规则库
@@ -103,7 +108,7 @@ func TestEnsureDefaultBaseOnlyWhenEmpty(t *testing.T) {
 	if !strings.Contains(first, "nameserver-policy:") {
 		t.Fatalf("应已写入开箱默认，实际:\n%s", first)
 	}
-	if !strings.Contains(first, "google.com, github.com") {
+	if !strings.Contains(first, "google.com,github.com") {
 		t.Fatalf("应含纯域名 nameserver-policy 键，实际:\n%s", first)
 	}
 

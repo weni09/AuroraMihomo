@@ -79,9 +79,11 @@ dns:
   # （多数节点不支持 UDP，裸 8.8.8.8#组 常失败；组名以订阅为准，因人而异。）
   # respect-rules 默认 false，避免 DNS 再被规则打回 DIRECT 吃污染。
   nameserver-policy:
-    # 开箱只写纯域名键（匹配该域名及子域），不写 geosite: 键：
-    # geosite 引用会让校验时联网下载规则库（见文件头 geox-url 注释）。
-    "google.com, github.com, telegram.org, twitter.com, x.com, facebook.com, youtube.com, netflix.com, openai.com, spotify.com":
+    # 开箱只写纯域名键，不写 geosite: 键：geosite 引用会让校验时联网下载
+    # 规则库（见文件头注释）。多域名必须用「逗号且无空格」分隔，官方示例
+    # 是 "www.baidu.com,+.google.cn"；写成 ", " 会被拆成 " github.com"，
+    # mihomo 报 DNS ResoverRule invalid domain 并让配置校验失败。
+    "google.com,github.com,telegram.org,twitter.com,x.com,facebook.com,youtube.com,netflix.com,openai.com,spotify.com":
       - 8.8.8.8
       - 1.1.1.1
   # 只解析代理节点 server 域名：必须纯 IP 国内 DNS，切勿 DoH
