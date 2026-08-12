@@ -186,6 +186,103 @@ func TestRenderFileCollectionSourceAppliesCollectionOperators(t *testing.T) {
 	}
 }
 
+// 组合作为文件模板来源时，组合上的其它算子（rename/sort 等）同样必须生效——
+// 它们与 flag 走同一条 ApplyPipelineCtx 管道，顺序即管道声明顺序。
+// 此测试用 rename + flag + sort 组合验证「改名→加旗→排序」的完整链路。
+func TestRenderFileCollectionSourceAppliesMixedOperators(t *testing.T) {
+	svc, db := newTestRenderService(t)
+
+	subs := []*model.Subscription{
+		{Name: "hk", Enabled: 1, Content: "ss://YWVzLTI1Ni1nY206cHc=@1.1.1.1:8388#香港 01\n"},
+		{Name: "jp", Enabled: 1, Content: "ss://YWVzLTI1Ni1nY206cHc=@2.2.2.2:8388#日本 01\n"},
+	}
+	for _, s := range subs {
+		if err := db.CreateSubscription(s); err != nil {
+			t.Fatalf("创建订阅失败: %v", err)
+		}
+	}
+
+	coll := &model.SubCollection{
+		Name:    "ops-collection",
+		Enabled: 1,
+		// 顺序：改名（香港→HK、日本→JP）→ 加旗 → 升序排序
+		Operators: `[
+			{"type":"rename","enabled":true,"payload":"{\"pattern\":\"香港\",\"replace\":\"HK\"}"},
+			{"type":"rename","enabled":true,"payload":"{\"pattern\":\"日本\",\"replace\":\"JP\"}"},
+			{"type":"flag","enabled":true,"payload":"{}"},
+			{"type":"sort","enabled":true,"payload":"{\"order\":\"asc\"}"}
+		]`,
+	}
+	if err := db.CreateCollection(coll); err != nil {
+		t.Fatalf("创建组合失败: %v", err)
+	}
+	if err := db.ReplaceCollectionItems(coll.ID, []int64{subs[0].ID, subs[1].ID}); err != nil {
+		t.Fatalf("组合挂订阅失败: %v", err)
+	}
+
+	f := &model.SubFile{
+		Name:         "tpl-mixed",
+		ConfigType:   model.FileConfigTypeMihomo,
+		SourceType:   model.SourceTypeCollection,
+		SourceID:     coll.ID,
+		TemplateLang: model.TemplateLangGo,
+		Content:      "proxies:\n{{ range .Nodes }}  - name: \"{{ .Name }}\"\n{{ end }}",
+	}
+	got, err := svc.RenderFile(context.Background(), f)
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+
+	// rename 生效：原始中文名不应出现
+	if strings.Contains(got, "香港") || strings.Contains(got, "日本") {
+		t.Errorf("组合的 rename 算子应已改名，结果仍含中文名:\n%s", got)
+	}
+	// rename + flag 组合生效：改名为 HK/JP 后加旗
+	if !strings.Contains(got, "🇭🇰 HK") || !strings.Contains(got, "🇯🇵 JP") {
+		t.Errorf("rename+flag 组合应产出带旗的新名，实际:\n%s", got)
+	}
+	// sort 生效：🇭🇰 HK 在 🇯🇵 JP 之前（asc 按名字比较）
+	hkIdx := strings.Index(got, "🇭🇰 HK")
+	jpIdx := strings.Index(got, "🇯🇵 JP")
+	if hkIdx < 0 || jpIdx < 0 || hkIdx > jpIdx {
+		t.Errorf("sort 升序应让 HK 排在 JP 前（hkIdx=%d jpIdx=%d）:\n%s", hkIdx, jpIdx, got)
+	}
+}
+
+// 订阅自身算子（rename 等）在「文件模板」路径同样必须生效：
+// fileSourceRequests 把订阅管道放进 ConvertRequest.Operators，
+// 在进入组合级管道前先执行（两级流水线的第一级）。
+func TestRenderFileAppliesSubscriptionOperators(t *testing.T) {
+	svc, db := newTestRenderService(t)
+
+	sub := &model.Subscription{
+		Name:    "airport",
+		Enabled: 1,
+		Content: "ss://YWVzLTI1Ni1nY206cHc=@1.1.1.1:8388#香港 01\n",
+		// 订阅自身的 rename：香港→HK
+		Operators: `[{"type":"rename","enabled":true,"payload":"{\"pattern\":\"香港\",\"replace\":\"HK\"}"}]`,
+	}
+	if err := db.CreateSubscription(sub); err != nil {
+		t.Fatalf("创建订阅失败: %v", err)
+	}
+
+	f := &model.SubFile{
+		Name:         "tpl-sub-ops",
+		ConfigType:   model.FileConfigTypeMihomo,
+		SourceType:   model.SourceTypeSubscription,
+		SourceID:     sub.ID,
+		TemplateLang: model.TemplateLangGo,
+		Content:      "proxies:\n{{ range .Nodes }}  - name: \"{{ .Name }}\"\n{{ end }}",
+	}
+	got, err := svc.RenderFile(context.Background(), f)
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	if !strings.Contains(got, "HK") || strings.Contains(got, "香港") {
+		t.Errorf("订阅自身的 rename 算子应作用于文件模板来源节点，实际:\n%s", got)
+	}
+}
+
 func TestShareExpiredHelper(t *testing.T) {
 	// 零值表示永不过期
 	if shareExpired(time.Time{}) {
