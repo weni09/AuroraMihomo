@@ -1071,12 +1071,7 @@ const navOpen = ref(false)
                   <div class="mb-1 text-xs text-fg-muted">实际生效规则（nft list table）</div>
                   <pre
                     class="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-elevated p-2 font-mono text-xs"
-                    >{{
-                      tp.rules.activeRules ||
-                      (tp.status.enabled && tp.status.mode === 'tproxy'
-                        ? '（读取失败）'
-                        : 'TProxy 未开启，当前无实际生效规则')
-                    }}</pre
+                    >{{ tp.rules.activeRules }}</pre
                   >
                 </div>
                 <div>

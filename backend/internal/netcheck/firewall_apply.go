@@ -462,16 +462,18 @@ func (a *Applier) removeCustomRules(ctx context.Context, rules []string) {
 
 // DumpRules 输出本面板 nft 表的当前规则集，供界面展示实际生效的内置规则。
 //
-// 表不存在（TProxy 未开启或已拆除）时返回空字符串而非报错。
+// 这是只读展示路径：TProxy 未开启、表不存在、nft 不可用、无权限等导致
+// 读不到时一律返回空串，不把错误抛给调用方。系统设置页在未启用或不支持
+// 透明代理的环境也会拉这份数据，报错只会变成无意义的弹窗。
+// 真正需要区分「表不存在」与「探测失败」的是 RulesActive（启动对账用）。
 func (a *Applier) DumpRules(ctx context.Context) (string, error) {
 	cmd := NFTRulesCheckCommand()
 	out, err := a.Runner.Run(ctx, cmd[0], cmd[1:]...)
 	if err != nil {
-		low := strings.ToLower(out)
-		if strings.Contains(low, "no such file") || strings.Contains(low, "does not exist") {
-			return "", nil
-		}
-		return "", fmt.Errorf("读取防火墙规则失败: %w: %s", err, strings.TrimSpace(out))
+		// 展示用：任何读失败都当「当前没有可展示的规则」，避免设置页被打断。
+		// 细节留给日志；RulesActive 仍保留严格探测语义。
+		a.logf("读取防火墙规则失败（展示为空）: %v: %s", err, strings.TrimSpace(out))
+		return "", nil
 	}
 	return out, nil
 }

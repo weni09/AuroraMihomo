@@ -1499,12 +1499,20 @@ func (s *TransparentService) BuiltinRules() (string, []string, error) {
 }
 
 // ActiveRules 返回宿主上实际生效的面板 nft 规则文本。
-// TProxy 未开启或表不存在时返回空字符串（界面据此提示"未开启"）。
+//
+// 仅供界面展示：TProxy 未开启、非 Linux、表不存在、nft 不可用时一律返回
+// 空字符串，不向上抛错——设置页加载规则失败不该变成全局错误弹窗。
 func (s *TransparentService) ActiveRules(ctx context.Context) (string, error) {
 	if !s.hasApplier() {
 		return "", nil
 	}
-	return s.applier.DumpRules(ctx)
+	out, err := s.applier.DumpRules(ctx)
+	if err != nil {
+		// DumpRules 已尽量吞掉读失败；这里再兜一层，保证展示路径永不阻断。
+		s.logger.Infof("读取实际生效防火墙规则失败（展示为空）: %v", err)
+		return "", nil
+	}
+	return out, nil
 }
 
 // IPTablesBackend 返回 iptables 命令的后端类型：nf_tables / legacy / 空。

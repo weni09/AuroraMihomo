@@ -232,6 +232,22 @@ func TestDumpRulesEmptyWhenTableMissing(t *testing.T) {
 	}
 }
 
+// DumpRules 是设置页展示路径：nft 不可用（未安装/无权限）也必须空串返回，
+// 不能把「读不到规则」升级成接口错误，否则未开启透明代理的环境打开设置就会弹失败。
+func TestDumpRulesEmptyWhenNFTUnavailable(t *testing.T) {
+	r := newFakeRunner()
+	r.failOn["nft list table"] = "nft: command not found"
+	applier := newApplier(r, t.TempDir())
+
+	out, err := applier.DumpRules(context.Background())
+	if err != nil {
+		t.Fatalf("nft 不可用时展示路径不应报错: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("应返回空串，got %q", out)
+	}
+}
+
 // 带引号的 comment 拆除时必须保留引号语义，否则 -D 对不上已应用规则。
 func TestToDeleteCommandPreservesQuotedComment(t *testing.T) {
 	in := `iptables -A INPUT -m comment --comment "hello world" -j ACCEPT`

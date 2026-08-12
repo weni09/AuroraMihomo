@@ -24,21 +24,21 @@ func NewGetTransparentRulesLogic(ctx context.Context, svcCtx *svc.ServiceContext
 }
 
 func (l *GetTransparentRulesLogic) GetTransparentRules() (resp *types.TransparentRulesResp, err error) {
-	// l.Info("面板操作：查询透明代理防火墙规则")
-	builtin, policyRoutes, err := l.svcCtx.TransparentService.BuiltinRules()
-	if err != nil {
-		l.Errorf("面板操作：生成内置规则失败: %v", err)
-		return nil, err
+	// 规则查询是设置页的展示数据，不是控制面关键路径。
+	// 未启用 / 不支持透明代理、nft 不可用、表不存在时，内置或实际规则
+	// 读不到就留空返回——把错误抛成 HTTP 500 只会在打开设置时弹无意义失败。
+	builtin, policyRoutes, berr := l.svcCtx.TransparentService.BuiltinRules()
+	if berr != nil {
+		l.Infof("面板操作：生成内置规则失败（展示为空）: %v", berr)
+		builtin, policyRoutes = "", nil
 	}
-	active, err := l.svcCtx.TransparentService.ActiveRules(l.ctx)
-	if err != nil {
-		l.Errorf("面板操作：读取实际生效规则失败: %v", err)
-		return nil, err
+	active, aerr := l.svcCtx.TransparentService.ActiveRules(l.ctx)
+	if aerr != nil {
+		l.Infof("面板操作：读取实际生效规则失败（展示为空）: %v", aerr)
+		active = ""
 	}
 	custom := l.svcCtx.TransparentService.GetCustomRules()
 	exemptPorts := l.svcCtx.TransparentService.GetExemptPorts()
-	// l.Infof("面板操作：查询透明代理规则完成 customBytes=%d activeBytes=%d backend=%s",
-	// 	len(custom), len(active), l.svcCtx.TransparentService.IPTablesBackend())
 	return &types.TransparentRulesResp{
 		CustomRules:     custom,
 		ExemptPorts:     exemptPorts,

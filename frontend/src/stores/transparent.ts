@@ -515,8 +515,17 @@ export const useTransparentStore = defineStore('transparent', {
           skipErrorToast: true,
         })
         this.rules = res.data
-      } catch (e: unknown) {
-        useNotifyStore().error(apiErrorMessage(e, '加载防火墙规则失败'))
+      } catch {
+        // 未启用 / 不支持透明代理、规则表不存在时后端会尽量返回空字段；
+        // 若请求本身仍失败，静默落空展示，不弹「加载防火墙规则失败」。
+        this.rules = {
+          customRules: '',
+          exemptPorts: '',
+          iptablesBackend: '',
+          builtinNFTRules: '',
+          policyRoutes: [],
+          activeRules: '',
+        }
       }
     },
 

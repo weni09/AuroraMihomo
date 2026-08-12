@@ -11,6 +11,7 @@ vi.mock('../api', () => ({
 }))
 
 import api from '../api'
+import { useNotifyStore } from './notify'
 import { useTransparentStore, type TransparentEnvReport } from './transparent'
 
 const mockedApi = vi.mocked(api, true)
@@ -628,6 +629,24 @@ describe('自定义防火墙规则', () => {
     expect(s.rules?.iptablesBackend).toBe('nf_tables')
     expect(s.rules?.policyRoutes).toEqual(['ip rule add fwmark 1 table 100'])
     expect(mockedApi.get).toHaveBeenCalledWith('/transparent/rules', { skipErrorToast: true })
+  })
+
+  it('fetchRules 失败时静默落空展示，不弹错误', async () => {
+    mockedApi.get.mockRejectedValue(new Error('network'))
+    const notify = useNotifyStore()
+    const errSpy = vi.spyOn(notify, 'error')
+    const s = useTransparentStore()
+    await s.fetchRules()
+
+    expect(s.rules).toEqual({
+      customRules: '',
+      exemptPorts: '',
+      iptablesBackend: '',
+      builtinNFTRules: '',
+      policyRoutes: [],
+      activeRules: '',
+    })
+    expect(errSpy).not.toHaveBeenCalled()
   })
 
   it('saveRules 提交规则原文与免代理端口并在成功后刷新展示数据', async () => {
