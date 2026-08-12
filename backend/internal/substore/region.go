@@ -19,6 +19,13 @@ var regionKeywords = map[string][]string{
 	"IN": {"in", "india", "印度", "🇮🇳"},
 	"TR": {"tr", "turkey", "土耳其", "🇹🇷"},
 	"NL": {"nl", "netherlands", "荷兰", "🇳🇱"},
+	"MY": {"my", "malaysia", "马来西亚", "🇲🇾"},
+	"ID": {"id", "indonesia", "印尼", "印度尼西亚", "🇮🇩"},
+	"AR": {"ar", "argentina", "阿根廷", "🇦🇷"},
+	"NZ": {"nz", "new zealand", "新西兰", "🇳🇿"},
+	"AE": {"ae", "uae", "dubai", "阿联酋", "迪拜", "🇦🇪"},
+	"BE": {"be", "belgium", "比利时", "🇧🇪"},
+	"IT": {"it", "italy", "意大利", "🇮🇹"},
 }
 
 // regionOrder 固定地区匹配顺序。
@@ -27,6 +34,7 @@ var regionKeywords = map[string][]string{
 var regionOrder = []string{
 	"HK", "TW", "JP", "SG", "KR", "US", "UK",
 	"DE", "FR", "CA", "AU", "RU", "IN", "TR", "NL",
+	"MY", "ID", "AR", "NZ", "AE", "BE", "IT",
 }
 
 // regionFlags 各地区对应的国旗 emoji
@@ -35,6 +43,8 @@ var regionFlags = map[string]string{
 	"US": "🇺🇸", "KR": "🇰🇷", "UK": "🇬🇧", "DE": "🇩🇪",
 	"FR": "🇫🇷", "CA": "🇨🇦", "AU": "🇦🇺", "RU": "🇷🇺",
 	"IN": "🇮🇳", "TR": "🇹🇷", "NL": "🇳🇱",
+	"MY": "🇲🇾", "ID": "🇮🇩", "AR": "🇦🇷", "NZ": "🇳🇿",
+	"AE": "🇦🇪", "BE": "🇧🇪", "IT": "🇮🇹",
 }
 
 // SupportedRegions 返回所有可用区域代码
