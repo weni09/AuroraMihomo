@@ -40,7 +40,7 @@ Mihomo 内核运行时与配置管理平台：订阅聚合、配置合并、冲�
 
 ```bash
 # compose：只改前缀（含仓库路径、不含 tag），AURORA_VERSION 锁定版本照常生效
-AURORA_REGISTRY=ghcr.nju.edu.cn/weni09/auroramihomo docker compose -f docker/docker-compose.yml up -d
+AURORA_REGISTRY=ghcr.nju.edu.cn/weni09/auroramihomo docker compose up -d
 
 # docker run：整条镜像名换成加速站
 docker run -d --name auroramihomo ... ghcr.nju.edu.cn/weni09/auroramihomo:latest
@@ -52,19 +52,20 @@ docker run -d --name auroramihomo ... ghcr.nju.edu.cn/weni09/auroramihomo:latest
 
 **1. 获取 compose 文件**
 
+无需 clone 仓库，只下载这一个文件即可：
+
 ```bash
-git clone https://github.com/weni09/AuroraMihomo.git
-cd AuroraMihomo
-# 也可以不 clone 整个仓库，只下载这一个文件：
-# curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/weni09/AuroraMihomo/main/docker/docker-compose.yml
+mkdir -p auroramihomo && cd auroramihomo
+curl -fsSL -o docker-compose.yml \
+  https://raw.githubusercontent.com/weni09/AuroraMihomo/main/docker/docker-compose.yml
 ```
 
 **2. 数据目录**
 
-数据默认放在仓库根 `data/`（compose 文件在 `docker/` 下，内部用 `../data` 指回仓库根；compose 相对路径按文件位置解析）。不 clone 仓库、单独使用 compose 文件时，用绝对路径指定：
+数据默认落在 compose 文件同级的 `./data`（相对路径按 compose 文件所在目录解析）。换位置时用绝对路径覆盖：
 
 ```bash
-AURORA_DATA_DIR=/opt/aurora/data docker compose -f docker/docker-compose.yml up -d
+AURORA_DATA_DIR=/opt/aurora/data docker compose up -d
 ```
 
 容器默认以内置账户 `aurora`（uid/gid 10001）运行，启动时会自动修正挂载目录属主，**无需手工 chown**。两种可选调整：
@@ -73,7 +74,7 @@ AURORA_DATA_DIR=/opt/aurora/data docker compose -f docker/docker-compose.yml up 
 
   ```bash
   chown -R "$(id -u):$(id -g)" data
-  AURORA_PUID=$(id -u) AURORA_PGID=$(id -g) docker compose -f docker/docker-compose.yml up -d
+  AURORA_PUID=$(id -u) AURORA_PGID=$(id -g) docker compose up -d
   ```
 
 - **不关心属主，直接放开写权限**（容器以任意 uid 都能写，属主保持现状）：
@@ -87,14 +88,14 @@ AURORA_DATA_DIR=/opt/aurora/data docker compose -f docker/docker-compose.yml up 
 不设也能跑（首次启动会随机生成并存入数据库），但显式设置便于多实例共用与灾备恢复：
 
 ```bash
-# 编辑 docker/docker-compose.yml，取消 AURORA_JWT_SECRET 注释并填入随机长串
+# 编辑 docker-compose.yml，取消 AURORA_JWT_SECRET 注释并填入随机长串
 openssl rand -hex 32   # 生成一个
 ```
 
 **4. 启动**
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+docker compose up -d
 ```
 
 首次会自动从 GHCR 拉取镜像；随后容器内会自动下载 mihomo 内核与 Zashboard 面板，需要能访问 GitHub，视网速可能要几分钟。
@@ -102,14 +103,14 @@ docker compose -f docker/docker-compose.yml up -d
 **5. 确认启动成功**
 
 ```bash
-docker compose -f docker/docker-compose.yml ps        # 状态应为 healthy
+docker compose ps        # 状态应为 healthy
 curl -fsS http://127.0.0.1:8899/healthz && echo OK
 ```
 
 **6. 取初始密码并登录**
 
 ```bash
-docker compose -f docker/docker-compose.yml logs | grep 初始管理员密码
+docker compose logs | grep 初始管理员密码
 # 或直接读文件
 docker exec auroramihomo cat /data/initial_password.txt
 ```
@@ -121,9 +122,11 @@ docker exec auroramihomo cat /data/initial_password.txt
 **升级**
 
 ```bash
-git pull                                            # 更新 compose 文件（用 git clone 获取时）
-docker compose -f docker/docker-compose.yml pull    # 拉取新镜像
-docker compose -f docker/docker-compose.yml up -d
+# 可选：更新 compose 文件本身
+curl -fsSL -o docker-compose.yml \
+  https://raw.githubusercontent.com/weni09/AuroraMihomo/main/docker/docker-compose.yml
+docker compose pull    # 拉取新镜像
+docker compose up -d
 ```
 
 数据都在 `data/` 卷里，升级不丢配置。
@@ -184,7 +187,7 @@ cp -r /tmp/zash/<含 index.html 的目录>/* data/zashboard/
 
 **透明代理的额外改动**
 
-默认配置不支持透明代理。需要时编辑 `docker/docker-compose.yml`，取消 `user: "0:0"`、`AURORA_RUN_AS_ROOT` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
+默认配置不支持透明代理。需要时编辑 `docker-compose.yml`，取消 `user: "0:0"`、`AURORA_RUN_AS_ROOT` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
 
 另外在**宿主机**写入转发与 `rp_filter`（容器内不会改 sysctl；host 网络下 Docker 也会拒绝相关 `--sysctl`）：
 
@@ -481,7 +484,7 @@ sudo systemctl start auroramihomo
 
 | 部署方式 | 升级命令 |
 |---|---|
-| Docker | `docker compose -f docker/docker-compose.yml pull && docker compose -f docker/docker-compose.yml up -d`（用 git 获取 compose 文件时先 `git pull`） |
+| Docker | `docker compose pull && docker compose up -d`（可选先重新下载 compose 文件） |
 | 二进制（在线） | 重跑安装脚本，会保留配置并自动停服替换 |
 | 二进制（离线） | 停服 → 覆盖二进制 → 启动。**不要覆盖 `etc/` 与 `data/`** |
 | 源码 | `git pull && make build && make run` |
@@ -492,7 +495,7 @@ mihomo 内核与 Zashboard 面板的升级独立于本体，在「系统设置�
 
 ```bash
 # Docker
-docker compose -f docker/docker-compose.yml down
+docker compose down
 # 数据仍在 ./data，确认不再需要后再删
 
 # 二进制
@@ -510,7 +513,7 @@ sudo rm -rf /opt/auroramihomo      # 会一并删除 data/，先备份
 
 ```bash
 sudo journalctl -u auroramihomo -n 100 --no-pager    # systemd
-docker compose -f docker/docker-compose.yml logs --tail=100   # Docker
+docker compose logs --tail=100   # Docker
 tail -100 /opt/auroramihomo/data/logs/aurora.log     # 应用日志
 ```
 

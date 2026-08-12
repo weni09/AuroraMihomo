@@ -21,9 +21,9 @@ services:
     network_mode: "host"
     cap_add:
       - NET_ADMIN
-    # 数据卷：默认挂仓库根 data/（compose 文件在 docker/ 下，故用 ../data；
-    # Docker 的 compose 相对路径按 compose 文件所在目录解析，不按执行命令的
-    # 目录）。单文件下载（不 clone 仓库）场景请用绝对路径覆盖：
+    # 数据卷：默认挂 compose 文件同级的 ./data（相对路径按 compose 文件
+    # 所在目录解析）。单独下载本文件时，数据就落在同目录 data/ 下；
+    # 需要换位置时用绝对路径覆盖：
     #   AURORA_DATA_DIR=/opt/aurora/data docker compose up -d
     #
     # 无需在宿主机手动 chown：容器以 root 启动，entrypoint 会先把 /data
@@ -68,7 +68,7 @@ services:
       # 注意：该选项会阻断基于文件 capability 的提权，与 TUN 模式互斥。
       - no-new-privileges:true
     volumes:
-      - ${AURORA_DATA_DIR:-../data}:/data
+      - ${AURORA_DATA_DIR:-./data}:/data
     environment:
       - TZ=Asia/Shanghai
       # 生产环境建议显式设置，避免依赖数据库中自动生成的密钥
