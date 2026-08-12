@@ -33,13 +33,12 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		"mode: rule",
 		"mixed-port:",
 		"dns:",
-		"nameserver-policy:",
-		"fallback-filter:",
-		"2001::/32",
 		"tun:",
+		"IP-CIDR,192.168.0.0/16,DIRECT",
+		"IP-CIDR,10.0.0.0/8,DIRECT",
+		"IP-CIDR,172.16.0.0/12,DIRECT",
+		"IP-CIDR,127.0.0.0/8,DIRECT",
 		"MATCH,DIRECT",
-		"google.com,github.com",
-		"geoip: false",
 		"223.5.5.5",
 		"119.29.29.29",
 	} {
@@ -47,16 +46,9 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 			t.Errorf("默认 base 缺少开箱项 %q", need)
 		}
 	}
-	// nameserver-policy 多域名键不得含 ", "：带空格会被 mihomo 拆成非法域名
-	// （invalid domain: github.com 前导空格），配置校验直接失败。
-	if strings.Contains(raw, "google.com, ") || strings.Contains(raw, ", github.com") {
-		t.Error("nameserver-policy 多域名键不得含逗号后空格")
-	}
-	// 默认 base 不得出现任何 GeoData 配置键与 geosite/geoip 引用：
-	// 前者是初始化不该带出的 geo 配置，后者会让 mihomo 校验时联网下载规则库
-	// （GeoSite.dat 等），弱网/离线环境直接失败（can't download GeoSite.dat
-	// ... test failed）。零引用才零下载。用行首正则排除注释行（注释里允许
-	// 出现讲解性字样）。
+	// 默认 base 不得出现 GeoData 配置、DNS 分流模板与 geosite/geoip 引用：
+	// nameserver-policy / fallback-filter 开箱留空；geo 键会让 mihomo 校验
+	// 时联网下载规则库。用行首正则排除注释行。
 	for _, re := range []*regexp.Regexp{
 		regexp.MustCompile(`(?m)^\s*"?geosite:`),
 		regexp.MustCompile(`(?m)^\s*geoip:\s*true`),
@@ -66,9 +58,14 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		regexp.MustCompile(`(?m)^\s*geosite-matcher:`),
 		regexp.MustCompile(`(?m)^\s*geo-auto-update:`),
 		regexp.MustCompile(`(?m)^\s*geo-update-interval:`),
+		regexp.MustCompile(`(?m)^\s*nameserver-policy:`),
+		regexp.MustCompile(`(?m)^\s*fallback-filter:`),
+		regexp.MustCompile(`(?m)^\s*fallback:`),
+		regexp.MustCompile(`(?m)^\s*- IP-CIDR,1\.1\.1\.1/32,DIRECT`),
+		regexp.MustCompile(`(?m)^\s*- IP-CIDR,8\.8\.8\.8/32,DIRECT`),
 	} {
 		if re.MatchString(raw) {
-			t.Errorf("默认 base 不应包含 GeoData 配置/geosite/geoip/geox-url（初始化不带 geo 配置、校验不下载规则库）: %v", re)
+			t.Errorf("默认 base 不应包含 geo/DNS 分流模板或额外公网直连规则: %v", re)
 		}
 	}
 	// 三项「交由用户开启」：通用 ipv6、dns.enable、dns.ipv6
@@ -105,11 +102,14 @@ func TestEnsureDefaultBaseOnlyWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(first, "nameserver-policy:") {
-		t.Fatalf("应已写入开箱默认，实际:\n%s", first)
+	if !strings.Contains(first, "MATCH,DIRECT") {
+		t.Fatalf("应已写入开箱默认（含 MATCH 兜底），实际:\n%s", first)
 	}
-	if !strings.Contains(first, "google.com,github.com") {
-		t.Fatalf("应含纯域名 nameserver-policy 键，实际:\n%s", first)
+	if !strings.Contains(first, "IP-CIDR,192.168.0.0/16,DIRECT") {
+		t.Fatalf("应含私网直连规则，实际:\n%s", first)
+	}
+	if strings.Contains(first, "nameserver-policy:") || strings.Contains(first, "fallback-filter:") {
+		t.Fatalf("开箱 base 不应预写 nameserver-policy / fallback-filter，实际:\n%s", first)
 	}
 
 	// 用户改过之后再 Ensure 不得覆盖

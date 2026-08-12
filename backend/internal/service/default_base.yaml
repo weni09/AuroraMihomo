@@ -6,7 +6,8 @@
 # 设计原则：
 # - 无订阅时也能启动：规则以 DIRECT 收尾，不引用尚未存在的策略组
 # - IPv6 / GeoData / 内核 DNS 默认关闭，由用户按环境在配置中心自行打开
-# - DNS 段预填国内+境外分流的公共解析器模板；仅当用户开启 dns.enable 后生效
+# - DNS 只预填基础解析器；nameserver-policy / fallback-filter 开箱留空，
+#   避免 geosite/geoip 引用触发规则库下载，也避免域名键格式踩坑
 # - 不预写 tproxy-port / tun.enable：由「透明代理」开关按需写入，避免
 #   「只配了端口、规则未接管」的半启用状态
 # - external-controller 监听 0.0.0.0 便于局域网打开 Zashboard；生产环境
@@ -26,12 +27,10 @@ port: 7889
 external-controller: 0.0.0.0:9090
 
 # 注意：开箱 base 不含任何 GeoData 配置键（geodata-mode / geodata-loader /
-# geosite-matcher / geo-auto-update / geox-url 等），也不引用 geosite:/geoip:
-# （见下方 nameserver-policy 与 fallback-filter），因此校验配置时 mihomo
-# 不会去找或下载 GeoSite.dat 等规则库，弱网与离线环境也能通过校验。
-# 需要规则库功能时，在「配置中心 · 基础配置」的「GeoData 规则库」分组开启
-# （下载地址可选国内镜像 / 官方源 / 自定义），或把库文件手工放到
-# ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
+# geosite-matcher / geo-auto-update / geox-url 等），也不预写
+# nameserver-policy / fallback-filter（二者开箱为空）。因此校验配置时
+# mihomo 不会去找或下载 GeoSite.dat 等规则库，弱网与离线环境也能通过校验。
+# 需要规则库或 DNS 分流时，在「配置中心 · 基础配置」自行填写。
 
 dns:
   # 默认关闭：启用 TUN/TProxy 或需要内核 DNS 时由用户打开
@@ -48,44 +47,14 @@ dns:
   default-nameserver:
     - 223.5.5.5
     - 119.29.29.29
-  # 默认走国内纯 IP；境外见 nameserver-policy / fallback 注释
+  # 默认国内纯 IP；更细的分流策略由用户在 nameserver-policy 自行配置
   nameserver:
     - 223.5.5.5
     - 119.29.29.29
-  fallback:
-    - 8.8.8.8
-    - 1.1.1.1
-  fallback-filter:
-    # geoip: true 需要 GeoIP/MMDB 规则库（缺失时校验会联网下载），
-    # 开箱默认关闭；需要 CN IP 判断时先放置规则库再改回 true
-    geoip: false
-    ipcidr:
-      - 0.0.0.0/8
-      - 10.0.0.0/8
-      - 127.0.0.0/8
-      - 224.0.0.0/4
-      - 240.0.0.0/4
-      - 255.255.255.255/32
-      - ::1/128
-      - 2001::/32
-      - 2001:db8::/32
-  # 按域名指定上游。开箱无订阅、无统一策略组名，此处只写纯 IP，不写 #组名。
-  # 不用 geosite: 键（会触发规则库下载，见文件头 geox-url 注释）：
-  # 想用完整 geosite 分流，先放置规则库/配 geox-url，再把 geosite 键加回来。
-  # 导入订阅后若 Google 等被污染（AAAA=2001::1），不要把 proxy-server-nameserver
-  # 改成域名 DoH；在「你自己的」境外策略组就绪后，把下面境外项改成：
-  #   - "https://8.8.8.8/dns-query#<你的境外策略组名>"
-  #   - "https://1.1.1.1/dns-query#<你的境外策略组名>"
-  # （多数节点不支持 UDP，裸 8.8.8.8#组 常失败；组名以订阅为准，因人而异。）
-  # respect-rules 默认 false，避免 DNS 再被规则打回 DIRECT 吃污染。
-  nameserver-policy:
-    # 开箱只写纯域名键，不写 geosite: 键：geosite 引用会让校验时联网下载
-    # 规则库（见文件头注释）。多域名必须用「逗号且无空格」分隔，官方示例
-    # 是 "www.baidu.com,+.google.cn"；写成 ", " 会被拆成 " github.com"，
-    # mihomo 报 DNS ResoverRule invalid domain 并让配置校验失败。
-    "google.com,github.com,telegram.org,twitter.com,x.com,facebook.com,youtube.com,netflix.com,openai.com,spotify.com":
-      - 8.8.8.8
-      - 1.1.1.1
+  # 开箱不预写 fallback / fallback-filter / nameserver-policy：
+  # - fallback-filter 默认常带 geoip:true，会触发规则库下载
+  # - nameserver-policy 易因域名键格式（逗号空格、geosite）导致校验失败
+  # 需要时在「域名解析」分组自行填写。
   # 只解析代理节点 server 域名：必须纯 IP 国内 DNS，切勿 DoH
   proxy-server-nameserver:
     - 223.5.5.5
@@ -118,13 +87,12 @@ tun:
     - 240.0.0.0/4
     - 255.255.255.255/32
 
-# 仅保留与具体订阅无关的兜底规则；MATCH 保证无节点时流量直连可用。
-# 不用 no-resolve 后缀：合并引擎的策略引用检查会把第四段误当成策略名并整行删掉。
+# 开箱仅私网直连 + MATCH 兜底；不预写 1.1.1.1/8.8.8.8 等公网例外。
+# MATCH 保证无节点时流量直连可用。不用 no-resolve 后缀：合并引擎的策略
+# 引用检查会把第四段误当成策略名并整行删掉。
 rules:
   - IP-CIDR,192.168.0.0/16,DIRECT
   - IP-CIDR,10.0.0.0/8,DIRECT
   - IP-CIDR,172.16.0.0/12,DIRECT
   - IP-CIDR,127.0.0.0/8,DIRECT
-  - IP-CIDR,1.1.1.1/32,DIRECT
-  - IP-CIDR,8.8.8.8/32,DIRECT
   - MATCH,DIRECT
