@@ -316,6 +316,12 @@ const onInput = (key: string, value: string, type: string) => {
     deleteByPath(store.model, key)
     return
   }
+  // url-preset / text 地址字段：清空输入框应等同「未设置」，删键而不是写 ''。
+  // 否则会留下 geox-url.geoip: ""，下拉显示「自定义」、保存后 YAML 也是空串噪声。
+  if ((type === 'url-preset' || type === 'text') && value.trim() === '') {
+    deleteByPath(store.model, key)
+    return
+  }
   setByPath(store.model, key, value)
 }
 
