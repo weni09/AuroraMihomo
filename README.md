@@ -185,9 +185,9 @@ cp -r /tmp/zash/<含 index.html 的目录>/* data/zashboard/
 
 放好后刷新 `http://<宿主机IP>:8899/ui/` 即可，无需重启。无法直连 GitHub 时，给上面的 URL 套 CDN 前缀（如 `https://ghproxy.com/https://github.com/...`）。手工放置的文件无需担心属主：容器（重启）时入口脚本会自动把 `/data` 修正为运行账户所有。
 
-**GeoSite / GeoIP 规则库 → 容器内 `/data/`（宿主同级 `data/`）**
+**GeoSite / GeoIP 规则库（默认不下载）→ 需要时放容器内 `/data/`（宿主同级 `data/`）**
 
-合并配置或「立即拉取」时，若 base 使用了 `geosite:` / `fallback-filter.geoip`，mihomo 会在配置目录查找规则库；没有就按 `geox-url` 下载。直连 GitHub 超时的典型日志：
+开箱 base **不引用** `geosite:` / `fallback-filter.geoip`（也不写 `geox-url`），因此默认配置校验时 mihomo 不需要规则库、不会联网下载，弱网/离线也能通过「立即拉取」。**只有**配置里出现 `geosite:` / `geoip:` 引用（如订阅自带规则、你在基础配置里加了 geosite 分流）时，mihomo 才会去下载缺失库——默认源是 GitHub，直连超时的典型日志：
 
 ```text
 can't download GeoSite.dat: ... context deadline exceeded
@@ -195,9 +195,9 @@ configuration file /data/config.yaml test failed
 validate config failed, rolled back
 ```
 
-新安装的开箱 base 已默认把 `geox-url` 指到 jsDelivr 中国镜像（`testingcf.jsdelivr.net`）。**已在跑的旧实例** base 里可能还没有该项，任选其一：
+此时任选其一：
 
-1. **配置中心 → 基础配置** 增加（或改）`geox-url` 后重新「立即拉取」：
+1. **配置中心 → 基础配置** 增加 `geox-url`（换成国内可直连的 jsDelivr 镜像）后重新「立即拉取」：
 
 ```yaml
 geox-url:
@@ -558,7 +558,7 @@ tail -100 /opt/auroramihomo/data/logs/aurora.log     # 应用日志
 
 **内核下载失败**：日志里出现 `download failed via ...`。通常是网络问题，可在「系统设置 → 下载与更新出网」调整 CDN 源顺序，或手工放置内核（Docker 见上文「内核 / Zashboard 初始化失败与手动放置」；二进制见离线安装）。
 
-**立即拉取 / 合并报 `can't download GeoSite.dat` 或 `context deadline exceeded`**：mihomo 校验配置时在下规则库，直连 GitHub 超时。在基础配置里设置 `geox-url`（见上文 GeoSite 一节）或把 `GeoSite.dat` / `country.mmdb` 放到 `data/`（容器 `/data`）后重试。
+**立即拉取 / 合并报 `can't download GeoSite.dat` 或 `context deadline exceeded`**：配置里引用了 `geosite:` / `geoip:`（订阅自带规则或基础配置里的 geosite 分流），mihomo 校验时缺规则库且默认下载源 GitHub 直连超时。给基础配置加 `geox-url`（见上文 GeoSite 一节）或把 `GeoSite.dat` / `country.mmdb` 放到 `data/`（容器 `/data`）后重试；开箱默认 base 不引用 geosite，无此问题。
 
 **端口被占用**：默认用 8899（面板）与 9090（内核控制 API）。改端口用环境变量 `AURORA_PORT`，内核控制端口在「配置中心」的 `external-controller` 里改。
 

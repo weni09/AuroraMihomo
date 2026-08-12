@@ -1,6 +1,7 @@
 package service
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -38,15 +39,26 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		"tun:",
 		"MATCH,DIRECT",
 		"geodata-mode: false",
-		"geox-url:",
-		"testingcf.jsdelivr.net",
-		"geosite:cn,private,apple",
-		"geosite:google,github,telegram",
+		"google.com, github.com",
+		"geoip: false",
 		"223.5.5.5",
 		"119.29.29.29",
 	} {
 		if !strings.Contains(raw, need) {
 			t.Errorf("默认 base 缺少开箱项 %q", need)
+		}
+	}
+	// 默认 base 不得引用 geosite/geoip 与 geox-url：引用会让 mihomo 校验时
+	// 联网下载规则库（GeoSite.dat 等），弱网/离线环境直接失败
+	// （can't download GeoSite.dat ... test failed）。零引用才零下载。
+	// 用行首正则排除注释行（注释里允许出现讲解性字样）。
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^\s*"?geosite:`),
+		regexp.MustCompile(`(?m)^\s*geoip:\s*true`),
+		regexp.MustCompile(`(?m)^\s*geox-url:`),
+	} {
+		if re.MatchString(raw) {
+			t.Errorf("默认 base 不应引用 geosite/geoip/geox-url（会触发规则库下载）: %v", re)
 		}
 	}
 	// 四项「交由用户开启」：通用 ipv6、geodata-mode、dns.enable、dns.ipv6
@@ -89,8 +101,8 @@ func TestEnsureDefaultBaseOnlyWhenEmpty(t *testing.T) {
 	if !strings.Contains(first, "nameserver-policy:") {
 		t.Fatalf("应已写入开箱默认，实际:\n%s", first)
 	}
-	if !strings.Contains(first, "geosite:cn,private,apple") {
-		t.Fatalf("应含新 nameserver-policy 键，实际:\n%s", first)
+	if !strings.Contains(first, "google.com, github.com") {
+		t.Fatalf("应含纯域名 nameserver-policy 键，实际:\n%s", first)
 	}
 
 	// 用户改过之后再 Ensure 不得覆盖

@@ -31,15 +31,17 @@ geodata-loader: memconservative
 geosite-matcher: succinct
 geo-auto-update: true
 geo-update-interval: 24
-# 规则库下载地址。不写时 mihomo 默认走 GitHub releases，直连超时会让
-# 「立即拉取」校验失败并回滚（日志：can't download GeoSite.dat / context
-# deadline exceeded）。下方用 jsDelivr 中国镜像（testingcf），国内可直连；
-# 文件也可手工放到 ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
-geox-url:
-  geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
-  geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
-  mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
-  asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
+# 注意：开箱 base 刻意不引用 geosite:/geoip:（见下方 nameserver-policy 与
+# fallback-filter），因此校验配置时 mihomo 不会去找/下载 GeoSite.dat 等规则
+# 库，弱网与离线环境也能通过校验。一旦配置里出现 geosite/geoip 引用，
+# mihomo 会按 geox-url 下载缺失库（默认 GitHub，直连超时即报
+# "can't download GeoSite.dat ... test failed"）。需要时取消下面注释换源，
+# 或把库文件手工放到 ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
+# geox-url:
+#   geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
+#   geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+#   mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+#   asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
 
 dns:
   # 默认关闭：启用 TUN/TProxy 或需要内核 DNS 时由用户打开
@@ -64,8 +66,9 @@ dns:
     - 8.8.8.8
     - 1.1.1.1
   fallback-filter:
-    geoip: true
-    geoip-code: CN
+    # geoip: true 需要 GeoIP/MMDB 规则库（缺失时校验会联网下载），
+    # 开箱默认关闭；需要 CN IP 判断时先放置规则库再改回 true
+    geoip: false
     ipcidr:
       - 0.0.0.0/8
       - 10.0.0.0/8
@@ -77,6 +80,8 @@ dns:
       - 2001::/32
       - 2001:db8::/32
   # 按域名指定上游。开箱无订阅、无统一策略组名，此处只写纯 IP，不写 #组名。
+  # 不用 geosite: 键（会触发规则库下载，见文件头 geox-url 注释）：
+  # 想用完整 geosite 分流，先放置规则库/配 geox-url，再把 geosite 键加回来。
   # 导入订阅后若 Google 等被污染（AAAA=2001::1），不要把 proxy-server-nameserver
   # 改成域名 DoH；在「你自己的」境外策略组就绪后，把下面境外项改成：
   #   - "https://8.8.8.8/dns-query#<你的境外策略组名>"
@@ -84,10 +89,9 @@ dns:
   # （多数节点不支持 UDP，裸 8.8.8.8#组 常失败；组名以订阅为准，因人而异。）
   # respect-rules 默认 false，避免 DNS 再被规则打回 DIRECT 吃污染。
   nameserver-policy:
-    "geosite:cn,private,apple":
-      - 223.5.5.5
-      - 119.29.29.29
-    "geosite:google,github,telegram,twitter,facebook,youtube,netflix,openai,spotify":
+    # 开箱只写纯域名键（匹配该域名及子域），不写 geosite: 键：
+    # geosite 引用会让校验时联网下载规则库（见文件头 geox-url 注释）。
+    "google.com, github.com, telegram.org, twitter.com, x.com, facebook.com, youtube.com, netflix.com, openai.com, spotify.com":
       - 8.8.8.8
       - 1.1.1.1
   # 只解析代理节点 server 域名：必须纯 IP 国内 DNS，切勿 DoH
