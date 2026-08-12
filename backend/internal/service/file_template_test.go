@@ -133,6 +133,59 @@ func TestRenderFileTemplateRejectsRawFile(t *testing.T) {
 	}
 }
 
+// 组合作为文件模板来源时，组合级处理管道必须生效（与 renderCollection 对齐）。
+//
+// 回归：此前 fileSourceRequests 只带订阅自身算子、renderFile 以 nil 调用
+// ConvertMany，组合上的 flag 等算子在「文件模板作为远程来源」路径被整体丢弃。
+// 症状即生产实测：组合预览正常显示国旗，配置中心拉取合并后（remote.source 指向
+// 文件模板、模板来源是组合）节点没有国旗。
+func TestRenderFileCollectionSourceAppliesCollectionOperators(t *testing.T) {
+	svc, db := newTestRenderService(t)
+
+	// 两个成员订阅，节点名含地区关键词（region.go 的 HK/JP 词典命中）
+	subs := []*model.Subscription{
+		{Name: "hk", Enabled: 1, Content: "ss://YWVzLTI1Ni1nY206cHc=@1.1.1.1:8388#香港 01\n"},
+		{Name: "jp", Enabled: 1, Content: "ss://YWVzLTI1Ni1nY206cHc=@2.2.2.2:8388#日本 01\n"},
+	}
+	for _, s := range subs {
+		if err := db.CreateSubscription(s); err != nil {
+			t.Fatalf("创建订阅失败: %v", err)
+		}
+	}
+
+	// 组合挂上两条订阅，并配置自动国旗
+	coll := &model.SubCollection{
+		Name:      "flag-collection",
+		Enabled:   1,
+		Operators: `[{"type":"flag","enabled":true,"payload":"{}"}]`,
+	}
+	if err := db.CreateCollection(coll); err != nil {
+		t.Fatalf("创建组合失败: %v", err)
+	}
+	if err := db.ReplaceCollectionItems(coll.ID, []int64{subs[0].ID, subs[1].ID}); err != nil {
+		t.Fatalf("组合挂订阅失败: %v", err)
+	}
+
+	f := &model.SubFile{
+		Name:         "tpl",
+		ConfigType:   model.FileConfigTypeMihomo,
+		SourceType:   model.SourceTypeCollection,
+		SourceID:     coll.ID,
+		TemplateLang: model.TemplateLangGo,
+		Content:      "proxies:\n{{ range .Nodes }}  - name: \"{{ .Name }}\"\n    server: {{ .Server }}\n{{ end }}",
+	}
+	got, err := svc.RenderFile(context.Background(), f)
+	if err != nil {
+		t.Fatalf("渲染失败: %v", err)
+	}
+	if !strings.Contains(got, "🇭🇰") {
+		t.Errorf("组合的 flag 算子应作用于文件模板来源节点，结果缺香港国旗:\n%s", got)
+	}
+	if !strings.Contains(got, "🇯🇵") {
+		t.Errorf("组合的 flag 算子应作用于文件模板来源节点，结果缺日本国旗:\n%s", got)
+	}
+}
+
 func TestShareExpiredHelper(t *testing.T) {
 	// 零值表示永不过期
 	if shareExpired(time.Time{}) {

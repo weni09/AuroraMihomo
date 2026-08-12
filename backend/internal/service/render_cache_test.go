@@ -82,6 +82,54 @@ func TestRenderCacheInvalidatesOnDataChange(t *testing.T) {
 	}
 }
 
+// 文件直链的缓存键必须跟随来源组合的变更：组合的管道/成员变了，
+// 文件渲染内容会变，但文件自身 updated_at 不变——若键只含文件时间戳，
+// 直链会一直返回陈旧内容。与 RenderByToken 的 dataVersion 同一模式。
+func TestFileDataVersionTracksSourceCollectionChange(t *testing.T) {
+	svc, db := newTestRenderService(t)
+
+	sub := &model.Subscription{Name: "s", Enabled: 1,
+		Content: "ss://YWVzLTI1Ni1nY206cHc=@1.1.1.1:8388#N1\n"}
+	if err := db.CreateSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	coll := &model.SubCollection{Name: "c", Enabled: 1}
+	if err := db.CreateCollection(coll); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReplaceCollectionItems(coll.ID, []int64{sub.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f := &model.SubFile{
+		Name:         "tpl",
+		ConfigType:   model.FileConfigTypeMihomo,
+		SourceType:   model.SourceTypeCollection,
+		SourceID:     coll.ID,
+		TemplateLang: model.TemplateLangGo,
+		Content:      "proxies:\n{{ range .Nodes }}  - name: \"{{ .Name }}\"\n    server: {{ .Server }}\n{{ end }}",
+	}
+	if err := db.SaveFile(f); err != nil {
+		t.Fatal(err)
+	}
+
+	v1 := svc.fileDataVersion(f)
+	if v1 == "" {
+		t.Fatal("应能取到文件的数据版本")
+	}
+
+	// 组合变更（如加 flag 算子）→ 文件缓存键必须变化
+	time.Sleep(5 * time.Millisecond)
+	if err := db.DB.Model(&model.SubCollection{}).Where("id = ?", coll.ID).
+		Update("updated_at", time.Now()).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := svc.fileDataVersion(f)
+	if v1 == v2 {
+		t.Fatalf("来源组合变更后文件数据版本应变化，两次均为 %q", v1)
+	}
+}
+
 // 并发请求下闸门不应死锁，且结果都能正常返回
 func TestRenderCacheConcurrentNoDeadlock(t *testing.T) {
 	svc, _ := newTestRenderService(t)

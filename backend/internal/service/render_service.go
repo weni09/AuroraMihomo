@@ -505,7 +505,23 @@ func (s *RenderService) fileDataVersion(f *model.SubFile) string {
 	if f == nil {
 		return ""
 	}
-	return "f" + strconv.FormatInt(f.UpdatedAt.UnixNano(), 10)
+	// 文件自身的变更已使缓存失效；但渲染正文还取决于节点来源
+	// （订阅/组合的管道、缓存与成员）。来源变更不会带动文件自身的
+	// updated_at，必须把来源的版本一并纳入键，否则文件直链会一直
+	// 对外返回陈旧内容——与 RenderByToken 的 dataVersion 同一模式。
+	base := "f" + strconv.FormatInt(f.UpdatedAt.UnixNano(), 10)
+	switch f.SourceType {
+	case model.SourceTypeCollection:
+		if c, err := s.db.GetCollection(f.SourceID); err == nil && c != nil {
+			base += "|c" + strconv.FormatInt(c.UpdatedAt.UnixNano(), 10)
+		}
+	default:
+		// 空串与 subscription 同语义，与 fileSourceRequests 的 default 分支一致
+		if sub, err := s.db.GetSubscription(f.SourceID); err == nil && sub != nil {
+			base += "|s" + strconv.FormatInt(sub.UpdatedAt.UnixNano(), 10)
+		}
+	}
+	return base
 }
 
 // renderFile 是文件渲染的唯一实现。public=true 时：
@@ -534,13 +550,18 @@ func (s *RenderService) renderFile(ctx context.Context, f *model.SubFile, public
 		return "", ErrPublicJSTemplate
 	}
 
-	reqs, err := s.fileSourceRequests(f, public)
+	reqs, collOps, err := s.fileSourceRequests(f, public)
 	if err != nil {
 		return "", err
 	}
 	// 只需要管道/去重/改写跑完后的节点列表，渲染交给 RenderMihomoOverride
 	// 按 f.TemplateLang 决定用 Go 模板 / YAML 覆写 / JS 脚本覆写
-	res, err := s.engine.ConvertMany(ctx, reqs, s.RewriteRules(), nil, "noop", "")
+	//
+	// collOps 为来源组合自身的处理管道（与 renderCollection 对齐）：
+	// 来源是组合时若丢弃它，组合上的 flag/rename/filter 等算子在
+	// 「文件作为远程来源」路径全部失效——组合预览正常、拉取合并后
+	// 节点却没有国旗，正是这个缺口。单条订阅来源时 collOps 为 nil。
+	res, err := s.engine.ConvertMany(ctx, reqs, s.RewriteRules(), collOps, "noop", "")
 	if err != nil {
 		return "", err
 	}
@@ -562,28 +583,43 @@ func (s *RenderService) RenderFileTemplate(ctx context.Context, id int64) (strin
 // fileSourceRequests 组装文件模板的节点来源请求。
 // 来源可以是单条订阅，也可以是一个组合（取其下全部启用订阅）。
 // public 时剥离源订阅上的 script 算子。
-func (s *RenderService) fileSourceRequests(f *model.SubFile, public bool) ([]substore.ConvertRequest, error) {
+//
+// 第二个返回值是来源组合自身的处理管道（collOps），单条订阅来源时为 nil。
+// 它与 renderCollection 的 ops 对齐：组合作为文件来源时，组合上的
+// flag/rename/filter 等算子必须一并生效，否则该路径的渲染结果
+// 与组合预览不一致。
+func (s *RenderService) fileSourceRequests(f *model.SubFile, public bool) ([]substore.ConvertRequest, []substore.PipelineOperator, error) {
 	if f.SourceID <= 0 {
-		return nil, fmt.Errorf("文件「%s」未指定节点来源", f.Name)
+		return nil, nil, fmt.Errorf("文件「%s」未指定节点来源", f.Name)
 	}
 
+	var collOps []substore.PipelineOperator
 	var subs []model.Subscription
 	switch f.SourceType {
 	case model.SourceTypeCollection:
+		coll, err := s.db.GetCollection(f.SourceID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("文件「%s」的来源组合(%d)不存在或已被删除: %w", f.Name, f.SourceID, err)
+		}
+		collOps = DecodeOperators(coll.Operators)
+		if public {
+			collOps = substore.StripPublicUnsafeOps(collOps)
+		}
+
 		items, err := s.db.ListCollectionItems(f.SourceID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ids := make([]int64, 0, len(items))
 		for _, it := range items {
 			ids = append(ids, it.SubscriptionID)
 		}
 		if len(ids) == 0 {
-			return nil, fmt.Errorf("组合(%d)下没有订阅", f.SourceID)
+			return nil, nil, fmt.Errorf("组合(%d)下没有订阅", f.SourceID)
 		}
 		got, err := s.db.GetSubscriptionsByIDs(ids)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// IN 查询不保证顺序，按组合内的优先级重排
 		subs = orderByIDs(got, ids)
@@ -591,7 +627,7 @@ func (s *RenderService) fileSourceRequests(f *model.SubFile, public bool) ([]sub
 		// 未指定或 subscription：按单条订阅处理
 		got, err := s.db.GetSubscriptionsByIDs([]int64{f.SourceID})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		subs = got
 	}
@@ -615,9 +651,9 @@ func (s *RenderService) fileSourceRequests(f *model.SubFile, public bool) ([]sub
 		})
 	}
 	if len(reqs) == 0 {
-		return nil, fmt.Errorf("文件「%s」的节点来源下没有启用的订阅", f.Name)
+		return nil, nil, fmt.Errorf("文件「%s」的节点来源下没有启用的订阅", f.Name)
 	}
-	return reqs, nil
+	return reqs, collOps, nil
 }
 
 // fileTraffic 返回文件分享应上报的流量信息。
