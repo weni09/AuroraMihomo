@@ -1,23 +1,42 @@
 services:
   auroramihomo:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: auroramihomo:latest
+    # 默认直接拉取 GHCR 已发布镜像（免本地构建），up 前会先 pull。
+    # 用 AURORA_VERSION 锁定版本，例如 AURORA_VERSION=0.11.0 docker compose up -d；
+    # 镜像名必须小写——GHCR 包名强制小写，大写会报 NAME_INVALID。
+    #
+    # 无法直连 GitHub 时，把 AURORA_REGISTRY 换成 GHCR 镜像加速站的前缀
+    # （含仓库路径，不含 tag），例如：
+    #   AURORA_REGISTRY=ghcr.nju.edu.cn/weni09/auroramihomo docker compose up -d
+    # 本仓库实测 ghcr.nju.edu.cn 可匿名拉取；其余加速站接口不稳定，用前先验证。
+    image: ${AURORA_REGISTRY:-ghcr.io/weni09/auroramihomo}:${AURORA_VERSION:-latest}
+    # 本地开发/自定义构建时才需要取消下面注释（替代上面的 image，需先 clone 仓库）：
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
+    #   args:
+    #     VERSION: ${AURORA_VERSION:-dev}
     container_name: auroramihomo
     restart: unless-stopped
     # 透明代理/TUN 需要 host 网络
     network_mode: "host"
     cap_add:
       - NET_ADMIN
-    # 镜像默认以非 root 账户 aurora(10001) 运行，宿主机数据目录需匹配属主：
-    #   mkdir -p data && sudo chown -R 10001:10001 data
+    # 数据卷：默认挂仓库根 data/（compose 文件在 docker/ 下，故用 ../data；
+    # Docker 的 compose 相对路径按 compose 文件所在目录解析，不按执行命令的
+    # 目录）。单文件下载（不 clone 仓库）场景请用绝对路径覆盖：
+    #   AURORA_DATA_DIR=/opt/aurora/data docker compose up -d
+    #
+    # 无需在宿主机手动 chown：容器以 root 启动，entrypoint 会先把 /data
+    # 属主修正为运行账户（默认 aurora，uid/gid 10001）再降权运行。
+    # 想直接以宿主机当前用户管理数据目录：见下方 environment 区的
+    # AURORA_PUID / AURORA_PGID，并把宿主 data/ chown 给该用户。
     #
     # 重要：cap_add 只把 NET_ADMIN 加入容器的 bounding set，非 root 进程
     # 默认不会获得该能力的 effective 位。因此若要使用 mihomo 的 TUN 模式，
-    # 需取消下面两行注释以 root 运行（代价是失去非 root 隔离）：
+    # 需取消下面注释以 root 运行（代价是失去非 root 隔离）：
     #   user: "0:0"
-    # 仅用 HTTP/SOCKS/混合端口代理时保持默认的非 root 即可。
+    # 并在下方 environment 区取消 AURORA_RUN_AS_ROOT=1 的注释。
+    # 仅用 HTTP/SOCKS/混合端口代理时保持默认的降权运行即可。
     #
     # TUN 模式还需把宿主的 tun 设备映射进来——容器默认没有任何设备访问权。
     # 缺设备与缺 capability 的症状不同：界面上的环境检测会分别报
@@ -49,11 +68,30 @@ services:
       # 注意：该选项会阻断基于文件 capability 的提权，与 TUN 模式互斥。
       - no-new-privileges:true
     volumes:
-      - ./data:/data
+      - ${AURORA_DATA_DIR:-../data}:/data
     environment:
       - TZ=Asia/Shanghai
       # 生产环境建议显式设置，避免依赖数据库中自动生成的密钥
       # - AURORA_JWT_SECRET=请替换为足够随机的长字符串
+      #
+      # 无法直连 GitHub 时，容器内下载 mihomo 内核 / Zashboard / 自升级
+      # 也走加速：CDN 前缀列表（逗号分隔）与 GitHub API 地址，见 README
+      # 「环境变量」表；不设时用内置默认（ghproxy.com 等 CDN 源 + api.github.com）。
+      # - AURORA_CDN_PROVIDERS=ghproxy.com,mirror.ghproxy.com
+      # - AURORA_GITHUB_API=https://api.github.com
+      #
+      # 仅 TUN/TProxy 需要：与上面的 user: "0:0" 配对，保持 root 运行
+      # （留空默认不启用；设为 1 时入口脚本跳过降权）
+      - AURORA_RUN_AS_ROOT=${AURORA_RUN_AS_ROOT:-}
+      #
+      # 容器内运行账户的 uid/gid，默认 10001（镜像内 aurora 用户）。
+      # 想让数据归宿主机当前用户管理（不用 sudo 读写 data/），命令行覆盖：
+      #   chown -R "$(id -u):$(id -g)" data
+      #   AURORA_PUID=$(id -u) AURORA_PGID=$(id -g) docker compose up -d
+      # 这里用 ${VAR:-default} 把宿主机环境变量透传进容器；不设时入口
+      # 脚本仍按 10001 运行，行为与旧版一致。
+      - AURORA_PUID=${AURORA_PUID:-10001}
+      - AURORA_PGID=${AURORA_PGID:-10001}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8899/healthz"]
       interval: 30s

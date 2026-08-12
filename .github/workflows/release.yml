@@ -140,11 +140,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GHCR 包名强制小写：直接写 ${{ github.repository }} 会得到
+      # ghcr.io/weni09/AuroraMihomo（大写），推上去虽然被服务端归一化，
+      # 但用户拉取时 token 端点直接报 NAME_INVALID。用 bash 参数展开
+      # ${VAR,,} 统一转小写，保证文档/元数据里的名字与仓库实际一致。
+      - name: 计算小写镜像名
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: 提取镜像元数据
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ steps.img.outputs.name }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -189,6 +197,11 @@ jobs:
           cat *.sha256 > SHA256SUMS.txt
           ls -la
 
+      # 与 docker job 同款小写转换，供下方 Release 说明里的 docker run 命令使用
+      - name: 计算小写镜像名
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -209,7 +222,7 @@ jobs:
               --network host \
               --cap-add NET_ADMIN \
               -v ./data:/data \
-              ghcr.io/${{ github.repository }}:${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+              ${{ steps.img.outputs.name }}:${{ github.event_name == 'push' && github.ref_name || inputs.version }}
             ```
 
             ### 在线安装（Linux / macOS）

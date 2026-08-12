@@ -113,7 +113,7 @@ Reason:
 ## 6.1 透明代理所需的额外授权
 
 默认镜像以非 root 用户（uid 10001）运行，**开箱不支持透明代理**。
-启用需要四项改动，缺任何一项都会失败：
+启用需要五项改动，缺任何一项都会失败：
 
 ```yaml
 services:
@@ -124,11 +124,13 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun   # TUN 模式必须映射设备
     user: "0:0"                     # 非 root 拿不到 cap 的 effective 位
+    environment:
+      - AURORA_RUN_AS_ROOT=1        # 入口脚本默认会把进程降权回非 root
     # security_opt:
     #   - no-new-privileges:true    # 必须注释：与 file capability 方案互斥
 ```
 
-四项缺失时的症状各不相同，便于对照排查：
+五项缺失时的症状各不相同，便于对照排查：
 
 | 缺失项               | 症状                                                 |
 | -------------------- | ---------------------------------------------------- |
@@ -136,6 +138,7 @@ services:
 | `cap_add`            | 检测报告 `capNetAdmin: false`，bounding 也是 false    |
 | `devices`            | 检测报告 TUN 设备未找到                              |
 | `user: "0:0"`        | `capNetAdminBounding: true` 但 `capNetAdmin: false`   |
+| `AURORA_RUN_AS_ROOT=1` | 与缺失 `user` 同症状：进程被降回非 root 账户，`capNetAdmin: false` |
 
 **代价**：`user: "0:0"` 加上去掉 `no-new-privileges` 会显著降低容器隔离性。
 不需要透明代理时应保持默认（非 root）配置。

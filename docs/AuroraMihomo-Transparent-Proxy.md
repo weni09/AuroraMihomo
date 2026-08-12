@@ -668,11 +668,13 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun   # TUN 模式必须映射设备
     user: "0:0"                 # 必须：非 root 拿不到 cap 的 effective 位
+    environment:
+      - AURORA_RUN_AS_ROOT=1    # 必须：入口脚本默认会把进程降权回非 root
     # security_opt:
     #   - no-new-privileges:true  # 必须注释掉：与 file capability 方案互斥
 ```
 
-四点都是必需的，缺任何一项都会失败，且失败信号不同：
+五点都是必需的，缺任何一项都会失败，且失败信号不同：
 
 | 缺失项              | 症状                                   |
 | ------------------- | -------------------------------------- |
@@ -680,6 +682,7 @@ services:
 | `cap_add`           | 检测报告 `capNetAdmin: false`（bounding 也是 false） |
 | `devices`           | 检测报告 TUN 设备未找到                |
 | `user: "0:0"`       | `capNetAdminBounding: true` 但 `capNetAdmin: false` |
+| `AURORA_RUN_AS_ROOT=1` | 与缺失 `user` 同症状：入口脚本把进程降回非 root 账户，`capNetAdmin: false` |
 
 另外，host 网络下容器内改 sysctl 会影响宿主，Docker 会拒绝
 `--sysctl net.ipv4.ip_forward`，需要在宿主上设置。

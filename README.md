@@ -24,7 +24,7 @@ Mihomo 内核运行时与配置管理平台：订阅聚合、配置合并、冲�
 
 | 方式 | 适合 | 前置要求 |
 |---|---|---|
-| [Docker](#方式一docker) | 大多数场景，升级最省事 | Docker 与 Docker Compose |
+| [Docker](#方式一docker) | 大多数场景，升级最省事 | Docker CLI（compose 方式另需 Docker Compose） |
 | [二进制](#方式二二进制) | 不想引入 Docker；透明代理最省事 | 无（静态二进制） |
 | [源码构建](#方式三源码构建) | 二次开发 | Go 1.25+、Node 22+ |
 
@@ -32,21 +32,55 @@ Mihomo 内核运行时与配置管理平台：订阅聚合、配置合并、冲�
 
 ### 方式一：Docker
 
-**1. 获取代码**
+镜像已发布到 GitHub Container Registry（`ghcr.io/weni09/auroramihomo`，多架构 amd64/arm64），**免本地构建**，`docker run` 或 `docker compose` 直接拉取即可。默认拉 `latest` 标签；要锁定版本，设环境变量 `AURORA_VERSION`（如 `AURORA_VERSION=0.11.0`）。
+
+> 镜像名是全小写的：GHCR 包名强制小写，写成大写（如 `ghcr.io/weni09/AuroraMihomo`）会报 `NAME_INVALID` 拉不下来。
+
+**无法直连 GitHub？** 镜像存放在 GHCR，需要先换镜像加速站再拉取：
 
 ```bash
-git clone https://github.com/OWNER/AuroraMihomo.git
+# compose：只改前缀（含仓库路径、不含 tag），AURORA_VERSION 锁定版本照常生效
+AURORA_REGISTRY=ghcr.nju.edu.cn/weni09/auroramihomo docker compose -f docker/docker-compose.yml up -d
+
+# docker run：整条镜像名换成加速站
+docker run -d --name auroramihomo ... ghcr.nju.edu.cn/weni09/auroramihomo:latest
+```
+
+本仓库实测 `ghcr.nju.edu.cn`（南京大学镜像站）可匿名拉取；其余加速站接口不稳定，用前先自行验证。容器内下载 mihomo 内核 / Zashboard 面板走内置 CDN 源（默认含 ghproxy.com 等），也可在「系统设置 → 下载与更新出网」或环境变量 `AURORA_CDN_PROVIDERS` 调整。
+
+#### 方式 A：docker compose（推荐，含健康检查与安全项）
+
+**1. 获取 compose 文件**
+
+```bash
+git clone https://github.com/weni09/AuroraMihomo.git
 cd AuroraMihomo
+# 也可以不 clone 整个仓库，只下载这一个文件：
+# curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/weni09/AuroraMihomo/main/docker/docker-compose.yml
 ```
 
-**2. 准备数据目录**
+**2. 数据目录**
 
-镜像默认以非 root 账户 `aurora`（uid 10001）运行，宿主目录属主要匹配，否则容器写不进去：
+数据默认放在仓库根 `data/`（compose 文件在 `docker/` 下，内部用 `../data` 指回仓库根；compose 相对路径按文件位置解析）。不 clone 仓库、单独使用 compose 文件时，用绝对路径指定：
 
 ```bash
-mkdir -p data
-sudo chown -R 10001:10001 data
+AURORA_DATA_DIR=/opt/aurora/data docker compose -f docker/docker-compose.yml up -d
 ```
+
+容器默认以内置账户 `aurora`（uid/gid 10001）运行，启动时会自动修正挂载目录属主，**无需手工 chown**。两种可选调整：
+
+- **让数据归当前用户管理**（宿主机不用 sudo 就能读写 `data/`）：把容器运行账户改成你的 uid/gid，并把目录一并 chown 给自己：
+
+  ```bash
+  chown -R "$(id -u):$(id -g)" data
+  AURORA_PUID=$(id -u) AURORA_PGID=$(id -g) docker compose -f docker/docker-compose.yml up -d
+  ```
+
+- **不关心属主，直接放开写权限**（容器以任意 uid 都能写，属主保持现状）：
+
+  ```bash
+  sudo chmod -R a+rwX data   # 777 的温和版：只加读写位，不额外设执行位
+  ```
 
 **3. 设置 JWT 密钥（生产环境建议）**
 
@@ -63,7 +97,7 @@ openssl rand -hex 32   # 生成一个
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-首次启动会自动下载 mihomo 内核与 Zashboard 面板，需要能访问 GitHub，视网速可能要几分钟。
+首次会自动从 GHCR 拉取镜像；随后容器内会自动下载 mihomo 内核与 Zashboard 面板，需要能访问 GitHub，视网速可能要几分钟。
 
 **5. 确认启动成功**
 
@@ -87,15 +121,70 @@ docker exec auroramihomo cat /data/initial_password.txt
 **升级**
 
 ```bash
-git pull
-docker compose -f docker/docker-compose.yml up -d --build
+git pull                                            # 更新 compose 文件（用 git clone 获取时）
+docker compose -f docker/docker-compose.yml pull    # 拉取新镜像
+docker compose -f docker/docker-compose.yml up -d
 ```
 
 数据都在 `data/` 卷里，升级不丢配置。
 
+#### 方式 B：docker run（免 clone，一条命令）
+
+数据目录无需预先 chown，容器启动时自动修正属主。想让数据归当前用户管理，加 `-e AURORA_PUID=$(id -u) -e AURORA_PGID=$(id -g)` 并把 `data/` chown 给自己（写法见方式 A 第 2 步）：
+
+```bash
+mkdir -p data
+docker run -d \
+  --name auroramihomo \
+  --restart unless-stopped \
+  --network host \
+  --cap-add NET_ADMIN \
+  -v "$(pwd)/data:/data" \
+  -e AURORA_JWT_SECRET="$(openssl rand -hex 32)" \
+  ghcr.io/weni09/auroramihomo:latest
+```
+
+初始密码：`docker logs auroramihomo | grep 初始管理员密码`。升级：`docker rm -f auroramihomo` 后重新执行上面的启动命令（`latest` 会拉取最新版）。
+
+#### 内核 / Zashboard 初始化失败与手动放置
+
+首次启动时容器内会自动从 GitHub 下载 mihomo 内核与 Zashboard 面板。若下载失败（无法直连 GitHub、CDN 源全挂等），日志会反复出现：
+
+- `mihomo binary missing, downloading...` / `zashboard assets missing, downloading...` —— 启动时检测到缺失，开始下载
+- `查询 ... 最新版本失败` —— 连不上 `api.github.com`（多为网络问题）
+- `download failed via ...` / `all download sources failed: ...` —— 版本能查到，但所有下载源都失败（CDN 源被墙/失效）
+
+注意：**面板本身不受影响**，仍可正常访问（`FailOnEnsureError=false`，内核缺失只记日志不退出）；症状是代理内核起不来、`/ui/` 返回 404。先尝试「系统设置 → 下载与更新出网」调整 CDN 源顺序，或设 `AURORA_CDN_PROVIDERS` / `AURORA_GITHUB_API`（见「环境变量」表）；仍不行就按下面手工放置。
+
+**mihomo 内核 → 容器内 `/data/bin/mihomo`，即宿主挂载目录 `data/bin/`**：
+
+```bash
+# 从 https://github.com/MetaCubeX/mihomo/releases/latest 选对应平台资产，
+# 如 mihomo-linux-amd64-v1.19.29.gz（Linux/macOS 是 .gz 裸二进制，Windows 是 .zip）
+mkdir -p data/bin
+curl -fsSL -o data/bin/mihomo.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-v1.19.29.gz
+gunzip -f data/bin/mihomo.gz
+chmod +x data/bin/mihomo
+docker restart auroramihomo   # 内核在启动时检测，放好后需重启容器
+```
+
+**Zashboard 面板 → 容器内 `/data/zashboard/`（存在 `index.html` 即生效，无需注册），即宿主 `data/zashboard/`**：
+
+```bash
+# 资产名固定为 dist.zip，可直接用 latest 下载：
+# https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+rm -rf data/zashboard && mkdir -p data/zashboard
+curl -fsSL -o /tmp/zashboard.zip https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+unzip -o /tmp/zashboard.zip -d /tmp/zash
+find /tmp/zash -name index.html          # 找到含 index.html 的目录
+cp -r /tmp/zash/<含 index.html 的目录>/* data/zashboard/
+```
+
+放好后刷新 `http://<宿主机IP>:8899/ui/` 即可，无需重启。无法直连 GitHub 时，给上面的 URL 套 CDN 前缀（如 `https://ghproxy.com/https://github.com/...`）。手工放置的文件无需担心属主：容器（重启）时入口脚本会自动把 `/data` 修正为运行账户所有。
+
 **透明代理的额外改动**
 
-默认配置不支持透明代理。需要时编辑 `docker/docker-compose.yml`，取消 `user: "0:0"` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
+默认配置不支持透明代理。需要时编辑 `docker/docker-compose.yml`，取消 `user: "0:0"`、`AURORA_RUN_AS_ROOT` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
 
 另外在**宿主机**写入转发与 `rp_filter`（容器内不会改 sysctl；host 网络下 Docker 也会拒绝相关 `--sysctl`）：
 
@@ -392,7 +481,7 @@ sudo systemctl start auroramihomo
 
 | 部署方式 | 升级命令 |
 |---|---|
-| Docker | `git pull && docker compose -f docker/docker-compose.yml up -d --build` |
+| Docker | `docker compose -f docker/docker-compose.yml pull && docker compose -f docker/docker-compose.yml up -d`（用 git 获取 compose 文件时先 `git pull`） |
 | 二进制（在线） | 重跑安装脚本，会保留配置并自动停服替换 |
 | 二进制（离线） | 停服 → 覆盖二进制 → 启动。**不要覆盖 `etc/` 与 `data/`** |
 | 源码 | `git pull && make build && make run` |
@@ -425,7 +514,9 @@ docker compose -f docker/docker-compose.yml logs --tail=100   # Docker
 tail -100 /opt/auroramihomo/data/logs/aurora.log     # 应用日志
 ```
 
-**内核下载失败**：日志里出现 `download failed via ...`。通常是网络问题，可在「系统设置 → 下载与更新出网」调整 CDN 源顺序，或手工放置内核（见离线安装）。
+**Docker 反复报 `unable to open database file (14)`**：SQLite 打不开 `/data/aurora.db`，通常是挂载的数据目录不可写。新镜像（入口脚本）启动时会自动把属主修正为运行账户（默认 uid/gid 10001，可用 `AURORA_PUID`/`AURORA_PGID` 调整），若仍报错请确认：已 `docker compose pull` 拉到新镜像；数据目录（含 `AURORA_DATA_DIR` 覆盖的场景）存在且宿主机可写。老版本镜像救急：`sudo chmod -R a+rwX <数据目录>`，或按运行账户 chown（默认 `sudo chown -R 10001:10001 <数据目录>`，改了 `AURORA_PUID` 就用对应 uid）。
+
+**内核下载失败**：日志里出现 `download failed via ...`。通常是网络问题，可在「系统设置 → 下载与更新出网」调整 CDN 源顺序，或手工放置内核（Docker 见上文「内核 / Zashboard 初始化失败与手动放置」；二进制见离线安装）。
 
 **端口被占用**：默认用 8899（面板）与 9090（内核控制 API）。改端口用环境变量 `AURORA_PORT`，内核控制端口在「配置中心」的 `external-controller` 里改。
 

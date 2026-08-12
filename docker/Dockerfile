@@ -54,12 +54,19 @@ FROM alpine:3.21
 # iproute2 必须显式装：Alpine 自带的 ip 是 busybox applet，不支持
 # `ip rule add fwmark`，策略路由建不起来。ip6tables 在 Alpine 是独立包
 # （Debian 系由 iptables 一并提供），漏了它 IPv6 规则会下发失败。
+#
+# su-exec：入口脚本修正挂载卷属主后用它从 root 降权回 aurora，
+# 比 busybox 自带 su 的引号语义可靠，也不引入 util-linux 全家桶。
 RUN apk --no-cache add ca-certificates tzdata curl \
-    iptables ip6tables nftables iproute2
+    iptables ip6tables nftables iproute2 su-exec
 
 # 非 root 运行账户。固定 uid/gid 以便宿主机为挂载卷设置对应属主。
 # 注意：mihomo 的 TUN 模式仍需 NET_ADMIN 能力，通过 compose 的 cap_add 授予；
 # 授予单项 capability 与「以 root 运行」的风险面不可同日而语。
+#
+# 降权不在 Dockerfile 用 USER 完成，而是由 entrypoint.sh 在启动时
+# 先以 root 修正 /data 挂载卷属主、再降回本账户（Postgres 官方镜像同款模式）。
+# 这样用户无需在宿主机手工 chown；代价是容器进程的 PID 1 短暂以 root 运行。
 RUN addgroup -g 10001 -S aurora \
     && adduser -u 10001 -S aurora -G aurora \
     # /app 必须显式创建：此前靠 mkdir 列表里的 /app/public 顺带创建，
@@ -73,14 +80,18 @@ COPY --from=backend-builder --chown=aurora:aurora /app/auroramihomo .
 # 前端静态资源已内嵌进二进制（go:embed），不再拷贝磁盘 public/
 # 容器专用配置，数据路径直接指向 /data 卷，不再用 sed 改写
 COPY --chown=aurora:aurora docker/aurora-api.docker.yaml ./etc/aurora-api.yaml
+# 入口脚本：以 root 修正 /data 挂载卷属主后降权到 aurora（见脚本内注释）
+COPY docker/entrypoint.sh /usr/local/bin/aurora-entrypoint
+RUN chmod +x /usr/local/bin/aurora-entrypoint
 
 ENV TZ=Asia/Shanghai
 VOLUME ["/data"]
 EXPOSE 8899
 
-USER aurora:aurora
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8899/healthz || exit 1
 
-ENTRYPOINT ["/app/auroramihomo", "-f", "etc/aurora-api.yaml"]
+# 不以 USER 固定运行账户：entrypoint 在启动时负责降权（见上），
+# 保留 root 启动窗口只为修正挂载卷属主
+ENTRYPOINT ["/usr/local/bin/aurora-entrypoint"]
+CMD ["/app/auroramihomo", "-f", "etc/aurora-api.yaml"]
