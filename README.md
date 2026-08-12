@@ -210,8 +210,8 @@ TProxy 需要的 `iptables`/`nftables`/`iproute2` 已预装在镜像里，开箱
 #### 在线安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/install.sh \
-  | sudo sh -s -- --repo OWNER/AuroraMihomo
+curl -fsSL https://raw.githubusercontent.com/weni09/AuroraMihomo/main/scripts/install.sh \
+  | sudo sh -s -- --repo weni09/AuroraMihomo
 ```
 
 一条命令装完即可访问，Debian/Ubuntu 与 Alpine 都是。脚本会：
@@ -233,8 +233,8 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/ins
 想先看清它要做什么，加 `--dry-run` 只打印不执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/AuroraMihomo/main/scripts/install.sh \
-  | sudo sh -s -- --repo OWNER/AuroraMihomo --dry-run
+curl -fsSL https://raw.githubusercontent.com/weni09/AuroraMihomo/main/scripts/install.sh \
+  | sudo sh -s -- --repo weni09/AuroraMihomo --dry-run
 ```
 
 可选参数：

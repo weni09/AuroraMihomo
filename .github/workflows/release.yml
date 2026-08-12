@@ -197,10 +197,15 @@ jobs:
           cat *.sha256 > SHA256SUMS.txt
           ls -la
 
-      # 与 docker job 同款小写转换，供下方 Release 说明里的 docker run 命令使用
-      - name: 计算小写镜像名
+      # 与 docker job 同款小写转换；镜像 tag 去掉前缀 v，与
+      # docker/metadata-action 的 type=semver,pattern={{version}} 一致
+      # （实际推送的是 0.11.1 而非 v0.11.1，带 v 会 404）。
+      - name: 计算小写镜像名与 tag
         id: img
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          ver="${{ github.event_name == 'push' && github.ref_name || inputs.version }}"
+          echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=${ver#v}" >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -216,13 +221,20 @@ jobs:
             ### Docker 镜像
 
             ```bash
+            # 单文件 compose（推荐）
+            mkdir -p auroramihomo && cd auroramihomo
+            curl -fsSL -o docker-compose.yml \
+              https://raw.githubusercontent.com/${{ github.repository }}/main/docker/docker-compose.yml
+            docker compose up -d
+
+            # 或 docker run
             docker run -d \
               --name auroramihomo \
               --restart unless-stopped \
               --network host \
               --cap-add NET_ADMIN \
               -v ./data:/data \
-              ${{ steps.img.outputs.name }}:${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+              ${{ steps.img.outputs.name }}:${{ steps.img.outputs.tag }}
             ```
 
             ### 在线安装（Linux / macOS）
