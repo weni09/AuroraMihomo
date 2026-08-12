@@ -530,12 +530,17 @@ func (s *ConfigService) buildRemoteFromSubscriptions(ctx context.Context, onlyID
 			continue
 		}
 		_ = s.db.MarkSubscriptionStatus(sub.ID, "ok", "")
-		_ = s.db.SaveConfig(&model.Config{
+		if err := s.db.SaveConfig(&model.Config{
 			Name:    fmt.Sprintf("remote-%d", sub.ID),
 			Type:    "remote",
 			Content: string(data),
 			Version: int(time.Now().Unix()),
-		})
+		}); err != nil {
+			// 单条订阅快照写库失败只留痕：remote-<id> 仅用于单条订阅回看，
+			// 聚合行（remote-merged）随后单独写入且失败会如实报错，
+			// 本次合并不因该快照丢失而中断。
+			s.logger.Errorf("保存订阅 %s(%d) 远程快照失败: %v", sub.Name, sub.ID, err)
+		}
 		remoteYAMLs = append(remoteYAMLs, data)
 	}
 	if len(remoteYAMLs) == 0 {
@@ -597,8 +602,16 @@ func (s *ConfigService) loadResolvedConflicts() []domain.Conflict {
 			Path:       r.Path,
 			Resolution: r.Resolution,
 		}
-		_ = json.Unmarshal([]byte(r.LocalValue), &c.Local)
-		_ = json.Unmarshal([]byte(r.RemoteValue), &c.Remote)
+		if err := json.Unmarshal([]byte(r.LocalValue), &c.Local); err != nil {
+			// 库中 Local 值损坏（手工改库/历史 bug）时该解决记录无法完整还原。
+			// 记日志而非静默：不带提示的话用户以为已解决的冲突实际未生效。
+			// 记录仍保留（Resolution=remote 且 Remote 完好时仍可正确应用），
+			// 由合并引擎对 nil 的兜底决定该字段不参与。
+			s.logger.Errorf("解析已解决冲突(%s)的 Local 值失败，该字段将不参与应用: %v", r.Key, err)
+		}
+		if err := json.Unmarshal([]byte(r.RemoteValue), &c.Remote); err != nil {
+			s.logger.Errorf("解析已解决冲突(%s)的 Remote 值失败，该字段将不参与应用: %v", r.Key, err)
+		}
 		if r.ManualValue != "" {
 			var manual any
 			if json.Unmarshal([]byte(r.ManualValue), &manual) == nil {
@@ -1434,12 +1447,16 @@ func (s *ConfigService) persistOverrideConfig(resolved []domain.Conflict) {
 	if content == "" {
 		return
 	}
-	_ = s.db.SaveConfig(&model.Config{
+	if err := s.db.SaveConfig(&model.Config{
 		Name:    "override",
 		Type:    "override",
 		Content: content,
 		Version: int(time.Now().Unix()),
-	})
+	}); err != nil {
+		// override 层只是「已解决冲突」的审计落库；内存合并已按解决结果生效，
+		// 写库失败只影响界面回看该层，不应让整次合并失败。
+		s.logger.Errorf("持久化 override 配置层失败: %v", err)
+	}
 }
 
 // mergeConflictValues 将本地与远程值做浅层合并：以本地为基准，

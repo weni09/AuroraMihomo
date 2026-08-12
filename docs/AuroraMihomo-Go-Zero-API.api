@@ -74,6 +74,60 @@ type MihomoBootReq {
 	Enabled bool `json:"enabled"`
 }
 
+// ---- 手写路由的契约同步类型 ----
+// 以下类型仅用于本文件对外契约声明；实际实现类型定义在对应 handler/logic
+// 包内（避免 goctl 再生成时覆盖），与本文件的字段保持一致。
+
+// ProbeSubscriptionReq 订阅流量参数探测请求。
+type ProbeSubscriptionReq {
+	URL       string `json:"url"`
+	UserAgent string `json:"userAgent,optional"`
+}
+
+// ProbeCandidate 单条参数组合的探测结果。
+type ProbeCandidate {
+	// Params 追加的查询参数原文（"" 表示不追加）
+	Params string `json:"params"`
+	// URL 完整探测 URL
+	URL string `json:"url"`
+	// HasUserInfo 响应带 subscription-userinfo 且非零
+	HasUserInfo bool `json:"hasUserInfo"`
+}
+
+// ProbeSubscriptionResp 订阅流量参数探测结果：全部候选 + 最佳组合 URL。
+type ProbeSubscriptionResp {
+	Candidates []ProbeCandidate `json:"candidates"`
+	// BestURL 探测到「有流量信息且节点完整」的最佳订阅 URL
+	BestURL string `json:"bestUrl"`
+}
+
+// GetSystemLogsReq 应用日志历史查询请求（/system/logs 手写路由）。
+type GetSystemLogsReq {
+	// Limit 返回条数，缺省 200，上限与内存缓冲一致（1000）
+	Limit int `form:"limit,optional"`
+	// Level 按级别过滤（error/warn/info/debug），空为不过滤
+	Level string `form:"level,optional"`
+}
+
+// AppLogEntry 一条应用日志（本项目自身运行日志，与 mihomo.LogLine 同形）。
+type AppLogEntry {
+	// Time 日志时间（RFC3339）
+	Time string `json:"time"`
+	// Level error / warn / info / debug
+	Level string `json:"level"`
+	// Message 日志正文
+	Message string `json:"message"`
+	// Caller logx 附带的调用位置（如 service/config_service.go:123）
+	Caller string `json:"caller,omitempty"`
+}
+
+// SystemLogsResp 应用日志历史查询响应。
+type SystemLogsResp {
+	Logs []AppLogEntry `json:"logs"`
+	// Total 内存缓冲中的总条数
+	Total int `json:"total"`
+}
+
 type IdPathReq {
 	Id int64 `path:"id"`
 }
@@ -837,6 +891,12 @@ service aurora-api {
 
 	@handler shareByToken
 	get /api/v1/share/:token (ShareTokenReq)
+
+	// logout 经手写路由注册（见 backend/api/system.go registerPublicAuthRoutes），
+	// 不参与 goctl 生成，此处声明仅为对外契约同步。无 token 时也可调用
+	// （服务端 Set-Cookie 过期清掉 HttpOnly 会话 cookie）。
+	@handler logout
+	post /api/v1/auth/logout
 }
 
 // Protected routes
@@ -864,6 +924,24 @@ service aurora-api {
 
 	@handler selfUpdate
 	post /api/v1/system/self-update returns (Result)
+
+	// 以下端点经手写路由注册（见 backend/api/system.go registerSystemRoutes /
+	// registerPublicAuthRoutes），不参与 goctl 生成，此处声明仅为对外契约同步。
+	// session 用 Authorization Bearer 重写 aurora_session cookie（供反代同源场景）。
+	@handler syncSession
+	post /api/v1/auth/session
+
+	@handler systemReload
+	post /api/v1/system/reload returns (Result)
+
+	@handler systemRestart
+	post /api/v1/system/restart returns (Result)
+
+	@handler listSystemLogs
+	get /api/v1/system/logs (GetSystemLogsReq) returns (SystemLogsResp)
+
+	@handler clearSystemLogs
+	delete /api/v1/system/logs returns (Result)
 
 	@handler dashboardEntry
 	get /api/v1/dashboard/entry returns (DashboardEntryResp)
@@ -966,6 +1044,12 @@ service aurora-api {
 	// 参数路由，不会与单个订阅的 :id 路由冲突（与 /subscriptions/probe 同型）。
 	@handler refreshAllSubscriptions
 	post /api/v1/subscriptions/refresh-all returns (RefreshAllResult)
+
+	// 订阅流量参数探测：经手写路由注册（见 backend/api/system.go
+	// registerSubscriptionProbeRoute），字面路径优先于 /subscriptions/:id
+	// 参数路由；此处声明仅为对外契约同步，不参与 goctl 生成。
+	@handler probeSubscription
+	post /api/v1/subscriptions/probe (ProbeSubscriptionReq) returns (ProbeSubscriptionResp)
 
 	@handler getBaseConfig
 	get /api/v1/config/base returns (ConfigContent)
