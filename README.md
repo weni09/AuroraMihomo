@@ -185,6 +185,43 @@ cp -r /tmp/zash/<含 index.html 的目录>/* data/zashboard/
 
 放好后刷新 `http://<宿主机IP>:8899/ui/` 即可，无需重启。无法直连 GitHub 时，给上面的 URL 套 CDN 前缀（如 `https://ghproxy.com/https://github.com/...`）。手工放置的文件无需担心属主：容器（重启）时入口脚本会自动把 `/data` 修正为运行账户所有。
 
+**GeoSite / GeoIP 规则库 → 容器内 `/data/`（宿主同级 `data/`）**
+
+合并配置或「立即拉取」时，若 base 使用了 `geosite:` / `fallback-filter.geoip`，mihomo 会在配置目录查找规则库；没有就按 `geox-url` 下载。直连 GitHub 超时的典型日志：
+
+```text
+can't download GeoSite.dat: ... context deadline exceeded
+configuration file /data/config.yaml test failed
+validate config failed, rolled back
+```
+
+新安装的开箱 base 已默认把 `geox-url` 指到 jsDelivr 中国镜像（`testingcf.jsdelivr.net`）。**已在跑的旧实例** base 里可能还没有该项，任选其一：
+
+1. **配置中心 → 基础配置** 增加（或改）`geox-url` 后重新「立即拉取」：
+
+```yaml
+geox-url:
+  geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
+  geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+  mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+  asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
+```
+
+2. **手工放置**（文件名大小写按 mihomo 约定；`geodata-mode: false` 时至少需要 `GeoSite.dat` 与 `country.mmdb`）：
+
+```bash
+# 在 compose 所在目录（即挂载到 /data 的 data/）
+curl -fsSL -o data/GeoSite.dat \
+  https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat
+curl -fsSL -o data/country.mmdb \
+  https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb
+# 可选：geodata-mode: true 时用 GeoIP.dat；ASN 匹配用
+# curl -fsSL -o data/GeoIP.dat https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat
+# curl -fsSL -o data/ASN.mmdb https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb
+```
+
+文件到位后无需重启容器，再点「立即拉取」即可。
+
 #### 透明代理的额外改动
 
 默认配置不支持透明代理。需要时编辑 `docker-compose.yml`，取消 `user: "0:0"`、`AURORA_RUN_AS_ROOT` 与 `devices` 的注释，并注释掉 `no-new-privileges`。这会降低容器隔离性，详见[透明代理文档](docs/AuroraMihomo-Transparent-Proxy.md)。
@@ -520,6 +557,8 @@ tail -100 /opt/auroramihomo/data/logs/aurora.log     # 应用日志
 **Docker 反复报 `unable to open database file (14)`**：SQLite 打不开 `/data/aurora.db`，通常是挂载的数据目录不可写。新镜像（入口脚本）启动时会自动把属主修正为运行账户（默认 uid/gid 10001，可用 `AURORA_PUID`/`AURORA_PGID` 调整），若仍报错请确认：已 `docker compose pull` 拉到新镜像；数据目录（含 `AURORA_DATA_DIR` 覆盖的场景）存在且宿主机可写。老版本镜像救急：`sudo chmod -R a+rwX <数据目录>`，或按运行账户 chown（默认 `sudo chown -R 10001:10001 <数据目录>`，改了 `AURORA_PUID` 就用对应 uid）。
 
 **内核下载失败**：日志里出现 `download failed via ...`。通常是网络问题，可在「系统设置 → 下载与更新出网」调整 CDN 源顺序，或手工放置内核（Docker 见上文「内核 / Zashboard 初始化失败与手动放置」；二进制见离线安装）。
+
+**立即拉取 / 合并报 `can't download GeoSite.dat` 或 `context deadline exceeded`**：mihomo 校验配置时在下规则库，直连 GitHub 超时。在基础配置里设置 `geox-url`（见上文 GeoSite 一节）或把 `GeoSite.dat` / `country.mmdb` 放到 `data/`（容器 `/data`）后重试。
 
 **端口被占用**：默认用 8899（面板）与 9090（内核控制 API）。改端口用环境变量 `AURORA_PORT`，内核控制端口在「配置中心」的 `external-controller` 里改。
 

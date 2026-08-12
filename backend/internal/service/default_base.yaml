@@ -31,6 +31,15 @@ geodata-loader: memconservative
 geosite-matcher: succinct
 geo-auto-update: true
 geo-update-interval: 24
+# 规则库下载地址。不写时 mihomo 默认走 GitHub releases，直连超时会让
+# 「立即拉取」校验失败并回滚（日志：can't download GeoSite.dat / context
+# deadline exceeded）。下方用 jsDelivr 中国镜像（testingcf），国内可直连；
+# 文件也可手工放到 ConfigDir（容器即 /data）：GeoSite.dat、country.mmdb 等。
+geox-url:
+  geoip: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat"
+  geosite: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+  mmdb: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"
+  asn: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"
 
 dns:
   # 默认关闭：启用 TUN/TProxy 或需要内核 DNS 时由用户打开

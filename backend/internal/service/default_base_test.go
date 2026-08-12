@@ -37,12 +37,14 @@ func TestDefaultBaseYAMLSanitizedAndUseful(t *testing.T) {
 		"2001::/32",
 		"tun:",
 		"MATCH,DIRECT",
-		"geodata-mode: false",
-		"geosite:cn,private,apple",
-		"geosite:google,github,telegram",
-		"223.5.5.5",
-		"119.29.29.29",
-	} {
+"geodata-mode: false",
+                        "geox-url:",
+                        "testingcf.jsdelivr.net",
+                        "geosite:cn,private,apple",
+                        "geosite:google,github,telegram",
+                        "223.5.5.5",
+                        "119.29.29.29",
+                } {
 		if !strings.Contains(raw, need) {
 			t.Errorf("默认 base 缺少开箱项 %q", need)
 		}
