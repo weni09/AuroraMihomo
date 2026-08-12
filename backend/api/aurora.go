@@ -957,7 +957,7 @@ func verifyWSToken(r *http.Request, secret string, ver *auth.PasswordVer) bool {
 }
 
 // isPublicAPIPath 判断路径是否为无需 JWT 的公开 API 路由。
-// 白名单必须与 docs/AuroraMihomo-Go-Zero-API.api 的 public 组保持一致
+// 白名单必须与 backend/api/AuroraMihomo-Go-Zero-API.api 的 public 组保持一致
 // （login / serveFile / shareByToken）：这些路径本就不带令牌鉴权，
 // 带旧令牌请求也不应被口令版本闸门拦截——否则改密后用户无法重新登录。
 // /ws 与 /healthz 不在列：前者令牌走 query 且由 verifyWSToken 独立校验，

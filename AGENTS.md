@@ -28,8 +28,8 @@ Go module 名：`auroramihomo`
 
 ```
 backend/                      后端源码（go-zero 服务入口 + 领域实现），见 backend/AGENTS.md
+  backend/api/AuroraMihomo-Go-Zero-API.api   API 规格（对外契约，goctl 生成源）
 frontend/                     Vue 3 前端源码，见 frontend/AGENTS.md
-docs/AuroraMihomo-Go-Zero-API.api   API 规格（对外契约）
 migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
 backend/api/public/           前端构建产物（go:embed 内嵌源，由 make build-frontend 同步，不要手改）
 scripts/                      开发规范机检脚本（check-conventions.py）

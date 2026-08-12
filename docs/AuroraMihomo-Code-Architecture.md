@@ -25,6 +25,7 @@ AuroraMihomo/
 ├── backend/
 │   ├── api/                      # go-zero rest 入口（main 在 aurora.go）
 │   │   ├── aurora.go
+│   │   ├── AuroraMihomo-Go-Zero-API.api   # API 规格（对外契约，goctl 生成源）
 │   │   ├── etc/aurora-api.yaml
 │   │   └── internal/
 │   │       ├── config/
@@ -50,7 +51,7 @@ AuroraMihomo/
 │       ├── updater/              # mihomo / Zashboard / AdGuard 更新
 │       └── version/
 ├── frontend/                     # Vue 3 + Vite + Pinia + Tailwind
-├── docs/                         # 设计与 API 规格（.api）
+├── docs/                         # 设计文档（API 规格随后端代码在 backend/api/）
 ├── migrations/                   # 手写 SQL 迁移
 ├── public/                       # 前端构建产物（make build-frontend 同步）
 ├── scripts/                      # 规范机检等
@@ -148,6 +149,6 @@ api/logic → service → repository → model
 ## 9. Related Docs
 
 - 跨层规范：`AGENTS.md`、`backend/AGENTS.md`、`frontend/AGENTS.md`
-- API 契约：`docs/AuroraMihomo-Go-Zero-API.api`
+- API 契约：`backend/api/AuroraMihomo-Go-Zero-API.api`
 - 用户文档：`userdocs/user-guide.md`
 - 透明代理：`docs/AuroraMihomo-Transparent-Proxy.md`

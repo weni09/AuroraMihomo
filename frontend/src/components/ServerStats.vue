@@ -5,7 +5,7 @@ import { ArrowDownToLine, ArrowUpFromLine, Clock, Cpu, HardDrive, MemoryStick } 
 import api from '../api'
 import { useSettingsStore } from '../stores/settings'
 
-/** 与 GET /api/v1/system/stats 的返回结构对齐（见 docs/AuroraMihomo-Go-Zero-API.api） */
+/** 与 GET /api/v1/system/stats 的返回结构对齐（见 backend/api/AuroraMihomo-Go-Zero-API.api） */
 interface SystemStats {
   cpuPercent: number
   memTotal: number

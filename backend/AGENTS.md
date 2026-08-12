@@ -27,6 +27,7 @@ Alpine 与 Debian/Ubuntu 通用。**不要引入需要 CGO 的依赖**——那�
 ```
 backend/api/                  服务入口与 go-zero 生成物
   aurora.go                   main：加载配置、挂载静态资源、注册 WebSocket
+  AuroraMihomo-Go-Zero-API.api   API 规格（对外契约，goctl 生成源）
   etc/aurora-api.yaml         全部可调参数
   internal/config/            配置结构体 + 环境变量覆盖
   internal/handler/           goctl 生成的路由与 handler（public/ 与 protected/ 分组）
@@ -36,7 +37,6 @@ backend/api/                  服务入口与 go-zero 生成物
 backend/internal/             领域实现，被 logic 层调用
   auth/ domain/ engine/ fetcher/ mihomo/ model/ realtime/
   repository/ scheduler/ service/ substore/ updater/
-docs/AuroraMihomo-Go-Zero-API.api   API 规格（对外契约）
 migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
 ```
 
@@ -45,7 +45,7 @@ migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
 ### API 修改流程（强制）
 
 ```
-1. 先改 docs/AuroraMihomo-Go-Zero-API.api
+1. 先改 backend/api/AuroraMihomo-Go-Zero-API.api
        ↓
 2. 执行 goctl 生成代码
        ↓
@@ -69,7 +69,7 @@ migrations/                   手写 SQL 迁移（001_*.sql 起顺序执行）
 本项目的生成命令（在仓库根目录执行）：
 
 ```bash
-goctl api go -api docs/AuroraMihomo-Go-Zero-API.api -dir backend/api --style goZero
+goctl api go -api backend/api/AuroraMihomo-Go-Zero-API.api -dir backend/api --style goZero
 ```
 
 `internal/handler/routes.go` 与 `internal/types/types.go` 带 `DO NOT EDIT` 头，禁止手改。handler 文件除请求解析/响应写法需要调整外也不要手改。
