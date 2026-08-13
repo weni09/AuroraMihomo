@@ -99,6 +99,15 @@ type Manager struct {
 	// 用于拒绝二次升级与并发 /system/restart，避免与 RequestQuit 竞态。
 	selfUpdating atomic.Bool
 
+	// selfStatus 主程序自升级的运行状态（受 selfStatusMu 保护）。
+	// 与 selfUpdating 互补：后者只有"是否进行中"一个布尔，
+	// 前者携带阶段、进度、错误，供前端轮询。
+	selfStatusMu sync.RWMutex
+	selfStatus   SelfUpdateStatus
+	// selfReadyHook 升级下载校验暂存成功后、重启前的回调（备份 DB + 触发关停）。
+	// 由 system.go 注入；updater 不依赖数据层与进程管理。
+	selfReadyHook func() error
+
 	// zashboardVersion 记录上次成功更新的 release tag。
 	// 由 SettingsService 在启动时从数据库回灌，更新成功后再写回，
 	// 因此进程重启不会丢。受 mu 保护。
@@ -205,6 +214,8 @@ func New(cfg Config) *Manager {
 			},
 		},
 		logger: logx.WithContext(context.Background()),
+		// 初始阶段 idle：状态接口在从未升级过时返回明确的 idle 而非空串
+		selfStatus: SelfUpdateStatus{Phase: "idle"},
 	}
 }
 

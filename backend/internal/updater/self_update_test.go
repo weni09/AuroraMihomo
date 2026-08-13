@@ -722,3 +722,49 @@ func TestFetchSelfChecksumSumsFileFallsBackToCDN(t *testing.T) {
 		t.Fatalf("校验和 %q，期望 %q", got, wantSum)
 	}
 }
+
+func TestClassifySelfUpdateError(t *testing.T) {
+	cases := []struct {
+		err  error
+		code string
+	}{
+		{ErrSelfRepoNotConfigured, "repo_not_configured"},
+		{ErrSelfUpdateInProgress, "already_in_progress"},
+		{fmt.Errorf("query failed: %w", errSelfCheckFailed), "check_failed"},
+		{fmt.Errorf("download failed: %w", errSelfDownloadFailed), "download_failed"},
+		{fmt.Errorf("checksum: %w", errSelfChecksumMismatch), "checksum_mismatch"},
+		{fmt.Errorf("extract: %w", errSelfExtractFailed), "extract_failed"},
+		{fmt.Errorf("verify: %w", errSelfVerifyFailed), "verify_failed"},
+		{errors.New("boom"), "internal"},
+	}
+	for _, c := range cases {
+		got := classifySelfUpdateError(c.err)
+		if got == nil || got.Code != c.code {
+			t.Fatalf("%v => code %q, want %q", c.err, gotCode(got), c.code)
+		}
+	}
+}
+
+func gotCode(e *SelfUpdateError) string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.Code
+}
+
+func TestSelfUpdateStatusInitialAndPhase(t *testing.T) {
+	m := New(Config{DataDir: t.TempDir(), SelfRepo: "owner/AuroraMihomo"})
+	st := m.GetSelfUpdateStatus()
+	if st.Running || st.Phase != "idle" {
+		t.Fatalf("初始应为 idle 非运行, got %+v", st)
+	}
+	m.setSelfPhase("downloading", "下载中")
+	st = m.GetSelfUpdateStatus()
+	if !st.Running || st.Phase != "downloading" || st.Message != "下载中" {
+		t.Fatalf("setSelfPhase 应置 Running 并推进阶段, got %+v", st)
+	}
+	m.setSelfPhase("idle", "")
+	if st2 := m.GetSelfUpdateStatus(); st2.Running || st2.Phase != "idle" {
+		t.Fatalf("idle 应清 Running, got %+v", st2)
+	}
+}

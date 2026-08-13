@@ -34,6 +34,56 @@ const DefaultSelfRepo = "weni09/AuroraMihomo"
 // 调用方应拒绝重复触发，并禁用与关停竞态的 /system/restart。
 var ErrSelfUpdateInProgress = errors.New("self update already in progress")
 
+// SelfUpdateError 主程序升级失败的结构化原因。Code 供前端映射文案，
+// Message 带可读细节（下载源失败明细、校验和比对值等）。
+type SelfUpdateError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// SelfUpdateStatus 主程序升级的运行状态，供 GET /system/self-update/status 轮询。
+// Phase 取值：idle | downloading | verifying | extracting | preparing | restarting | failed。
+type SelfUpdateStatus struct {
+	Running       bool             `json:"running"`
+	Phase         string           `json:"phase"`
+	Percent       int              `json:"percent"`
+	Message       string           `json:"message"`
+	TargetVersion string           `json:"targetVersion,omitempty"`
+	Error         *SelfUpdateError `json:"error,omitempty"`
+	StartedAt     string           `json:"startedAt,omitempty"`
+}
+
+// 阶段级 sentinel：分类用，配合 %w 包装后经 classifySelfUpdateError 映射错误码。
+var (
+	errSelfCheckFailed      = errors.New("self update check failed")
+	errSelfDownloadFailed   = errors.New("self update download failed")
+	errSelfChecksumMismatch = errors.New("self update checksum mismatch")
+	errSelfExtractFailed    = errors.New("self update extract failed")
+	errSelfVerifyFailed     = errors.New("self update binary verify failed")
+)
+
+// classifySelfUpdateError 把升级失败映射为结构化错误码。
+func classifySelfUpdateError(err error) *SelfUpdateError {
+	switch {
+	case errors.Is(err, ErrSelfRepoNotConfigured):
+		return &SelfUpdateError{Code: "repo_not_configured", Message: "主程序仓库未配置，可在「下载与更新出网」中填写（留空则停用自升级）"}
+	case errors.Is(err, ErrSelfUpdateInProgress):
+		return &SelfUpdateError{Code: "already_in_progress", Message: "已有升级正在进行中，请等待完成"}
+	case errors.Is(err, errSelfCheckFailed):
+		return &SelfUpdateError{Code: "check_failed", Message: "无法查询最新版本，请检查网络或稍后重试"}
+	case errors.Is(err, errSelfDownloadFailed):
+		return &SelfUpdateError{Code: "download_failed", Message: "所有下载源均失败，请检查下载源配置与网络"}
+	case errors.Is(err, errSelfChecksumMismatch):
+		return &SelfUpdateError{Code: "checksum_mismatch", Message: "下载内容校验和不匹配，可能被篡改或截断，请重试或更换下载源"}
+	case errors.Is(err, errSelfExtractFailed):
+		return &SelfUpdateError{Code: "extract_failed", Message: "解压新版主程序失败，下载包可能损坏，请重试"}
+	case errors.Is(err, errSelfVerifyFailed):
+		return &SelfUpdateError{Code: "verify_failed", Message: "新版主程序无法启动验证，下载包可能损坏，请重试"}
+	default:
+		return &SelfUpdateError{Code: "internal", Message: err.Error()}
+	}
+}
+
 // SelfCheck 描述主程序自身的版本检查结果。
 type SelfCheck struct {
 	// Configured 是否已配置主程序仓库（未配置时仅此字段有意义）
@@ -163,6 +213,74 @@ func (m *Manager) selfDownloadURL(tag, name string) string {
 // 供 /system/restart 与二次 /system/self-update 互斥查询。
 func (m *Manager) SelfUpdateInProgress() bool {
 	return m.selfUpdating.Load()
+}
+
+// GetSelfUpdateStatus 返回主程序自升级当前状态（副本，可安全并发读）。
+func (m *Manager) GetSelfUpdateStatus() SelfUpdateStatus {
+	m.selfStatusMu.RLock()
+	defer m.selfStatusMu.RUnlock()
+	return m.selfStatus
+}
+
+// setSelfPhase 推进升级阶段。phase 为空或 "idle" 时视为结束（Running=false）。
+func (m *Manager) setSelfPhase(phase, msg string) {
+	m.selfStatusMu.Lock()
+	defer m.selfStatusMu.Unlock()
+	if phase == "" || phase == "idle" {
+		m.selfStatus.Running = false
+		m.selfStatus.Phase = "idle"
+		m.selfStatus.Message = ""
+		return
+	}
+	m.selfStatus.Running = true
+	m.selfStatus.Phase = phase
+	m.selfStatus.Message = msg
+}
+
+// setSelfProgress 更新下载进度百分比（仅 downloading 阶段有值）。
+func (m *Manager) setSelfProgress(pct int) {
+	m.selfStatusMu.Lock()
+	defer m.selfStatusMu.Unlock()
+	m.selfStatus.Percent = pct
+}
+
+// setSelfError 记录失败原因并结束运行态。
+func (m *Manager) setSelfError(target string, err *SelfUpdateError) {
+	m.selfStatusMu.Lock()
+	defer m.selfStatusMu.Unlock()
+	m.selfStatus.Running = false
+	m.selfStatus.Phase = "failed"
+	m.selfStatus.Error = err
+	if target != "" {
+		m.selfStatus.TargetVersion = target
+	}
+}
+
+// setSelfTarget 记录正在升级到的版本。
+func (m *Manager) setSelfTarget(version string) {
+	m.selfStatusMu.Lock()
+	defer m.selfStatusMu.Unlock()
+	m.selfStatus.TargetVersion = version
+}
+
+// SetSelfUpdateReadyHook 注入升级暂存成功后、重启前的回调。
+// 回调返回 error 只记录日志，不阻断重启（升级本身已通过完整性校验）。
+func (m *Manager) SetSelfUpdateReadyHook(fn func() error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.selfReadyHook = fn
+}
+
+func (m *Manager) runSelfReadyHook() {
+	m.mu.RLock()
+	fn := m.selfReadyHook
+	m.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	if err := fn(); err != nil {
+		m.logger.Errorf("升级后置备（备份/重启）失败: %v", err)
+	}
 }
 
 // UpdateSelf 下载并校验最新版主程序，暂存到 <自身路径>.new。
