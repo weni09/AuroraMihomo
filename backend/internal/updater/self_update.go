@@ -301,12 +301,10 @@ func (m *Manager) verifySelfChecksum(ctx context.Context, repo, tag, archiveURL,
 }
 
 // fetchSelfChecksum 依次尝试独立 .sha256 资产与 SHA256SUMS.txt，返回期望的
-// 十六进制校验和。
+// 十六进制校验和。两条路径都按 downloadWithCDN 的出网顺序：代理 → 全局下载源。
 func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, archiveName string) (string, error) {
-	client, _ := m.httpClient()
-
 	// 路径一：独立 .sha256 资产。
-	if body, ok := m.fetchBytes(ctx, client, archiveURL+".sha256"); ok {
+	if body, err := m.fetchBytesWithCDN(ctx, archiveURL+".sha256"); err == nil {
 		if sum, err := parseChecksumFile(body, archiveName); err == nil {
 			return sum, nil
 		}
@@ -314,7 +312,7 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 
 	// 路径二：汇总文件 SHA256SUMS.txt。
 	sumsURL := m.selfDownloadURL(tag, "SHA256SUMS.txt")
-	body, err := m.fetchBytesOr(ctx, client, sumsURL)
+	body, err := m.fetchBytesWithCDN(ctx, sumsURL)
 	if err != nil {
 		return "", fmt.Errorf("无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %w", err)
 	}
@@ -325,13 +323,32 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 	return sum, nil
 }
 
-// fetchBytes 尝试下载并返回 body；失败（网络错误或非 2xx）时返回 ok=false。
-func (m *Manager) fetchBytes(ctx context.Context, client *http.Client, url string) ([]byte, bool) {
-	body, err := m.fetchBytesOr(ctx, client, url)
-	if err != nil {
-		return nil, false
+// fetchBytesWithCDN 按与 downloadWithCDN 相同的出网顺序取小文件：
+// 先经 mihomo 代理拉官方地址，再按全局下载源（含官方兜底）直连。
+// 不走 AdGuard 专用模板——那些是完整 AdGuard 下载 URL，不能当 GitHub 前缀。
+func (m *Manager) fetchBytesWithCDN(ctx context.Context, officialURL string) ([]byte, error) {
+	var errs []string
+	if client, proxy := m.httpClient(); proxy != "" {
+		body, err := m.fetchBytesOr(ctx, client, officialURL)
+		if err == nil {
+			return body, nil
+		}
+		errs = append(errs, fmt.Sprintf("mihomo 代理(%s) => %v", proxy, err))
+		m.logger.Errorf("经 mihomo 代理拉取失败，改用 CDN 镜像: %v", err)
 	}
-	return body, true
+	for _, p := range m.prioritizedCDNProviders() {
+		u := cdnURLForProvider(officialURL, p)
+		if u == "" {
+			continue
+		}
+		body, err := m.fetchBytesOr(ctx, m.client, u)
+		if err == nil {
+			m.rememberLastCDN(p)
+			return body, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s => %v", u, err))
+	}
+	return nil, fmt.Errorf("all download sources failed: %s", strings.Join(errs, " | "))
 }
 
 // fetchBytesOr 下载并读取 url，失败返回错误。

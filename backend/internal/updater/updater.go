@@ -63,6 +63,8 @@ type RuntimeSettings struct {
 	AutoUpdateEnabled bool     `json:"autoUpdateEnabled"`
 	AutoUpdateCron    string   `json:"autoUpdateCron"`
 	CDNProviders      []string `json:"cdnProviders"`
+	// LastCDNProvider 上次成功的全局下载源；空串表示尚未记过。
+	LastCDNProvider string `json:"lastCdnProvider"`
 	// UseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	UseMihomoProxy bool `json:"useMihomoProxy"`
 	// SelfRepo 为主程序（AuroraMihomo 自身）的仓库，运行期可配置。
@@ -109,9 +111,14 @@ type Manager struct {
 	// 由 ConfigService 负责解析，updater 不该重复一份解析逻辑。
 	// 返回空串表示代理不可用（内核未运行或未开放混合端口）。
 	proxyURLFn func() string
-	// adguardCDN 为 AdGuard 下载专用镜像列表；非空时优先于全局 CDNProviders。
-	// 仅影响 UpdateAdGuard 路径（downloadWithCDN 经 EffectiveCDNProviders）。
+	// adguardCDN 为 AdGuard 下载专用 URL 模板；非空时供 AdGuardDownloadTemplates 使用。
+	// 不进入 downloadWithCDN / fetchBytesWithCDN（那些只认全局 GitHub 下载源）。
 	adguardCDN []string
+	// lastCDNProvider 上次经全局下载源成功拉取时用的源（列表里的原写法）。
+	// 下次 downloadWithCDN / fetchBytesWithCDN 把它排到最前。代理成功不写入。
+	lastCDNProvider string
+	// persistLastCDN 把上次成功源写入持久层；回调注入，updater 不依赖 repository。
+	persistLastCDN func(provider string) error
 }
 
 type githubRelease struct {
@@ -261,8 +268,8 @@ func (m *Manager) SetAdGuardCDNProviders(providers []string) {
 	m.adguardCDN = normalizeAdGuardURLTemplates(providers)
 }
 
-// EffectiveCDNProviders 保留给仍走 GitHub CDN 包装的路径；
-// AdGuard 请用 AdGuardDownloadTemplates。
+// EffectiveCDNProviders 给 AdGuard 设置回显：有专用模板时返回它们，否则全局 CDN。
+// 下载路径请用 CDNProviders（GitHub 资产）或 AdGuardDownloadTemplates。
 func (m *Manager) EffectiveCDNProviders() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -314,6 +321,7 @@ func (m *Manager) GetSettings() RuntimeSettings {
 		AutoUpdateEnabled: m.cfg.AutoUpdateEnabled,
 		AutoUpdateCron:    m.cfg.AutoUpdateCron,
 		CDNProviders:      append([]string{}, m.cfg.CDNProviders...),
+		LastCDNProvider:   m.lastCDNProvider,
 		UseMihomoProxy:    proxyEnabled,
 		SelfRepo:          strings.TrimSpace(m.cfg.SelfRepo),
 		MihomoPath:        m.cfg.MihomoBinaryPath,
@@ -435,6 +443,54 @@ func (m *Manager) versionPersister() func(string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.persistZashboardVersion
+}
+
+// LastCDNProvider 返回上次成功的全局下载源，尚未记过时为空串。
+func (m *Manager) LastCDNProvider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastCDNProvider
+}
+
+// SetLastCDNProvider 回灌上次成功源（启动时从 settings 读出）。
+func (m *Manager) SetLastCDNProvider(provider string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastCDNProvider = strings.TrimSpace(provider)
+}
+
+// SetLastCDNPersister 注入上次成功源的落库回调。
+func (m *Manager) SetLastCDNPersister(fn func(provider string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.persistLastCDN = fn
+}
+
+// rememberLastCDN 记下本次成功的源并异步落库。相同值不重复写。
+func (m *Manager) rememberLastCDN(provider string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return
+	}
+	m.mu.Lock()
+	if strings.EqualFold(m.lastCDNProvider, provider) {
+		m.mu.Unlock()
+		return
+	}
+	m.lastCDNProvider = provider
+	persist := m.persistLastCDN
+	m.mu.Unlock()
+	if persist == nil {
+		return
+	}
+	if err := persist(provider); err != nil {
+		m.logger.Errorf("记录上次成功下载源失败: %v", err)
+	}
+}
+
+// prioritizedCDNProviders 当前全局下载源，上次成功的排最前。
+func (m *Manager) prioritizedCDNProviders() []string {
+	return prioritizeCDNProviders(m.CDNProviders(), m.LastCDNProvider())
 }
 
 func (m *Manager) DefaultCDNProviders() []string {
@@ -1115,16 +1171,21 @@ func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string,
 		}
 	}
 
-	// AdGuard 与其它组件共用 downloadWithCDN；专用 CDN 通过 Effective 覆盖。
-	urls := buildCDNURLs(officialURL, m.EffectiveCDNProviders())
-	for i, u := range urls {
-		m.logger.Infof("trying download source [%d/%d]: %s", i+1, len(urls), u)
+	// 只用全局下载源。AdGuard 专用模板是完整下载 URL，不能当 GitHub 前缀。
+	providers := m.prioritizedCDNProviders()
+	for i, p := range providers {
+		u := cdnURLForProvider(officialURL, p)
+		if u == "" {
+			continue
+		}
+		m.logger.Infof("trying download source [%d/%d]: %s", i+1, len(providers), u)
 		if err := m.downloadFile(ctx, u, dest, m.client); err != nil {
 			errs = append(errs, fmt.Sprintf("%s => %v", u, err))
 			m.logger.Errorf("download failed via %s: %v", u, err)
 			continue
 		}
 		if accept(u) {
+			m.rememberLastCDN(p)
 			return nil
 		}
 	}

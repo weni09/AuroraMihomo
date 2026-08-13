@@ -62,6 +62,30 @@ func normalizeCDNList(list []string) []string {
 	return out
 }
 
+// prioritizeCDNProviders 把上次成功的源挪到最前，其余保持原相对顺序。
+// last 为空或不在列表里时原样返回副本。不修改入参。
+func prioritizeCDNProviders(list []string, last string) []string {
+	out := append([]string{}, list...)
+	last = strings.TrimSpace(last)
+	if last == "" {
+		return out
+	}
+	idx := -1
+	for i, p := range out {
+		if strings.EqualFold(p, last) {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return out
+	}
+	picked := out[idx]
+	copy(out[1:idx+1], out[:idx])
+	out[0] = picked
+	return out
+}
+
 // buildCDNURLs converts an official GitHub download URL into provider-specific URLs.
 // official example:
 //
@@ -81,44 +105,45 @@ func buildCDNURLs(official string, providers []string) []string {
 	}
 
 	for _, p := range providers {
-		switch strings.ToLower(p) {
-		case "github", "official":
-			add(official)
-		case "ghproxy.com":
-			add("https://ghproxy.com/" + official)
-		case "mirror.ghproxy.com":
-			add("https://mirror.ghproxy.com/" + official)
-		case "gh.ddlc.top":
-			add("https://gh.ddlc.top/" + official)
-		case "ghproxy.net":
-			add("https://ghproxy.net/" + official)
-		case "gitdl.cn":
-			add("https://gitdl.cn/" + official)
-		case "gh.llkk.cc":
-			add("https://gh.llkk.cc/" + official)
-		case "ghp.ci":
-			add("https://ghp.ci/" + official)
-		default:
-			// custom prefix or full template
-			if strings.Contains(p, "%s") {
-				add(fmt.Sprintf(p, official))
-			} else if isJsdelivr(p) {
-				// jsdelivr 代理不了 Release 资产，拼出来必然 404，直接跳过
-				continue
-			} else if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
-				// treat as prefix
-				if strings.HasSuffix(p, "/") {
-					add(p + official)
-				} else {
-					add(p + "/" + official)
-				}
-			}
-			// 其余无法识别的 token（如裸域名）直接忽略
-		}
+		add(cdnURLForProvider(official, p))
 	}
-
-	// 这里不再追加 URL 编码形式：候选列表只由 providers 决定，保持可预测。
 	return out
+}
+
+// cdnURLForProvider 把单个下载源展开成可请求的 URL；无法识别时返回空串。
+func cdnURLForProvider(official, provider string) string {
+	switch strings.ToLower(provider) {
+	case "github", "official":
+		return official
+	case "ghproxy.com":
+		return "https://ghproxy.com/" + official
+	case "mirror.ghproxy.com":
+		return "https://mirror.ghproxy.com/" + official
+	case "gh.ddlc.top":
+		return "https://gh.ddlc.top/" + official
+	case "ghproxy.net":
+		return "https://ghproxy.net/" + official
+	case "gitdl.cn":
+		return "https://gitdl.cn/" + official
+	case "gh.llkk.cc":
+		return "https://gh.llkk.cc/" + official
+	case "ghp.ci":
+		return "https://ghp.ci/" + official
+	default:
+		if strings.Contains(provider, "%s") {
+			return fmt.Sprintf(provider, official)
+		}
+		if isJsdelivr(provider) {
+			return ""
+		}
+		if strings.HasPrefix(provider, "http://") || strings.HasPrefix(provider, "https://") {
+			if strings.HasSuffix(provider, "/") {
+				return provider + official
+			}
+			return provider + "/" + official
+		}
+		return ""
+	}
 }
 
 // isJsdelivr 判断一个源是否为 jsdelivr 镜像。

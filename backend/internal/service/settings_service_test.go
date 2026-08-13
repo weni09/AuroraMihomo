@@ -148,6 +148,23 @@ func TestLoadAndApplyRestoresPersistedSettings(t *testing.T) {
 	}
 }
 
+// LoadAndApply 应回灌上次成功的全局下载源，并挂上落库回调。
+func TestLoadAndApplyRestoresLastCDNProvider(t *testing.T) {
+	svc, db := newTestSettingsService(t)
+	if err := db.SetSetting(settingLastCDNProvider, "ghproxy.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.LoadAndApply(); err != nil {
+		t.Fatalf("LoadAndApply: %v", err)
+	}
+	if got := svc.updater.LastCDNProvider(); got != "ghproxy.com" {
+		t.Fatalf("应回灌上次成功源, 实际 %q", got)
+	}
+	if got := svc.Get().LastCDNProvider; got != "ghproxy.com" {
+		t.Fatalf("Get 应带出 lastCdnProvider, 实际 %q", got)
+	}
+}
+
 // 通用参数策略（作用于 mode/端口/Geo/external-controller 等绝大多数顶层键）
 // 应能持久化并读回，且只接受 local/remote
 func TestSetMergePolicyGeneral(t *testing.T) {

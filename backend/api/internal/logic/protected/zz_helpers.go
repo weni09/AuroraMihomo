@@ -218,6 +218,7 @@ func toUpdateSettings(svcCtx *svc.ServiceContext, st updater.RuntimeSettings) *t
 		AutoUpdateEnabled: st.AutoUpdateEnabled,
 		AutoUpdateCron:    st.AutoUpdateCron,
 		CDNProviders:      st.CDNProviders,
+		LastCDNProvider:   st.LastCDNProvider,
 		UseMihomoProxy:    st.UseMihomoProxy,
 		SelfRepo:          st.SelfRepo,
 		MihomoProxyUrl:    st.MihomoProxyURL,

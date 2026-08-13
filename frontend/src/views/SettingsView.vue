@@ -124,6 +124,14 @@ function syncForm() {
 
 const defaultCDNText = computed(() => (store.settings?.defaultCDN || []).join(', '))
 
+// 上次成功源：只读展示。在当前编辑列表里才提示「下次优先」。
+const lastCdnProvider = computed(() => (store.settings?.lastCdnProvider || '').trim())
+const lastCdnInList = computed(() => {
+  const last = lastCdnProvider.value.toLowerCase()
+  if (!last) return false
+  return parseList(form.cdnText).some((p) => p.toLowerCase() === last)
+})
+
 // 代理地址为空表示内核未运行或未开放 mixed-port/port，此时会自动回落
 const proxyReady = computed(() => !!store.settings?.mihomoProxyUrl)
 
@@ -1138,8 +1146,8 @@ const navOpen = ref(false)
             <Button variant="ghost" size="sm" @click="useDefaultCDN">恢复默认</Button>
           </div>
           <p class="text-xs text-fg-subtle mb-1.5">
-            用于内核与面板的二进制下载（<code>github.com/.../releases/download</code>）。
-            代理不可用或失败时按此顺序回落，官方源始终作为最后兜底。
+            用于内核、面板与主程序的二进制下载（<code>github.com/.../releases/download</code>）。
+            代理不可用或失败时按此顺序回落；上次成功的源会排到最前，官方源始终作为最后兜底。
           </p>
           <Textarea
             id="cdn-release"
@@ -1148,6 +1156,15 @@ const navOpen = ref(false)
             class="font-mono text-xs"
             placeholder="每行一个，如 ghproxy.com"
           />
+          <p
+            v-if="lastCdnProvider"
+            class="text-xs mt-1.5 flex flex-wrap items-center gap-1.5"
+          >
+            <Badge variant="ok">上次成功</Badge>
+            <code class="font-mono">{{ lastCdnProvider }}</code>
+            <span v-if="lastCdnInList" class="text-fg-subtle">下次优先尝试，失败再按列表顺序回落</span>
+            <span v-else class="text-fg-subtle">已不在当前列表，保存后不再优先</span>
+          </p>
           <p class="text-xs text-fg-subtle mt-1">默认：{{ defaultCDNText }}</p>
 
           <p class="text-xs text-fg-subtle mt-3">

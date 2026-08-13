@@ -25,6 +25,8 @@ const (
 	settingAutoUpdateCron    = "auto_update.cron"
 	// settingCDNProviders 为 Release 资产（内核/面板二进制）的下载源
 	settingCDNProviders = "auto_update.cdn_providers"
+	// settingLastCDNProvider 上次成功的全局下载源，下次优先尝试
+	settingLastCDNProvider = "auto_update.last_cdn_provider"
 	// settingUseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	settingUseMihomoProxy = "auto_update.use_mihomo_proxy"
 	// settingSelfRepo 主程序（AuroraMihomo 自身）的仓库，运行期可配置。
@@ -145,6 +147,15 @@ func (s *SettingsService) LoadAndApply() error {
 	}
 	s.updater.SetZashboardVersionPersister(func(version string) error {
 		return s.db.SetSetting(settingZashboardVersion, version)
+	})
+	// 上次成功下载源：回灌后挂落库，下载成功即记住，重启仍优先该源
+	if v, err := s.db.GetSetting(settingLastCDNProvider); err == nil {
+		s.updater.SetLastCDNProvider(v)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	s.updater.SetLastCDNPersister(func(provider string) error {
+		return s.db.SetSetting(settingLastCDNProvider, provider)
 	})
 
 	if err := s.updater.ApplySettings(&enabled, cronExpr, cdn, &useProxy); err != nil {

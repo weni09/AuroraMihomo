@@ -645,3 +645,80 @@ func TestSelfVersionNumeric(t *testing.T) {
 		t.Fatal("主版本号应优先于补丁版本号")
 	}
 }
+
+// 官方 github.com 拉不到 .sha256 / SHA256SUMS 时，必须按「下载源」回落。
+// 国内直连 GitHub 失败、包却已从 ghproxy 下到，是主程序升级最常见的卡点。
+func TestFetchSelfChecksumFallsBackToCDN(t *testing.T) {
+	const name = "auroramihomo_v1.0.0_linux_amd64.tar.gz"
+	wantSum := strings.Repeat("ab", 32)
+	shaBody := wantSum + "  " + name + "\n"
+
+	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(official.Close)
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// buildCDNURLs 前缀源拼成 "<cdn>/<officialURL>"
+		if !strings.Contains(r.URL.Path, name+".sha256") && !strings.HasSuffix(r.URL.Path, name+".sha256") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(shaBody))
+	}))
+	t.Cleanup(cdn.Close)
+
+	m := New(Config{
+		DataDir:          t.TempDir(),
+		SelfRepo:         "owner/AuroraMihomo",
+		SelfDownloadBase: official.URL,
+		CDNProviders:     []string{cdn.URL},
+		UseMihomoProxy:   false,
+	})
+
+	archiveURL := m.selfDownloadURL("v1.0.0", name)
+	got, err := m.fetchSelfChecksum(context.Background(), "owner/AuroraMihomo", "v1.0.0", archiveURL, name)
+	if err != nil {
+		t.Fatalf("官方校验和 404 时应回落下载源: %v", err)
+	}
+	if got != wantSum {
+		t.Fatalf("校验和 %q，期望 %q", got, wantSum)
+	}
+}
+
+// SHA256SUMS.txt 同样必须走下载源：历史 release 只有汇总文件。
+func TestFetchSelfChecksumSumsFileFallsBackToCDN(t *testing.T) {
+	const name = "auroramihomo_v1.0.0_linux_amd64.tar.gz"
+	wantSum := strings.Repeat("cd", 32)
+
+	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(official.Close)
+
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "SHA256SUMS.txt") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = fmt.Fprintf(w, "%s  %s\n", wantSum, name)
+	}))
+	t.Cleanup(cdn.Close)
+
+	m := New(Config{
+		DataDir:          t.TempDir(),
+		SelfRepo:         "owner/AuroraMihomo",
+		SelfDownloadBase: official.URL,
+		CDNProviders:     []string{cdn.URL},
+		UseMihomoProxy:   false,
+	})
+
+	archiveURL := m.selfDownloadURL("v1.0.0", name)
+	got, err := m.fetchSelfChecksum(context.Background(), "owner/AuroraMihomo", "v1.0.0", archiveURL, name)
+	if err != nil {
+		t.Fatalf("SHA256SUMS 官方 404 时应回落下载源: %v", err)
+	}
+	if got != wantSum {
+		t.Fatalf("校验和 %q，期望 %q", got, wantSum)
+	}
+}

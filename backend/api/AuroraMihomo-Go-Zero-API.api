@@ -688,6 +688,9 @@ type UpdateSettings {
 	// 仅这一类需要镜像：没有镜像代理 GitHub REST API，
 	// 因此版本查询一律直连官方，网络不通时由 mihomo 代理兜底。
 	CDNProviders []string `json:"cdnProviders"`
+	// LastCDNProvider 上次成功的全局下载源（列表中的原写法），下次优先尝试。
+	// 只读：由下载成功路径写入，设置页不可改。
+	LastCDNProvider string `json:"lastCdnProvider,optional"`
 	// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理
 	UseMihomoProxy bool `json:"useMihomoProxy"`
 	// SelfRepo 主程序（AuroraMihomo 自身）的发布仓库。

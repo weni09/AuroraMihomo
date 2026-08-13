@@ -599,6 +599,7 @@ type UpdateSettings struct {
 	AutoUpdateEnabled  bool     `json:"autoUpdateEnabled"`
 	AutoUpdateCron     string   `json:"autoUpdateCron"`
 	CDNProviders       []string `json:"cdnProviders"`
+	LastCDNProvider    string   `json:"lastCdnProvider,optional"`
 	UseMihomoProxy     bool     `json:"useMihomoProxy"`
 	SelfRepo           string   `json:"selfRepo"`
 	MihomoProxyUrl     string   `json:"mihomoProxyUrl"`

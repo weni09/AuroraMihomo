@@ -10,6 +10,8 @@ export interface UpdateSettings {
    * 仅这一类需要镜像：GitHub REST API 无可用镜像，版本查询直连官方。
    */
   cdnProviders: string[]
+  /** 上次成功的全局下载源；空串表示尚未记过。下次优先尝试此源 */
+  lastCdnProvider?: string
   /** 下载与版本查询是否优先经由本地 mihomo 代理 */
   useMihomoProxy: boolean
   /** 主程序（AuroraMihomo 自身）仓库，空串 = 停用面板内自升级 */
