@@ -355,19 +355,38 @@ describe('SettingsView 主程序升级', () => {
     wrapper.unmount()
   })
 
-  it('确认升级弹窗渲染 markdown 变更日志', async () => {
+  it('升级完成后显示「已升级到 vX」持久状态', async () => {
     const store = useSettingsStore()
-    store.selfUpdateInfo = {
-      configured: true,
-      currentVersion: 'v0.11.11',
-      latestVersion: 'v0.12.0',
-      updateAvailable: true,
-      releaseNotes: '# v0.12.0 更新\n\n- 修复若干问题\n- **新增**功能',
-    }
+    store.selfUpdateDone = { version: 'v0.12.0', at: '2026-08-13 12:00' }
     const wrapper = mount(SettingsView, { attachTo: document.body })
     await wrapper.vm.$nextTick()
-    const vm = wrapper.vm as unknown as { openSelfUpdateDialog: () => void }
-    vm.openSelfUpdateDialog()
+    expect(wrapper.text()).toContain('升级完成')
+    expect(wrapper.text()).toContain('已升级到')
+    expect(wrapper.text()).toContain('v0.12.0')
+    wrapper.unmount()
+  })
+
+  it('确认升级弹窗渲染 markdown 变更日志（打开时静默刷新最新数据）', async () => {
+    // 弹窗打开会静默拉取 /system/self-update/check（保证 notes 是实时的）：
+    // mock 返回 v0.12.0 + 带 markdown 的 releaseNotes
+    mockedApi.get.mockImplementation((url: string) => {
+      if (url === '/system/self-update/check') {
+        return Promise.resolve({
+          data: {
+            configured: true,
+            currentVersion: 'v0.11.11',
+            latestVersion: 'v0.12.0',
+            updateAvailable: true,
+            releaseNotes: '# v0.12.0 更新\n\n- 修复若干问题\n- **新增**功能',
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await wrapper.vm.$nextTick()
+    const vm = wrapper.vm as unknown as { openSelfUpdateDialog: () => Promise<void> }
+    await vm.openSelfUpdateDialog()
     // reka-ui Dialog 经 Teleport 挂到 body，断言须查 body 而非 wrapper
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain('升级到 v0.12.0')

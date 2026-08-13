@@ -90,6 +90,9 @@ export const useSettingsStore = defineStore('settings', {
     selfUpdatePollFails: 0,
     /** 轮询开始时间：restarting 超时（服务未恢复）提示用 */
     selfUpdatePollStartedAt: 0,
+    /** 上次主程序升级完成的结果：版本 + 时间。非空时升级区块显示「已升级到 vX」，
+     *  持久可见，直到下次触发升级或检查 */
+    selfUpdateDone: null as { version: string; at: string } | null,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
@@ -189,12 +192,17 @@ export const useSettingsStore = defineStore('settings', {
     },
     // 检查主程序（AuroraMihomo 自身）是否有新版本；只读版本信息，不下载
     async checkSelfUpdate() {
+      await this.refreshSelfUpdateInfo(true)
+    },
+    // 拉取主程序版本信息。silent=true 时不弹 toast（弹窗打开前静默刷新用，
+    // 避免每次打开弹窗都提示「发现新版本」）。
+    async refreshSelfUpdateInfo(silent = false) {
       if (this.checkingSelfUpdate) return
       this.checkingSelfUpdate = true
       try {
         const res = await api.get<SelfUpdateInfo>('/system/self-update/check')
         this.selfUpdateInfo = res.data
-        if (res.data?.configured) {
+        if (!silent && res.data?.configured) {
           useNotifyStore().success(res.data.message || '检查完成')
         }
       } catch (e: unknown) {
@@ -209,6 +217,7 @@ export const useSettingsStore = defineStore('settings', {
       if (this.updatingSelf) return
       this.updatingSelf = true
       this.selfUpdateStatus = null
+      this.selfUpdateDone = null
       this.selfUpdatePollFails = 0
       try {
         const res = await api.post('/system/self-update')
@@ -275,10 +284,11 @@ export const useSettingsStore = defineStore('settings', {
     // 设置页「当前版本」读 mihomoStore.appVersion；WS 重连快照不含
     // appVersion（只带内核 version/pid），必须显式拉 /system/status。
     async afterSelfUpdateDone() {
+      // targetVersion 来自轮询最后成功值（restarting）；pollSelfUpdate 已把
+      // selfUpdateStatus 覆盖成 idle，这里要先取出再清空
+      const targetVersion = this.selfUpdateStatus?.targetVersion || ''
       this.selfUpdateStatus = null
-      useNotifyStore().success('主程序升级完成，已切换到新版本')
-      // fetch / fetchStatus 失败不阻断版本复查：各自独立 catch，
-      // 服务刚起偶发未就绪不该让「是否已最新」的展示也跟着失败
+      // 先刷新数据让版本号是最新，再记录完成状态（避免记录到旧版本号）
       try {
         await this.fetch()
       } catch (e: unknown) {
@@ -295,6 +305,11 @@ export const useSettingsStore = defineStore('settings', {
       } catch (e: unknown) {
         console.error('升级后复查版本失败', e)
       }
+      // 记录完成结果：targetVersion 优先（restarting 时记录的真实目标版本），
+      // 兜底用刷新后的宿主版本。升级区块据此显示「已升级到 vX」，持久可见。
+      const version = targetVersion || useMihomoStore().appVersion || '新版本'
+      this.selfUpdateDone = { version, at: new Date().toLocaleString() }
+      useNotifyStore().success(`主程序升级完成，已切换到 ${version}`)
     },
   },
 })

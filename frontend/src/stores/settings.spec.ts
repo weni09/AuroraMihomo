@@ -7,6 +7,7 @@ vi.mock('../api', () => ({
 
 import api from '../api'
 import { useSettingsStore } from './settings'
+import { useNotifyStore } from './notify'
 
 const mockedApi = vi.mocked(api, true)
 
@@ -80,7 +81,7 @@ describe('useSettingsStore self-update & backup', () => {
     localStorage.setItem('aurora_token', 'test-token')
     const store = useSettingsStore()
     store.updatingSelf = true
-    store.selfUpdateStatus = { running: true, phase: 'restarting', percent: 0, message: '即将重启' }
+    store.selfUpdateStatus = { running: true, phase: 'restarting', percent: 0, message: '即将重启', targetVersion: 'v0.12.0' }
     // /status 返回 idle（服务已重启、内存态清空）；随后 fetch、宿主状态、check 被调用
     mockedApi.get.mockImplementation((url: string) => {
       if (url === '/system/self-update/status') {
@@ -129,6 +130,8 @@ describe('useSettingsStore self-update & backup', () => {
     // 升级完成：状态清空、标志复位、数据已刷新
     expect(store.updatingSelf).toBe(false)
     expect(store.selfUpdateStatus).toBeNull()
+    // 完成状态已记录：升级区块显示「已升级到 v0.12.0」
+    expect(store.selfUpdateDone?.version).toBe('v0.12.0')
     await vi.waitFor(() => {
       expect(store.settings?.selfRepo).toBe('weni09/AuroraMihomo')
       expect(store.selfUpdateInfo?.updateAvailable).toBe(false)
@@ -138,6 +141,34 @@ describe('useSettingsStore self-update & backup', () => {
     expect(mockedApi.get).toHaveBeenCalledWith('/system/self-update/check')
     const { useMihomoStore } = await import('./mihomo')
     expect(useMihomoStore().appVersion).toBe('v0.12.0')
+  })
+
+  it('refreshSelfUpdateInfo 静默拉取不弹 toast', async () => {
+    mockedApi.get.mockResolvedValue({
+      data: {
+        configured: true,
+        currentVersion: 'v0.11.15',
+        latestVersion: 'v0.11.16',
+        updateAvailable: true,
+        message: '发现新版本 v0.11.16',
+      },
+    })
+    const store = useSettingsStore()
+    const notifySpy = vi.spyOn(useNotifyStore(), 'success')
+    await store.refreshSelfUpdateInfo(true)
+    expect(mockedApi.get).toHaveBeenCalledWith('/system/self-update/check')
+    expect(store.selfUpdateInfo?.latestVersion).toBe('v0.11.16')
+    // silent=true 不应弹「发现新版本」toast
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('新升级开始时清除旧的完成状态', async () => {
+    const store = useSettingsStore()
+    store.selfUpdateDone = { version: 'v0.11.15', at: '2026-08-13' }
+    mockedApi.post.mockResolvedValue({ data: { success: true, message: '升级已开始' } })
+    mockedApi.get.mockResolvedValueOnce({ data: { running: true, phase: 'downloading', percent: 10, message: '下载中' } })
+    await store.updateSelf()
+    expect(store.selfUpdateDone).toBeNull()
   })
 
   it('轮询到 failed 状态时展示错误并停止', async () => {

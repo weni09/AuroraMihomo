@@ -260,7 +260,11 @@ const confirmUpdateZashboard = () => {
 // 升级确认从原生 confirm 改为弹窗：展示变更日志（release notes），
 // 让用户看到新版本改了什么再决定是否升级。
 const selfUpdateDialogOpen = ref(false)
-const openSelfUpdateDialog = () => {
+const openSelfUpdateDialog = async () => {
+  // 弹窗内容必须是最新版本信息：selfUpdateInfo 是上次「检查主程序更新」的
+  // 快照，期间可能发布了新版本。打开前静默重拉，保证变更日志是真实的
+  // 目标版本内容而非旧快照。
+  await store.refreshSelfUpdateInfo(true)
   selfUpdateDialogOpen.value = true
 }
 const confirmAndStartUpdate = () => {
@@ -792,6 +796,16 @@ const navOpen = ref(false)
                 <p v-else-if="store.selfUpdateStatus.phase === 'restarting'" class="text-fg">
                   新版本已下载并校验通过，即将重启生效…
                 </p>
+              </template>
+              <!-- 升级完成：明确的完成状态，持久可见（而非回到与升级前无差的静态说明） -->
+              <template v-else-if="store.selfUpdateDone">
+                <div class="flex items-center gap-2">
+                  <Badge variant="ok">升级完成</Badge>
+                  <span>
+                    已升级到 <code class="font-mono">{{ store.selfUpdateDone.version }}</code>
+                    <span class="text-fg-muted">（{{ store.selfUpdateDone.at }}）</span>
+                  </span>
+                </div>
               </template>
               <!-- 失败：结构化错误原因 + 重试引导 -->
               <template v-else-if="store.selfUpdateStatus?.phase === 'failed'">
