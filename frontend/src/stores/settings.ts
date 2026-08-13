@@ -85,6 +85,8 @@ export const useSettingsStore = defineStore('settings', {
     selfUpdateStatus: null as SelfUpdateStatus | null,
     /** 主程序升级状态轮询定时器 id */
     selfUpdatePollTimer: null as number | null,
+    /** 连续轮询失败次数：瞬时 5xx 不该停；重启断连会连续失败后停 */
+    selfUpdatePollFails: 0,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
@@ -204,6 +206,7 @@ export const useSettingsStore = defineStore('settings', {
       if (this.updatingSelf) return
       this.updatingSelf = true
       this.selfUpdateStatus = null
+      this.selfUpdatePollFails = 0
       try {
         const res = await api.post('/system/self-update')
         useNotifyStore().success(res.data?.message || '升级已开始')
@@ -230,6 +233,7 @@ export const useSettingsStore = defineStore('settings', {
     async pollSelfUpdate() {
       try {
         const res = await api.get<SelfUpdateStatus>('/system/self-update/status')
+        this.selfUpdatePollFails = 0
         this.selfUpdateStatus = res.data
         if (!res.data.running) {
           this.stopSelfUpdatePolling()
@@ -239,10 +243,14 @@ export const useSettingsStore = defineStore('settings', {
           }
         }
       } catch (e: unknown) {
-        // 服务重启中连接被断开：升级已触发，停止轮询，不报错
+        // 重启中断连是预期；下载中的瞬时失败不该停轮询。
+        // restarting 或连续 5 次失败才停（约 5s）。
         console.error(e)
-        this.stopSelfUpdatePolling()
-        this.updatingSelf = false
+        this.selfUpdatePollFails += 1
+        if (this.selfUpdateStatus?.phase === 'restarting' || this.selfUpdatePollFails >= 5) {
+          this.stopSelfUpdatePolling()
+          this.updatingSelf = false
+        }
       }
     },
   },

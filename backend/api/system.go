@@ -102,19 +102,21 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 	authOpt := rest.WithJwt(svcCtx.Config.Auth.AccessSecret)
 
 	// 主程序自升级暂存成功后：自动备份数据库 + 触发关停换二进制。
-	// 备份失败只记录不阻断（升级已通过完整性校验）；关停前先应答，
-	// 让前端拿到"即将重启"状态而不是看到连接被掐断。
+	// 备份失败只记录不阻断（升级已通过完整性校验）——旧行为必须保持：
+	// 若备份失败就 return 而不 RequestQuit，selfUpdating 会一直为 true，
+	// 用户既无法重试也无法普通重启。
 	svcCtx.Updater.SetSelfUpdateReadyHook(func() error {
 		path, err := svcCtx.Database.BackupTo(backupDir(svcCtx), svcCtx.Config.Backup.MaxKeep)
 		if err != nil {
-			return fmt.Errorf("升级前数据库备份失败: %w", err)
+			logx.Errorf("pre-upgrade database backup failed: %v", err)
+		} else {
+			logx.Infof("pre-upgrade database backup at %s", path)
 		}
-		logx.Infof("pre-upgrade database backup at %s", path)
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			mgr.RequestQuit("HTTP /api/v1/system/self-update")
 		}()
-		return nil
+		return err
 	})
 
 	server.AddRoutes([]rest.Route{
@@ -216,6 +218,7 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 					"currentVersion":  check.CurrentVersion,
 					"latestVersion":   check.LatestVersion,
 					"updateAvailable": check.UpdateAvailable,
+					"releaseNotes":    check.ReleaseNotes,
 				}
 				msg := ""
 				switch {

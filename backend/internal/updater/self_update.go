@@ -63,22 +63,27 @@ var (
 )
 
 // classifySelfUpdateError 把升级失败映射为结构化错误码。
+// Message 对 check/download/checksum/extract/verify 附带 err.Error()
+// 里的明细（各源失败、校验和比对值），前端直接展示。
 func classifySelfUpdateError(err error) *SelfUpdateError {
+	if err == nil {
+		return nil
+	}
 	switch {
 	case errors.Is(err, ErrSelfRepoNotConfigured):
 		return &SelfUpdateError{Code: "repo_not_configured", Message: "主程序仓库未配置，可在「下载与更新出网」中填写（留空则停用自升级）"}
 	case errors.Is(err, ErrSelfUpdateInProgress):
 		return &SelfUpdateError{Code: "already_in_progress", Message: "已有升级正在进行中，请等待完成"}
 	case errors.Is(err, errSelfCheckFailed):
-		return &SelfUpdateError{Code: "check_failed", Message: "无法查询最新版本，请检查网络或稍后重试"}
+		return &SelfUpdateError{Code: "check_failed", Message: "无法查询最新版本，请检查网络或稍后重试: " + err.Error()}
 	case errors.Is(err, errSelfDownloadFailed):
-		return &SelfUpdateError{Code: "download_failed", Message: "所有下载源均失败，请检查下载源配置与网络"}
+		return &SelfUpdateError{Code: "download_failed", Message: "所有下载源均失败，请检查下载源配置与网络: " + err.Error()}
 	case errors.Is(err, errSelfChecksumMismatch):
-		return &SelfUpdateError{Code: "checksum_mismatch", Message: "下载内容校验和不匹配，可能被篡改或截断，请重试或更换下载源"}
+		return &SelfUpdateError{Code: "checksum_mismatch", Message: "下载内容校验和不匹配，可能被篡改或截断，请重试或更换下载源: " + err.Error()}
 	case errors.Is(err, errSelfExtractFailed):
-		return &SelfUpdateError{Code: "extract_failed", Message: "解压新版主程序失败，下载包可能损坏，请重试"}
+		return &SelfUpdateError{Code: "extract_failed", Message: "解压新版主程序失败，下载包可能损坏，请重试: " + err.Error()}
 	case errors.Is(err, errSelfVerifyFailed):
-		return &SelfUpdateError{Code: "verify_failed", Message: "新版主程序无法启动验证，下载包可能损坏，请重试"}
+		return &SelfUpdateError{Code: "verify_failed", Message: "新版主程序无法启动验证，下载包可能损坏，请重试: " + err.Error()}
 	default:
 		return &SelfUpdateError{Code: "internal", Message: err.Error()}
 	}
@@ -234,6 +239,7 @@ func (m *Manager) GetSelfUpdateStatus() SelfUpdateStatus {
 }
 
 // setSelfPhase 推进升级阶段。phase 为空或 "idle" 时视为结束（Running=false）。
+// 进入非 failed 阶段时清掉上次 Error，避免重试时状态接口仍带着旧失败。
 func (m *Manager) setSelfPhase(phase, msg string) {
 	m.selfStatusMu.Lock()
 	defer m.selfStatusMu.Unlock()
@@ -246,6 +252,12 @@ func (m *Manager) setSelfPhase(phase, msg string) {
 	m.selfStatus.Running = true
 	m.selfStatus.Phase = phase
 	m.selfStatus.Message = msg
+	if phase != "failed" {
+		m.selfStatus.Error = nil
+	}
+	if phase != "downloading" {
+		m.selfStatus.Percent = 0
+	}
 }
 
 // setSelfProgress 更新下载进度百分比（仅 downloading 阶段有值）。
@@ -311,6 +323,11 @@ func (m *Manager) StartSelfUpdate(ctx context.Context) error {
 		m.selfUpdating.Store(false)
 		return ErrSelfRepoNotConfigured
 	}
+	m.selfStatusMu.Lock()
+	m.selfStatus.StartedAt = time.Now().Format(time.RFC3339)
+	m.selfStatus.Error = nil
+	m.selfStatus.Percent = 0
+	m.selfStatusMu.Unlock()
 	m.setSelfPhase("preparing", "准备升级…")
 	// 用 Background 派生：调用方 ctx（HTTP 请求）在应答后即被取消，
 	// 不能传给会持续数分钟的后台下载。
@@ -323,6 +340,11 @@ func (m *Manager) StartSelfUpdate(ctx context.Context) error {
 // selfUpdating 保持 true 直到进程退出（关停换二进制）。
 // 失败路径：置 failed + 结构化错误，清除 selfUpdating 允许重试。
 func (m *Manager) runSelfUpdate(ctx context.Context) {
+	// 与 UpdateMihomo / UpdateZashboard / UpdateAdGuard 互斥：
+	// 这些路径都会覆盖二进制或面板目录，并发会写出交错内容。
+	m.updateMu.Lock()
+	defer m.updateMu.Unlock()
+
 	do := func() error {
 		if !m.SelfRepoConfigured() {
 			return ErrSelfRepoNotConfigured
@@ -365,7 +387,7 @@ func (m *Manager) runSelfUpdate(ctx context.Context) {
 
 		m.setSelfPhase("verifying", "校验下载完整性…")
 		if err := m.verifySelfChecksum(ctx, m.repoSelf(), tag, officialURL, archivePath); err != nil {
-			return err // verifySelfChecksum 内部已按阶段包装 sentinel
+			return err
 		}
 
 		m.setSelfPhase("extracting", "解压新版主程序…")

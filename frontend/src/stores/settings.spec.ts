@@ -96,6 +96,30 @@ describe('useSettingsStore self-update & backup', () => {
     expect(store.selfUpdatePollTimer).toBeNull()
   })
 
+  it('下载中单次轮询失败不停止，连续 5 次才停', async () => {
+    const store = useSettingsStore()
+    store.updatingSelf = true
+    store.selfUpdateStatus = { running: true, phase: 'downloading', percent: 10, message: '下载中' }
+    mockedApi.get.mockRejectedValue(new Error('transient'))
+    await store.pollSelfUpdate()
+    expect(store.updatingSelf).toBe(true)
+    expect(store.selfUpdatePollFails).toBe(1)
+    for (let i = 0; i < 4; i++) {
+      await store.pollSelfUpdate()
+    }
+    expect(store.updatingSelf).toBe(false)
+    expect(store.selfUpdatePollFails).toBe(5)
+  })
+
+  it('restarting 阶段轮询失败立即停止', async () => {
+    const store = useSettingsStore()
+    store.updatingSelf = true
+    store.selfUpdateStatus = { running: true, phase: 'restarting', percent: 0, message: '即将重启' }
+    mockedApi.get.mockRejectedValue(new Error('connection reset'))
+    await store.pollSelfUpdate()
+    expect(store.updatingSelf).toBe(false)
+  })
+
   it('重复触发被防抖：并发点第二次 updateSelf 不发请求', async () => {
     mockedApi.post.mockResolvedValue({ data: { success: true } })
     const store = useSettingsStore()

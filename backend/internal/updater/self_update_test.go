@@ -746,6 +746,18 @@ func TestClassifySelfUpdateError(t *testing.T) {
 	}
 }
 
+// 下载失败必须把各源明细留在 Message，不能只给一句「全部失败」。
+func TestClassifySelfUpdateErrorKeepsDownloadDetail(t *testing.T) {
+	err := fmt.Errorf("%w: all download sources failed: ghproxy => 502 | github => timeout", errSelfDownloadFailed)
+	got := classifySelfUpdateError(err)
+	if got == nil || got.Code != "download_failed" {
+		t.Fatalf("code=%v", got)
+	}
+	if !strings.Contains(got.Message, "ghproxy => 502") || !strings.Contains(got.Message, "github => timeout") {
+		t.Fatalf("Message 应保留各源失败明细, got %q", got.Message)
+	}
+}
+
 func gotCode(e *SelfUpdateError) string {
 	if e == nil {
 		return "<nil>"
