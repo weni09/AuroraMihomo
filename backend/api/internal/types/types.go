@@ -349,8 +349,24 @@ type SelfUpdateCheck struct {
 	CurrentVersion  string `json:"currentVersion"`
 	LatestVersion   string `json:"latestVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
+	ReleaseNotes    string `json:"releaseNotes,optional"`
 	Error           string `json:"error,omitempty"`
 	Message         string `json:"message,optional"`
+}
+
+type SelfUpdateError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type SelfUpdateStatus struct {
+	Running       bool             `json:"running"`
+	Phase         string           `json:"phase"`
+	Percent       int              `json:"percent"`
+	Message       string           `json:"message"`
+	TargetVersion string           `json:"targetVersion,optional"`
+	Error         *SelfUpdateError `json:"error,optional"`
+	StartedAt     string           `json:"startedAt,optional"`
 }
 
 type ShareActionReq struct {

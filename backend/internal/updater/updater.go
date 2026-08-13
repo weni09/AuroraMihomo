@@ -132,6 +132,7 @@ type Manager struct {
 
 type githubRelease struct {
 	TagName string        `json:"tag_name"`
+	Body    string        `json:"body"`
 	Assets  []githubAsset `json:"assets"`
 }
 

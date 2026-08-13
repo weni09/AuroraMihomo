@@ -870,3 +870,30 @@ func runSelfUpdateWait(t *testing.T, m *Manager) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// CheckSelfUpdate 应带回 release body 作变更日志，超长时截断。
+func TestCheckSelfUpdateCarriesReleaseNotes(t *testing.T) {
+	notes := strings.Repeat("x", maxReleaseNotesLen+100)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tag_name": "v2.0.0",
+			"body":     notes,
+			"assets": []map[string]any{
+				{"name": selfArchiveName("v2.0.0"), "browser_download_url": srv.URL + "/a", "size": 1},
+			},
+		})
+	}))
+	defer srv.Close()
+	m := New(Config{DataDir: t.TempDir(), SelfRepo: "owner/AuroraMihomo", GitHubAPI: srv.URL})
+	check, err := m.CheckSelfUpdate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(check.ReleaseNotes) != maxReleaseNotesLen {
+		t.Fatalf("release notes 应截断到 %d, got %d", maxReleaseNotesLen, len(check.ReleaseNotes))
+	}
+	if check.ReleaseNotes[:10] != notes[:10] {
+		t.Fatal("截断应保留开头内容")
+	}
+}

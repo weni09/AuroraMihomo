@@ -33,10 +33,39 @@ type SelfUpdateCheck {
 	LatestVersion string `json:"latestVersion"`
 	// UpdateAvailable 是否存在可升级的新版本
 	UpdateAvailable bool `json:"updateAvailable"`
+	// ReleaseNotes 远端最新 release 的发布说明（变更日志），截断至 4KB；空串表示拉不到
+	ReleaseNotes string `json:"releaseNotes,optional"`
 	// Error 版本查询失败的原因（远端不可达等），空串表示正常
 	Error string `json:"error,omitempty"`
 	// Message 面向用户的提示（已最新 / 有新版本 / 未配置 / 查询失败）
 	Message string `json:"message,optional"`
+}
+
+// SelfUpdateStatus 主程序自升级的运行状态（GET /system/self-update/status 轮询）。
+type SelfUpdateStatus {
+	// Running 是否进行中
+	Running bool `json:"running"`
+	// Phase 阶段：idle | downloading | verifying | extracting | preparing | restarting | failed
+	Phase string `json:"phase"`
+	// Percent 下载进度 0-100，非下载阶段为 0
+	Percent int `json:"percent"`
+	// Message 人类可读的阶段说明
+	Message string `json:"message"`
+	// TargetVersion 正在升级到的版本
+	TargetVersion string `json:"targetVersion,optional"`
+	// Error 失败时的结构化错误
+	Error *SelfUpdateError `json:"error,optional"`
+	// StartedAt 升级开始时间（RFC3339）
+	StartedAt string `json:"startedAt,optional"`
+}
+
+// SelfUpdateError 主程序升级失败的结构化原因。
+type SelfUpdateError {
+	// Code 错误码：repo_not_configured | already_in_progress | check_failed |
+	// download_failed | checksum_mismatch | extract_failed | verify_failed | internal
+	Code string `json:"code"`
+	// Message 面向用户的错误说明
+	Message string `json:"message"`
 }
 
 // DiskVolume 一块计入资源监控合计的常规文件系统。
@@ -937,6 +966,9 @@ service aurora-api {
 
 	@handler selfUpdate
 	post /api/v1/system/self-update returns (Result)
+
+	@handler selfUpdateStatus
+	get /api/v1/system/self-update/status returns (SelfUpdateStatus)
 
 	// 以下端点经手写路由注册（见 backend/api/system.go registerSystemRoutes /
 	// registerPublicAuthRoutes），不参与 goctl 生成，此处声明仅为对外契约同步。

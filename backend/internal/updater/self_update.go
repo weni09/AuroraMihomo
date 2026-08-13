@@ -94,9 +94,15 @@ type SelfCheck struct {
 	LatestVersion string `json:"latestVersion"`
 	// UpdateAvailable 是否存在可升级的新版本
 	UpdateAvailable bool `json:"updateAvailable"`
+	// ReleaseNotes 远端最新 release 的发布说明（变更日志）。
+	// 从 GitHub release body 截断到 maxReleaseNotesLen，空串表示拉不到。
+	ReleaseNotes string `json:"releaseNotes,omitempty"`
 	// Error 版本查询失败的原因（远端不可达等），为空串表示正常
 	Error string `json:"error,omitempty"`
 }
+
+// maxReleaseNotesLen 变更日志随 check 响应下发，截断防爆（4KB 足够预览）。
+const maxReleaseNotesLen = 4096
 
 // SelfBinaryPath 返回主程序自身二进制路径。
 func (m *Manager) SelfBinaryPath() string {
@@ -131,6 +137,11 @@ func (m *Manager) CheckSelfUpdate(ctx context.Context) (SelfCheck, error) {
 		return check, nil
 	}
 	check.LatestVersion = rel.TagName
+	if len(rel.Body) > maxReleaseNotesLen {
+		check.ReleaseNotes = rel.Body[:maxReleaseNotesLen]
+	} else {
+		check.ReleaseNotes = rel.Body
+	}
 	// 主程序版本是精确的 tag（ldflags 注入），用等值比较而不是
 	// versionMatches 的 Contains：后者会把 "v1.2.3" 误判成已覆盖
 	// "v1.2.30"。开发构建（dev / dev-时间戳）不含 release tag，
