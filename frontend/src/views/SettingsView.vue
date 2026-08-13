@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import type MarkdownIt from 'markdown-it'
 import { useSettingsStore } from '../stores/settings'
 import { useNotifyStore } from '../stores/notify'
 import { useAdGuardStore } from '../stores/adguard'
@@ -267,6 +268,28 @@ const confirmAndStartUpdate = () => {
   selfUpdateDialogOpen.value = false
   store.updateSelf()
 }
+
+// 变更日志（release notes）是 GitHub markdown，用 markdown-it 渲染成 HTML。
+// 与 DocsView 同理用动态 import：markdown-it 约 40KB，只有打开弹窗才需要，
+// 静态引入会让设置页首屏为它付费。
+let releaseNotesRenderer: Promise<InstanceType<typeof MarkdownIt>> | null = null
+const releaseNotesHtml = ref('')
+watch(selfUpdateDialogOpen, async (open) => {
+  if (!open || !store.selfUpdateInfo?.releaseNotes) {
+    releaseNotesHtml.value = ''
+    return
+  }
+  try {
+    const md = await (releaseNotesRenderer ??= import('markdown-it').then(
+      // html: false：release notes 来自远端仓库，关闭让外部注入不成立
+      (m) => new m.default({ html: false, linkify: true, typographer: false }),
+    ))
+    releaseNotesHtml.value = md.render(store.selfUpdateInfo.releaseNotes)
+  } catch (e) {
+    console.error('渲染变更日志失败', e)
+    releaseNotesHtml.value = ''
+  }
+})
 
 /** 升级阶段的中文标签 */
 const phaseLabel = (phase: string) => {
@@ -835,9 +858,11 @@ const navOpen = ref(false)
                 data-testid="self-update-release-notes"
               >
                 <div class="text-xs font-semibold text-fg mb-2">变更日志</div>
-                <pre class="text-xs text-fg-subtle whitespace-pre-wrap font-sans max-h-64 overflow-y-auto">{{
-                  store.selfUpdateInfo.releaseNotes
-                }}</pre>
+                <!-- GitHub release notes 是 markdown，渲染成 HTML 再展示 -->
+                <div
+                  class="release-notes text-xs text-fg-subtle max-h-64 overflow-y-auto"
+                  v-html="releaseNotesHtml"
+                />
               </div>
               <p class="text-xs text-fg-subtle">
                 将下载并校验新版主程序，替换自身二进制并重启进程（服务短暂中断，
@@ -1452,3 +1477,62 @@ const navOpen = ref(false)
     </div>
   </main>
 </template>
+
+<style scoped>
+/* 变更日志（markdown 渲染结果）样式。内容经 v-html 注入，
+   scoped 选择器默认作用不到，须用 :deep。与 DocsView 的 .doc-body
+   保持同套视觉，但只覆盖 release notes 可能出现的元素子集。 */
+.release-notes :deep(h1) {
+  @apply mb-2 mt-0 text-base font-bold;
+}
+.release-notes :deep(h2) {
+  @apply mb-2 mt-4 text-sm font-bold;
+}
+.release-notes :deep(h3),
+.release-notes :deep(h4) {
+  @apply mb-1 mt-3 font-semibold;
+}
+.release-notes :deep(p) {
+  @apply my-2 leading-relaxed;
+}
+.release-notes :deep(ul) {
+  @apply my-2 list-disc space-y-1 pl-5;
+}
+.release-notes :deep(ol) {
+  @apply my-2 list-decimal space-y-1 pl-5;
+}
+.release-notes :deep(li) {
+  @apply leading-relaxed;
+}
+.release-notes :deep(a) {
+  @apply text-accent-text underline underline-offset-2;
+}
+.release-notes :deep(strong) {
+  @apply font-semibold;
+}
+.release-notes :deep(code) {
+  @apply rounded bg-elevated px-1 py-0.5 font-mono text-[0.85em];
+}
+.release-notes :deep(pre) {
+  @apply my-3 overflow-x-auto rounded bg-elevated p-2;
+}
+.release-notes :deep(pre code) {
+  @apply bg-transparent p-0 text-xs;
+}
+.release-notes :deep(blockquote) {
+  @apply my-3 border-l-4 border-accent/40 bg-elevated/50 py-1 pl-3 pr-2;
+}
+.release-notes :deep(blockquote p) {
+  @apply my-1;
+}
+.release-notes :deep(hr) {
+  @apply my-4 border-line;
+}
+.release-notes :deep(table) {
+  @apply w-full border-collapse text-xs;
+}
+.release-notes :deep(th),
+.release-notes :deep(td) {
+  @apply border border-line px-2 py-1 text-left align-top;
+}
+</style>

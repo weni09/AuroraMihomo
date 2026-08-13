@@ -240,17 +240,37 @@ export const useSettingsStore = defineStore('settings', {
           this.updatingSelf = false
           if (res.data.error) {
             useNotifyStore().error(res.data.error.message || '升级失败')
+            return
           }
+          // 无 error：服务已重启（内存态清空为 idle），升级完成 → 刷新数据
+          await this.afterSelfUpdateDone()
         }
-      } catch (e: unknown) {
-        // 重启中断连是预期；下载中的瞬时失败不该停轮询。
-        // restarting 或连续 5 次失败才停（约 5s）。
+      } catch (e) {
+        // 正在重启（restarting）时断连是预期：不计数，等服务重启恢复
+        if (this.selfUpdateStatus?.phase === 'restarting') {
+          return
+        }
+        // 下载中瞬时失败不该停轮询：连续 5 次才停（约 5s）
         console.error(e)
         this.selfUpdatePollFails += 1
-        if (this.selfUpdateStatus?.phase === 'restarting' || this.selfUpdatePollFails >= 5) {
+        if (this.selfUpdatePollFails >= 5) {
           this.stopSelfUpdatePolling()
           this.updatingSelf = false
         }
+      }
+    },
+    // 升级完成（服务已重启并恢复）：刷新数据让界面反映新版本。
+    // 版本号走 /ws 实时通道更新，这里刷新设置与版本检查结果。
+    async afterSelfUpdateDone() {
+      this.selfUpdateStatus = null
+      useNotifyStore().success('主程序升级完成，已切换到新版本')
+      try {
+        await this.fetch()
+        const res = await api.get<SelfUpdateInfo>('/system/self-update/check')
+        this.selfUpdateInfo = res.data
+      } catch (e: unknown) {
+        // 服务刚起、接口偶发未就绪：刷新失败不阻断，下次进入设置页会重拉
+        console.error(e)
       }
     },
   },

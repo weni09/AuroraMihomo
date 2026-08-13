@@ -355,14 +355,14 @@ describe('SettingsView 主程序升级', () => {
     wrapper.unmount()
   })
 
-  it('确认升级弹窗展示变更日志', async () => {
+  it('确认升级弹窗渲染 markdown 变更日志', async () => {
     const store = useSettingsStore()
     store.selfUpdateInfo = {
       configured: true,
       currentVersion: 'v0.11.11',
       latestVersion: 'v0.12.0',
       updateAvailable: true,
-      releaseNotes: '- 修复若干问题\n- 新增功能',
+      releaseNotes: '# v0.12.0 更新\n\n- 修复若干问题\n- **新增**功能',
     }
     const wrapper = mount(SettingsView, { attachTo: document.body })
     await wrapper.vm.$nextTick()
@@ -373,7 +373,13 @@ describe('SettingsView 主程序升级', () => {
       expect(document.body.textContent).toContain('升级到 v0.12.0')
     })
     expect(document.body.textContent).toContain('变更日志')
-    expect(document.body.textContent).toContain('修复若干问题')
+    // markdown 渲染：标题成 h1、列表成 li、加粗成 strong，而非裸 `-`/`**` 文本
+    await vi.waitFor(() => {
+      const notes = document.querySelector('[data-testid="self-update-release-notes"]')
+      expect(notes?.querySelector('h1')?.textContent).toContain('v0.12.0 更新')
+      expect(notes?.querySelector('li')?.textContent).toContain('修复若干问题')
+      expect(notes?.querySelector('strong')?.textContent).toContain('新增')
+    })
     wrapper.unmount()
   })
 })
