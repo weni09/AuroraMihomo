@@ -4,6 +4,7 @@ import (
 	"embed"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,39 @@ func spaFileSystemServer(routePrefix string, fsysProvider func() http.FileSystem
 			stat, statErr := f.Stat()
 			_ = f.Close()
 			if statErr == nil && !stat.IsDir() {
+				// 预压缩直传：assets 产物旁若有 <file>.gz（由更新流程预生成），
+				// 且客户端接受 gzip，直接传预压缩字节，免每次请求运行时 gzip。
+				// 主 bundle 1.5MB 每次现压是很贵的 CPU；预压缩后传输字节相同、
+				// CPU 归零。Content-Type 按原文件扩展名取（.gz 会被误判成
+				// application/gzip），外层 staticGzipHandler 见到 Content-Encoding
+				// 已设会跳过，不会双重压缩。
+				if acceptsGzip(r.Header.Get("Accept-Encoding")) && r.Header.Get("Range") == "" && !strings.HasSuffix(cleanPath, ".gz") {
+					if gz, gzErr := fsys.Open(cleanPath + ".gz"); gzErr == nil {
+						if gzStat, gzStatErr := gz.Stat(); gzStatErr == nil && !gzStat.IsDir() {
+							// 预压缩产物比原文件新才用：旧 .gz 是过期产物，
+							// 直传会让浏览器拿到解不出的内容
+							if gzStat.ModTime().After(stat.ModTime()) {
+								if rs, ok := gz.(io.ReadSeeker); ok {
+									if ct := mime.TypeByExtension(filepath.Ext(cleanPath)); ct != "" {
+										w.Header().Set("Content-Type", ct)
+									}
+									w.Header().Set("Content-Encoding", "gzip")
+									w.Header().Add("Vary", "Accept-Encoding")
+									if strings.HasPrefix(cleanPath, "assets/") {
+										w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+									} else {
+										w.Header().Set("Cache-Control", "no-cache")
+									}
+									defer gz.Close()
+									http.ServeContent(w, r, filepath.Base(cleanPath), gzStat.ModTime(), rs)
+									return
+								}
+							}
+						}
+						_ = gz.Close()
+					}
+				}
+
 				// 命中真实文件：走带缓存策略的 FileServer。
 				// /assets/ 下的构建产物文件名含内容 hash，内容寻址后
 				// 可安全长缓存——这是「手机端反复白屏、刷新多次才出」的

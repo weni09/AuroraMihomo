@@ -75,6 +75,14 @@ func (g *gzipResponseWriter) WriteHeader(code int) {
 	if g.gw == nil && code >= 200 && code < 300 {
 		// 仅 2xx 压缩：304/4xx/5xx 无 body 或极小，不值得（也避免
 		// 给 304 错加 Content-Encoding 破坏条件请求缓存语义）
+		//
+		// 上游已设置 Content-Encoding（预压缩 .gz 直传、反代已编码）时
+		// 必须跳过：再套一层 gzip writer 会产出「gzip 里套 gzip」的
+		// 双重压缩，浏览器解出一层后剩下的还是 gzip 字节，直接损坏。
+		if g.Header().Get("Content-Encoding") != "" {
+			g.ResponseWriter.WriteHeader(code)
+			return
+		}
 		if gzippableContentType(g.Header().Get("Content-Type")) {
 			g.Header().Del("Content-Length")
 			g.Header().Set("Content-Encoding", "gzip")

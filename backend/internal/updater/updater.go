@@ -913,6 +913,9 @@ func (m *Manager) UpdateZashboard(ctx context.Context) error {
 		return err
 	}
 	_ = os.RemoveAll(backup)
+	// 预压缩静态资源：主 bundle 1.5MB 每次请求现压很贵，更新后一次压完，
+	// 之后 /ui/assets 直传 .gz 零 CPU。失败只记日志，请求侧回退运行时 gzip。
+	precompressZashboard(target)
 	// 只在替换成功后记录版本，失败已回滚旧目录，写入新 tag 会谎报
 	m.SetZashboardVersion(rel.TagName)
 	if persist := m.versionPersister(); persist != nil {

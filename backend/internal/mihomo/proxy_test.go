@@ -88,8 +88,8 @@ func TestKernelAPIProxy_ProxiesWithSecretAndForwardHeaders(t *testing.T) {
 	if got := rec.Header().Get("Set-Cookie"); got != "" {
 		t.Fatalf("上游 Set-Cookie 应被移除，实际 %q", got)
 	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("Cache-Control = %q, want no-store", got)
+	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=2" {
+		t.Fatalf("Cache-Control = %q, want private, max-age=2（/version 是可缓存只读接口）", got)
 	}
 }
 
@@ -145,6 +145,12 @@ func TestKernelAPIProxy_Unavailable_503(t *testing.T) {
 // SSRF 防线：external-controller 被改写成公网地址时必须拒绝，
 // 与 /adguard-ui 的反代白名单同源（公网 IP 与域名拒绝）。
 func TestKernelAPIProxy_RejectsPublicUpstream_502(t *testing.T) {
+	// 全局缓存可能残留 /version 条目（其它测试已写），命中会跳过白名单
+	// 检查直接返回 200——清空保证本测试真实走上游判断
+	kernelAPICache.Range(func(k, _ any) bool {
+		kernelAPICache.Delete(k)
+		return true
+	})
 	for _, upstream := range []string{"8.8.8.8:9090", "example.com:9090"} {
 		h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
 			func() (string, string) { return upstream, "" }, nil)
@@ -239,5 +245,145 @@ func TestKernelAPIProxy_WebSocketTunnel(t *testing.T) {
 	}
 	if !gotWSToken {
 		t.Fatal("内核应收到被覆盖为内核 secret 的 token query")
+	}
+}
+
+// /proxies 只读接口应短缓存：TTL 内第二次请求命中内存，不请求内核。
+func TestKernelAPIProxy_CachesReadonlyAPIs(t *testing.T) {
+	// 全局缓存可能残留其它测试的同 key 条目，先清空
+	kernelAPICache.Range(func(k, _ any) bool {
+		kernelAPICache.Delete(k)
+		return true
+	})
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"proxies":{"a":{"type":"Selector","now":"b"}}}`))
+	}))
+	defer upstream.Close()
+
+	addr := strings.TrimPrefix(upstream.URL, "http://")
+	h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
+		func() (string, string) { return addr, "secret" }, nil)
+
+	doGet := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/mihomo-api/proxies", nil)
+		req.AddCookie(authCookie(t, 0))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 第一次：穿透到内核
+	rec1 := doGet()
+	if rec1.Code != http.StatusOK || hits != 1 {
+		t.Fatalf("第一次应穿透内核: code=%d hits=%d", rec1.Code, hits)
+	}
+	if got := rec1.Header().Get("Cache-Control"); got != "private, max-age=2" {
+		t.Fatalf("可缓存接口 Cache-Control = %q, want private, max-age=2", got)
+	}
+
+	// 第二次（TTL 内）：命中内存，内核只被打一次
+	rec2 := doGet()
+	if hits != 1 {
+		t.Fatalf("TTL 内第二次应命中缓存, hits=%d", hits)
+	}
+	if rec2.Body.String() != rec1.Body.String() {
+		t.Fatal("缓存命中应返回相同 body")
+	}
+}
+
+// 缓存过期后重新穿透内核（2s TTL）。
+func TestKernelAPIProxy_CacheExpires(t *testing.T) {
+	// 全局缓存可能被其它测试写入同 key 条目，先清空保证本测试独立
+	kernelAPICache.Range(func(k, _ any) bool {
+		kernelAPICache.Delete(k)
+		return true
+	})
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"proxies":{}}`))
+	}))
+	defer upstream.Close()
+	addr := strings.TrimPrefix(upstream.URL, "http://")
+	h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
+		func() (string, string) { return addr, "secret" }, nil)
+
+	doGet := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/mihomo-api/proxies", nil)
+		req.AddCookie(authCookie(t, 0))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	doGet()
+	if hits != 1 {
+		t.Fatalf("首次 hits=%d", hits)
+	}
+	// 手动把缓存条目时间拨旧，模拟 TTL 过期
+	kernelAPICache.Range(func(k, v any) bool {
+		if e, ok := v.(*kernelCacheEntry); ok {
+			e.at = time.Now().Add(-3 * time.Second)
+		}
+		return true
+	})
+	doGet()
+	if hits != 2 {
+		t.Fatalf("TTL 过期后应重新穿透内核, hits=%d", hits)
+	}
+}
+
+// /traffic /connections 等流式/敏感接口绝不进缓存：既不是可缓存白名单，
+// 也不带 Upgrade 头时同样直连内核（WS 隧道真实验证见 TestKernelAPIProxy_WebSocketTunnel）。
+func TestKernelAPIProxy_DoesNotCacheTraffic(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connections":[]}`))
+	}))
+	defer upstream.Close()
+	addr := strings.TrimPrefix(upstream.URL, "http://")
+	h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
+		func() (string, string) { return addr, "secret" }, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/mihomo-api/traffic", nil)
+	req.AddCookie(authCookie(t, 0))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if gotPath != "/traffic" {
+		t.Fatalf("应穿透到内核 /traffic, got %q", gotPath)
+	}
+	// 不应写入缓存
+	if _, ok := kernelAPICache.Load("GET /mihomo-api/traffic"); ok {
+		t.Fatal("/traffic 不应被缓存")
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+// 非缓存接口（如 /connections 外的写入）仍 no-store。
+func TestKernelAPIProxy_NonCacheableStaysNoStore(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	addr := strings.TrimPrefix(upstream.URL, "http://")
+	h := NewKernelAPIProxyHandler(testProxyJWTSecret, auth.NewPasswordVer(0),
+		func() (string, string) { return addr, "secret" }, nil)
+
+	// /connections 是流式 WS 路径，但这里用普通 GET 模拟非白名单只读接口
+	req := httptest.NewRequest(http.MethodGet, "/mihomo-api/connections", nil)
+	req.AddCookie(authCookie(t, 0))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("非缓存接口 Cache-Control = %q, want no-store", got)
 	}
 }
