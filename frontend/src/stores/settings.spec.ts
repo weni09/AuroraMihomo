@@ -56,12 +56,44 @@ describe('useSettingsStore self-update & backup', () => {
     expect(store.selfUpdateInfo?.configured).toBe(false)
   })
 
-  it('updateSelf 调用 POST /system/self-update 并复位标志', async () => {
-    mockedApi.post.mockResolvedValue({ data: { success: true, message: '新版本已下载，即将重启生效' } })
+  it('updateSelf 异步触发 POST 并开始轮询状态，完成后停止', async () => {
+    mockedApi.post.mockResolvedValue({ data: { success: true, message: '升级已开始' } })
+    // 首拉：进行中
+    mockedApi.get
+      .mockResolvedValueOnce({ data: { running: true, phase: 'downloading', percent: 50, message: '下载中' } })
     const store = useSettingsStore()
     await store.updateSelf()
     expect(mockedApi.post).toHaveBeenCalledWith('/system/self-update')
+    await vi.waitFor(() => {
+      expect(mockedApi.get).toHaveBeenCalledWith('/system/self-update/status')
+    })
+    expect(store.selfUpdateStatus?.phase).toBe('downloading')
+    expect(store.selfUpdateStatus?.percent).toBe(50)
+    // 第二次轮询返回完成态 → 停止轮询、复位标志
+    mockedApi.get.mockResolvedValueOnce({ data: { running: false, phase: 'restarting', percent: 100, message: '即将重启生效' } })
+    await store.pollSelfUpdate()
+    expect(store.selfUpdateStatus?.phase).toBe('restarting')
     expect(store.updatingSelf).toBe(false)
+    expect(store.selfUpdatePollTimer).toBeNull()
+  })
+
+  it('轮询到 failed 状态时展示错误并停止', async () => {
+    mockedApi.post.mockResolvedValue({ data: { success: true, message: '升级已开始' } })
+    mockedApi.get
+      .mockResolvedValueOnce({ data: { running: true, phase: 'downloading', percent: 10, message: '下载中' } })
+    const store = useSettingsStore()
+    await store.updateSelf()
+    await vi.waitFor(() => {
+      expect(mockedApi.get).toHaveBeenCalledWith('/system/self-update/status')
+    })
+    mockedApi.get.mockResolvedValueOnce({
+      data: { running: false, phase: 'failed', error: { code: 'download_failed', message: '所有下载源均失败' } },
+    })
+    await store.pollSelfUpdate()
+    expect(store.selfUpdateStatus?.phase).toBe('failed')
+    expect(store.selfUpdateStatus?.error?.code).toBe('download_failed')
+    expect(store.updatingSelf).toBe(false)
+    expect(store.selfUpdatePollTimer).toBeNull()
   })
 
   it('重复触发被防抖：并发点第二次 updateSelf 不发请求', async () => {

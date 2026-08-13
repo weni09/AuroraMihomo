@@ -49,8 +49,21 @@ export interface SelfUpdateInfo {
   latestVersion: string
   /** 是否存在可升级的新版本 */
   updateAvailable: boolean
+  /** 变更日志（release notes），截断至 4KB，空串表示拉不到 */
+  releaseNotes?: string
   /** 提示信息：配置缺失 / 已最新 / 有新版本 / 查询失败原因 */
   message?: string
+}
+
+/** 主程序自升级的运行状态（轮询 /system/self-update/status） */
+export interface SelfUpdateStatus {
+  running: boolean
+  phase: string
+  percent: number
+  message: string
+  targetVersion?: string
+  error?: { code: string; message: string }
+  startedAt?: string
 }
 
 export const useSettingsStore = defineStore('settings', {
@@ -67,6 +80,11 @@ export const useSettingsStore = defineStore('settings', {
     checkingSelfUpdate: false,
     updatingSelf: false,
     selfUpdateInfo: null as SelfUpdateInfo | null,
+    // 主程序自升级运行状态（轮询 /system/self-update/status），
+    // 含阶段/进度/错误；null 表示从未触发过升级
+    selfUpdateStatus: null as SelfUpdateStatus | null,
+    /** 主程序升级状态轮询定时器 id */
+    selfUpdatePollTimer: null as number | null,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
@@ -180,16 +198,50 @@ export const useSettingsStore = defineStore('settings', {
         this.checkingSelfUpdate = false
       }
     },
-    // 一键自升级：下载校验新版 → 自动备份数据库 → 重启生效
+    // 一键自升级：异步触发（POST 立即返回），随后轮询状态接口
+    // 展示下载/校验/重启阶段；服务重启导致轮询失败即停止。
     async updateSelf() {
       if (this.updatingSelf) return
       this.updatingSelf = true
+      this.selfUpdateStatus = null
       try {
         const res = await api.post('/system/self-update')
-        useNotifyStore().success(res.data?.message || '升级已触发，即将重启生效')
+        useNotifyStore().success(res.data?.message || '升级已开始')
+        this.startSelfUpdatePolling()
       } catch (e: unknown) {
         console.error(e)
-      } finally {
+        useNotifyStore().error('无法启动升级，请查看后端日志')
+        this.updatingSelf = false
+      }
+    },
+    startSelfUpdatePolling() {
+      this.stopSelfUpdatePolling()
+      void this.pollSelfUpdate()
+      this.selfUpdatePollTimer = window.setInterval(() => {
+        void this.pollSelfUpdate()
+      }, 1000)
+    },
+    stopSelfUpdatePolling() {
+      if (this.selfUpdatePollTimer != null) {
+        clearInterval(this.selfUpdatePollTimer)
+        this.selfUpdatePollTimer = null
+      }
+    },
+    async pollSelfUpdate() {
+      try {
+        const res = await api.get<SelfUpdateStatus>('/system/self-update/status')
+        this.selfUpdateStatus = res.data
+        if (!res.data.running) {
+          this.stopSelfUpdatePolling()
+          this.updatingSelf = false
+          if (res.data.error) {
+            useNotifyStore().error(res.data.error.message || '升级失败')
+          }
+        }
+      } catch (e: unknown) {
+        // 服务重启中连接被断开：升级已触发，停止轮询，不报错
+        console.error(e)
+        this.stopSelfUpdatePolling()
         this.updatingSelf = false
       }
     },
