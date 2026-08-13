@@ -229,28 +229,28 @@ proxy-groups:
     include-all: true
     tolerance: 50
     interval: 180
-    filter: "(?!)广新|新加坡|SG|坡|狮城|🇸🇬|Singapore"
+    filter: "(?i)广新|新加坡|SG|坡|狮城|🇸🇬|Singapore"
   - name: 💄 韩国-自动
     type: url-test
     lazy: false
     include-all: true
     tolerance: 50
     interval: 180
-    filter: "(?!)广韩|韩国|韓國|KR|首尔|春川|🇰🇷|Korea"
+    filter: "(?i)广韩|韩国|韓國|KR|首尔|春川|🇰🇷|Korea"
   - name: 🦅 美国-自动
     type: url-test
     lazy: false
     include-all: true
     tolerance: 50
     interval: 180
-    filter: "(?!)广美|美|US|纽约|波特兰|达拉斯|俄勒|凤凰城|费利蒙|硅谷|拉斯|洛杉|圣何塞|圣克拉|西雅|芝加|🇺🇸|United States"
+    filter: "(?i)广美|美|US|纽约|波特兰|达拉斯|俄勒|凤凰城|费利蒙|硅谷|拉斯|洛杉|圣何塞|圣克拉|西雅|芝加|🇺🇸|United States"
   - name: 🌀 其他-自动
     type: url-test
     lazy: false
     include-all: true
     tolerance: 50
     interval: 180
-    filter: "(?!)波|柬|尼|也|克|比|尔|立|冰|秘|耳|利|埃|希|孟|芬|愛|澳|英|德|南|意|法|拿|墨|印|越|俄|瑞|智|荷|比|巴|沙|班|泰|德|烏|以|Australia|Konghwaguk"
+    filter: "(?i)波|柬|尼|也|克|比|尔|立|冰|秘|耳|利|埃|希|孟|芬|愛|澳|英|德|南|意|法|拿|墨|印|越|俄|瑞|智|荷|比|巴|沙|班|泰国|泰國|Thailand|曼谷|Bangkok|芭提雅|清迈|🇹🇭|德|烏|以|Australia|Konghwaguk"
   - name: 👵 大妈节点
     type: url-test
     lazy: false
