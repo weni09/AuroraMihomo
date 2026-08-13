@@ -624,7 +624,7 @@ func (m *Manager) UpdateMihomo(ctx context.Context) error {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	archivePath := filepath.Join(tmpDir, assetName)
-	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize); err != nil {
+	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize, nil); err != nil {
 		return err
 	}
 
@@ -741,7 +741,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 		}
 		m.logger.Infof("falling back to GitHub release asset %s", name)
 		dest := filepath.Join(tmpDir, name)
-		if err := m.downloadWithCDN(ctx, assetURL, dest, assetSize); err != nil {
+		if err := m.downloadWithCDN(ctx, assetURL, dest, assetSize, nil); err != nil {
 			if lastDownloadErr != nil {
 				return fmt.Errorf("AdGuard 模板源均失败（末次: %w）；CDN 回落失败: %w", lastDownloadErr, err)
 			}
@@ -813,7 +813,7 @@ func (m *Manager) UpdateAdGuard(ctx context.Context) error {
 func (m *Manager) downloadAdGuardURL(ctx context.Context, rawURL, dest string) error {
 	if client, proxy := m.httpClient(); proxy != "" {
 		m.logger.Infof("尝试经 mihomo 代理(%s)下载: %s", proxy, rawURL)
-		if err := m.downloadFile(ctx, rawURL, dest, client); err == nil {
+		if err := m.downloadFile(ctx, rawURL, dest, client, nil); err == nil {
 			st, err := os.Stat(dest)
 			if err == nil && st.Size() >= 1024 {
 				m.logger.Infof("download success via mihomo 代理 %s (%d bytes)", proxy, st.Size())
@@ -824,7 +824,7 @@ func (m *Manager) downloadAdGuardURL(ctx context.Context, rawURL, dest string) e
 			m.logger.Errorf("经 mihomo 代理下载失败，改直连: %v", err)
 		}
 	}
-	if err := m.downloadFile(ctx, rawURL, dest, m.client); err != nil {
+	if err := m.downloadFile(ctx, rawURL, dest, m.client, nil); err != nil {
 		return err
 	}
 	st, err := os.Stat(dest)
@@ -882,7 +882,7 @@ func (m *Manager) UpdateZashboard(ctx context.Context) error {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	archivePath := filepath.Join(tmpDir, assetName)
-	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize); err != nil {
+	if err := m.downloadWithCDN(ctx, assetURL, archivePath, assetSize, nil); err != nil {
 		return err
 	}
 	extractDir := filepath.Join(tmpDir, "extract")
@@ -1149,8 +1149,20 @@ func pickZashboardAsset(rel *githubRelease) (string, string, int64, error) {
 // 内核已在运行时走它出网通常比第三方镜像更快，且拿到的是官方原始文件，
 // 无需担心镜像返回被篡改或截断的内容。代理不可用（内核未运行、未开放
 // 混合端口）时自动跳过这一步，回落到原有的镜像列表。
-func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string, expectedSize int64) error {
+func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string, expectedSize int64, onProgress func(done, total int64)) error {
 	var errs []string
+
+	// 代理路径无 Content-Length（经本地转发）时，用官方声明体积兜底进度
+	progress := onProgress
+	wrapProgress := func(done, total int64) {
+		if progress == nil {
+			return
+		}
+		if total <= 0 && expectedSize > 0 {
+			total = expectedSize
+		}
+		progress(done, total)
+	}
 
 	// 校验并接受一次下载产物；返回 false 表示该源不可信，已清理落盘文件
 	accept := func(source string) bool {
@@ -1174,7 +1186,7 @@ func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string,
 
 	if client, proxy := m.httpClient(); proxy != "" {
 		m.logger.Infof("尝试经 mihomo 代理(%s)下载: %s", proxy, officialURL)
-		if err := m.downloadFile(ctx, officialURL, dest, client); err != nil {
+		if err := m.downloadFile(ctx, officialURL, dest, client, wrapProgress); err != nil {
 			errs = append(errs, fmt.Sprintf("mihomo 代理(%s) => %v", proxy, err))
 			m.logger.Errorf("经 mihomo 代理下载失败，改用 CDN 镜像: %v", err)
 		} else if accept("mihomo 代理 " + proxy) {
@@ -1190,7 +1202,7 @@ func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string,
 			continue
 		}
 		m.logger.Infof("trying download source [%d/%d]: %s", i+1, len(providers), u)
-		if err := m.downloadFile(ctx, u, dest, m.client); err != nil {
+		if err := m.downloadFile(ctx, u, dest, m.client, wrapProgress); err != nil {
 			errs = append(errs, fmt.Sprintf("%s => %v", u, err))
 			m.logger.Errorf("download failed via %s: %v", u, err)
 			continue
@@ -1203,7 +1215,7 @@ func (m *Manager) downloadWithCDN(ctx context.Context, officialURL, dest string,
 	return fmt.Errorf("all download sources failed: %s", strings.Join(errs, " | "))
 }
 
-func (m *Manager) downloadFile(ctx context.Context, url, dest string, client *http.Client) error {
+func (m *Manager) downloadFile(ctx context.Context, url, dest string, client *http.Client, onProgress func(done, total int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -1223,8 +1235,32 @@ func (m *Manager) downloadFile(ctx context.Context, url, dest string, client *ht
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+	if onProgress == nil {
+		_, err = io.Copy(f, resp.Body)
+		return err
+	}
+	total := resp.ContentLength
+	if total < 0 {
+		total = 0 // 未知长度：只给 done，百分比由调用方按 expectedSize 兜底
+	}
+	var done int64
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, werr := f.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			done += int64(n)
+			onProgress(done, total)
+		}
+		if rerr == io.EOF {
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
 }
 
 func unzip(src, dest string) error {

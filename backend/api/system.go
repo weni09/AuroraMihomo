@@ -101,6 +101,22 @@ func registerPublicAuthRoutes(server *rest.Server, svcCtx *svc.ServiceContext) {
 func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *service.ReloadManager) {
 	authOpt := rest.WithJwt(svcCtx.Config.Auth.AccessSecret)
 
+	// 主程序自升级暂存成功后：自动备份数据库 + 触发关停换二进制。
+	// 备份失败只记录不阻断（升级已通过完整性校验）；关停前先应答，
+	// 让前端拿到"即将重启"状态而不是看到连接被掐断。
+	svcCtx.Updater.SetSelfUpdateReadyHook(func() error {
+		path, err := svcCtx.Database.BackupTo(backupDir(svcCtx), svcCtx.Config.Backup.MaxKeep)
+		if err != nil {
+			return fmt.Errorf("升级前数据库备份失败: %w", err)
+		}
+		logx.Infof("pre-upgrade database backup at %s", path)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			mgr.RequestQuit("HTTP /api/v1/system/self-update")
+		}()
+		return nil
+	})
+
 	server.AddRoutes([]rest.Route{
 		// Bearer → aurora_session：给 /adguard-ui 等只认 cookie 的同源反代对齐会话
 		{
@@ -215,10 +231,9 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 			},
 		},
 		{
-			// 主程序一键自升级：下载并校验新版本 → 自动备份数据库 →
-			// 响应"即将重启生效" → 触发优雅关停，由进程管理器拉起新版。
-			// 与 /system/restart 相同的"先应答再退出"模式：关停会关闭监听，
-			// 先应答才能让调用方拿到结果而不是看到连接被断开。
+			// 主程序一键自升级：异步启动下载校验新版 → 后台暂存 →
+			// 自动备份数据库 → 触发优雅关停。应答后前端轮询
+			// /system/self-update/status 查看阶段/进度/失败原因。
 			Method: http.MethodPost,
 			Path:   "/api/v1/system/self-update",
 			Handler: func(w http.ResponseWriter, r *http.Request) {
@@ -228,34 +243,25 @@ func registerSystemRoutes(server *rest.Server, svcCtx *svc.ServiceContext, mgr *
 					httpx.ErrorCtx(r.Context(), w, updater.ErrSelfUpdateInProgress)
 					return
 				}
-				if err := svcCtx.Updater.UpdateSelf(r.Context()); err != nil {
-					logx.Errorf("self update failed: %v", err)
+				if err := svcCtx.Updater.StartSelfUpdate(r.Context()); err != nil {
+					logx.Errorf("self update start failed: %v", err)
 					httpx.ErrorCtx(r.Context(), w, err)
 					return
 				}
-				// 升级前自动备份数据库：万一新版本异常，还能用备份恢复。
-				// 备份失败只记录、不阻断升级——备份目录权限问题不该让用户
-				// 卡在"无法升级"，升级本身已通过完整性校验。
-				backupMsg := ""
-				if path, err := svcCtx.Database.BackupTo(backupDir(svcCtx), svcCtx.Config.Backup.MaxKeep); err != nil {
-					logx.Errorf("pre-upgrade database backup failed: %v", err)
-					backupMsg = "（数据库自动备份失败: " + err.Error() + "）"
-				} else {
-					backupMsg = "，数据库已自动备份到 " + path
-				}
-
 				httpx.OkJson(w, map[string]any{
-					"success":    true,
-					"message":    "新版本已下载并校验通过，即将重启生效" + backupMsg,
-					"restarting": true,
+					"success": true,
+					"message": "升级已开始，正在后台下载并校验新版主程序",
 				})
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
-				}
-				go func() {
-					time.Sleep(100 * time.Millisecond)
-					mgr.RequestQuit("HTTP /api/v1/system/self-update")
-				}()
+			},
+		},
+		{
+			// 主程序自升级状态轮询：返回阶段/进度/错误。
+			// 升级成功触发关停后本请求也会随进程退出断开，
+			// 前端以"连接断开"作为重启已发生的信号停止轮询。
+			Method: http.MethodGet,
+			Path:   "/api/v1/system/self-update/status",
+			Handler: func(w http.ResponseWriter, r *http.Request) {
+				httpx.OkJson(w, svcCtx.Updater.GetSelfUpdateStatus())
 			},
 		},
 		{

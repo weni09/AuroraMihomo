@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"auroramihomo/backend/internal/version"
 )
@@ -256,7 +257,7 @@ func TestSelfUpdateStageAndSwap(t *testing.T) {
 		UseMihomoProxy:   false,
 	})
 
-	if err := m.UpdateSelf(context.Background()); err != nil {
+	if err := runSelfUpdateWait(t, m); err != nil {
 		t.Fatalf("UpdateSelf 失败: %v", err)
 	}
 
@@ -372,7 +373,7 @@ func TestSelfUpdateRejectsChecksumMismatch(t *testing.T) {
 		UseMihomoProxy:   false,
 	})
 
-	if err := m.UpdateSelf(context.Background()); err == nil {
+	if err := runSelfUpdateWait(t, m); err == nil {
 		t.Fatal("校验和不匹配时 UpdateSelf 应报错")
 	}
 	if _, err := os.Stat(target + ".new"); !os.IsNotExist(err) {
@@ -422,7 +423,7 @@ func TestSelfUpdateFallsBackToSumsFile(t *testing.T) {
 		UseMihomoProxy:   false,
 	})
 
-	if err := m.UpdateSelf(context.Background()); err != nil {
+	if err := runSelfUpdateWait(t, m); err != nil {
 		t.Fatalf("SHA256SUMS.txt 回落路径应通过校验: %v", err)
 	}
 	if _, err := os.Stat(target + ".new"); err != nil {
@@ -484,13 +485,13 @@ func TestSelfUpdateInProgressRejectsSecondCall(t *testing.T) {
 		UseMihomoProxy:   false,
 	})
 
-	if err := m.UpdateSelf(context.Background()); err != nil {
+	if err := runSelfUpdateWait(t, m); err != nil {
 		t.Fatalf("首次 UpdateSelf 失败: %v", err)
 	}
 	if !m.SelfUpdateInProgress() {
 		t.Fatal("暂存成功后 SelfUpdateInProgress 应为 true")
 	}
-	if err := m.UpdateSelf(context.Background()); !errors.Is(err, ErrSelfUpdateInProgress) {
+	if err := m.StartSelfUpdate(context.Background()); !errors.Is(err, ErrSelfUpdateInProgress) {
 		t.Fatalf("二次调用应返回 ErrSelfUpdateInProgress，实际 %v", err)
 	}
 }
@@ -506,7 +507,7 @@ func TestSelfUpdateFailureClearsInProgress(t *testing.T) {
 		CDNProviders:       []string{"http://127.0.0.1:1/cdn"},
 		UseMihomoProxy:     false,
 	})
-	if err := m.UpdateSelf(context.Background()); err == nil {
+	if err := runSelfUpdateWait(t, m); err == nil {
 		t.Fatal("API 不可达时应失败")
 	}
 	if m.SelfUpdateInProgress() {
@@ -766,5 +767,106 @@ func TestSelfUpdateStatusInitialAndPhase(t *testing.T) {
 	m.setSelfPhase("idle", "")
 	if st2 := m.GetSelfUpdateStatus(); st2.Running || st2.Phase != "idle" {
 		t.Fatalf("idle 应清 Running, got %+v", st2)
+	}
+}
+
+// 异步启动：StartSelfUpdate 应立即返回（不等下载完成），
+// 状态机随后推进到 downloading 并最终 failed（无可用下载源）。
+func TestStartSelfUpdateAsyncReturnsImmediately(t *testing.T) {
+	// API 可达并返回 release 元数据，但下载源全失败 → 走 download_failed
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v2.0.0",
+				"assets":   []map[string]any{{"name": selfArchiveName("v2.0.0"), "browser_download_url": "http://127.0.0.1:1/a.zip", "size": 1}},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	m := New(Config{
+		DataDir:            t.TempDir(),
+		SelfRepo:           "owner/AuroraMihomo",
+		GitHubAPI:          srv.URL,
+		UseMihomoProxy:     false,
+		HTTPTimeoutSeconds: 2,
+		CDNProviders:       []string{"http://127.0.0.1:1/cdn"},
+	})
+	err := m.StartSelfUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("StartSelfUpdate 应立即接受: %v", err)
+	}
+	if !m.SelfUpdateInProgress() {
+		t.Fatal("StartSelfUpdate 后 SelfUpdateInProgress 应为 true")
+	}
+	st := m.GetSelfUpdateStatus()
+	if !st.Running || st.Phase == "idle" {
+		t.Fatalf("启动后应处于某进行中阶段, got %+v", st)
+	}
+	// 等后台 goroutine 收敛（下载源全失败 → failed）
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		st = m.GetSelfUpdateStatus()
+		if !st.Running || st.Phase == "failed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("升级应在无下载源时快速失败, 状态卡在 %+v", st)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if st.Error == nil || st.Error.Code != "download_failed" {
+		t.Fatalf("应映射 download_failed, got %+v", st.Error)
+	}
+}
+
+// 未配置仓库时异步启动应同步返回错误，且不进入运行态。
+func TestStartSelfUpdateNotConfigured(t *testing.T) {
+	m := New(Config{DataDir: t.TempDir(), SelfRepo: " "})
+	err := m.StartSelfUpdate(context.Background())
+	if !errors.Is(err, ErrSelfRepoNotConfigured) {
+		t.Fatalf("未配置仓库应同步返回 ErrSelfRepoNotConfigured, got %v", err)
+	}
+	if st := m.GetSelfUpdateStatus(); st.Running || st.Phase != "idle" {
+		t.Fatalf("未配置不应进入运行态, got %+v", st)
+	}
+}
+
+// 已在升级中时二次启动应同步拒绝。
+func TestStartSelfUpdateRejectsSecond(t *testing.T) {
+	m := New(Config{DataDir: t.TempDir(), SelfRepo: "owner/AuroraMihomo", UseMihomoProxy: false})
+	if err := m.StartSelfUpdate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartSelfUpdate(context.Background()); !errors.Is(err, ErrSelfUpdateInProgress) {
+		t.Fatalf("二次启动应返回 ErrSelfUpdateInProgress, got %v", err)
+	}
+}
+
+// runSelfUpdateWait 异步启动升级并等待后台完成，返回升级结果。
+// 用于把原同步 UpdateSelf 的测试改到异步语义：测试只关心最终成败与 .new
+// 落盘，不关心中间阶段。失败时返回分类后的错误信息。
+func runSelfUpdateWait(t *testing.T, m *Manager) error {
+	t.Helper()
+	if err := m.StartSelfUpdate(context.Background()); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		st := m.GetSelfUpdateStatus()
+		// restarting 是成功路径的最终态：selfUpdating 保持 true 直到进程退出，
+		// 测试里没有进程管理器拉起新版，以 restarting 作为完成信号
+		if !st.Running || st.Phase == "restarting" {
+			if st.Error != nil {
+				return fmt.Errorf("%s: %s", st.Error.Code, st.Error.Message)
+			}
+			return nil
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("升级后台任务超时未完成, 状态 %+v", st)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

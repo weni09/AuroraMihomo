@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestDownloadRejectsSizeMismatch(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "asset.zip")
 
 	// 官方声明 999999 字节，实际只有 4096 -> 必须失败
-	err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, 999999)
+	err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, 999999, nil)
 	if err == nil {
 		t.Fatal("体积与官方声明不符时必须报错")
 	}
@@ -44,7 +45,7 @@ func TestDownloadAcceptsMatchingSize(t *testing.T) {
 	m := New(Config{DataDir: t.TempDir(), CDNProviders: []string{"github"}})
 	dest := filepath.Join(t.TempDir(), "asset.zip")
 
-	if err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, int64(len(payload))); err != nil {
+	if err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, int64(len(payload)), nil); err != nil {
 		t.Fatalf("体积相符时应下载成功: %v", err)
 	}
 	st, err := os.Stat(dest)
@@ -62,7 +63,7 @@ func TestDownloadUnknownSizeFallsBackToBasicCheck(t *testing.T) {
 
 	m := New(Config{DataDir: t.TempDir(), CDNProviders: []string{"github"}})
 	dest := filepath.Join(t.TempDir(), "asset.zip")
-	if err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, 0); err != nil {
+	if err := m.downloadWithCDN(context.Background(), srv.URL+"/a.zip", dest, 0, nil); err != nil {
 		t.Fatalf("体积未知时应退化为基本校验并通过: %v", err)
 	}
 }
@@ -97,7 +98,7 @@ func TestDownloadWithCDNIgnoresAdGuardProviders(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "asset.bin")
 	officialURL := official.URL + "/owner/repo/releases/download/v1/a.bin"
-	if err := m.downloadWithCDN(context.Background(), officialURL, dest, int64(len(payload))); err != nil {
+	if err := m.downloadWithCDN(context.Background(), officialURL, dest, int64(len(payload)), nil); err != nil {
 		t.Fatalf("应走全局下载源，不应被 AdGuard 专用源劫持: %v", err)
 	}
 }
@@ -135,7 +136,7 @@ func TestDownloadWithCDNPrefersLastSuccess(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "a.bin")
 	officialURL := official.URL + "/owner/repo/releases/download/v1/a.bin"
-	if err := m.downloadWithCDN(context.Background(), officialURL, dest, int64(len(payload))); err != nil {
+	if err := m.downloadWithCDN(context.Background(), officialURL, dest, int64(len(payload)), nil); err != nil {
 		t.Fatalf("第一次应回落到第二个源: %v", err)
 	}
 	if m.LastCDNProvider() != second.URL {
@@ -148,10 +149,40 @@ func TestDownloadWithCDNPrefersLastSuccess(t *testing.T) {
 	hits = nil
 	failThenOK = 1
 	dest2 := filepath.Join(t.TempDir(), "b.bin")
-	if err := m.downloadWithCDN(context.Background(), officialURL, dest2, int64(len(payload))); err != nil {
+	if err := m.downloadWithCDN(context.Background(), officialURL, dest2, int64(len(payload)), nil); err != nil {
 		t.Fatalf("第二次应优先上次成功源: %v", err)
 	}
 	if len(hits) == 0 || hits[0] != "second" {
 		t.Fatalf("第二次应先打上次成功源, hits=%v", hits)
+	}
+}
+
+// 下载进度回调应随字节流推进：done/total 与预期一致，结束时达 100%。
+func TestDownloadWithCDNReportsProgress(t *testing.T) {
+	payload := strings.Repeat("P", 4096)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		_, _ = w.Write([]byte(payload))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := New(Config{DataDir: t.TempDir(), CDNProviders: []string{srv.URL}, UseMihomoProxy: false})
+	dest := filepath.Join(t.TempDir(), "a.bin")
+	var lastDone, lastTotal int64
+	var lastPct int
+	err := m.downloadWithCDN(context.Background(), srv.URL+"/a.bin", dest, int64(len(payload)), func(done, total int64) {
+		lastDone, lastTotal = done, total
+		if total > 0 {
+			lastPct = int(done * 100 / total)
+		}
+	})
+	if err != nil {
+		t.Fatalf("下载应成功: %v", err)
+	}
+	if lastDone != int64(len(payload)) || lastTotal != int64(len(payload)) {
+		t.Fatalf("进度应报告 done=%d total=%d, got %d/%d", len(payload), len(payload), lastDone, lastTotal)
+	}
+	if lastPct != 100 {
+		t.Fatalf("结束时百分比应为 100, got %d", lastPct)
 	}
 }

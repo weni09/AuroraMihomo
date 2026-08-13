@@ -283,106 +283,131 @@ func (m *Manager) runSelfReadyHook() {
 	}
 }
 
-// UpdateSelf 下载并校验最新版主程序，暂存到 <自身路径>.new。
+// StartSelfUpdate 异步启动主程序自升级：立即返回，实际下载/校验在后台
+// goroutine 推进，状态经 GetSelfUpdateStatus 轮询。
 //
-// 它不替换正在运行的二进制——运行中文件在多数平台无法直接覆盖，
-// 替换动作留到关停时由 SwapSelfBinary 完成（关停流程能保证进程即将
-// 退出，替换不再影响已加载的代码）。下载失败或校验不通过时绝不写入
-// .new，磁盘上不会出现"半截新版本"。
+// 与旧 UpdateSelf 的区别：调用方不再阻塞数分钟等待下载完成，
+// 而是拿到"已接受"后轮询状态。下载校验暂存成功后触发 selfReadyHook
+// （备份 DB + 关停换二进制），由进程管理器拉起新版。
 //
-// 成功暂存后会置 selfUpdating，拒绝后续二次升级与并发 restart；
-// 失败路径不置位，调用方可安全重试。
-func (m *Manager) UpdateSelf(ctx context.Context) error {
-	// 在抢 updateMu 之前先 CAS 占位：第二次请求立刻拿到 InProgress，
-	// 而不是排在第一次长达数分钟的下载后面空等。失败路径必须 Clear，
-	// 成功路径保持 true 直到进程退出（关停换二进制）。
+// 同步阶段（本函数内）只做两类快速失败：未配置仓库、已有升级在飞。
+// 其余失败（下载/校验/解压/试跑）在 goroutine 内转为 failed 状态。
+func (m *Manager) StartSelfUpdate(ctx context.Context) error {
 	if !m.selfUpdating.CompareAndSwap(false, true) {
 		return ErrSelfUpdateInProgress
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			m.selfUpdating.Store(false)
-		}
-	}()
-
-	m.updateMu.Lock()
-	defer m.updateMu.Unlock()
-
 	if !m.SelfRepoConfigured() {
+		m.selfUpdating.Store(false)
 		return ErrSelfRepoNotConfigured
 	}
-
-	rel, err := m.latestRelease(ctx, m.repoSelf())
-	if err != nil {
-		return err
-	}
-	tag := rel.TagName
-	name := selfArchiveName(tag)
-	officialURL := m.selfDownloadURL(tag, name)
-	// 若 release JSON 里刚好有同名资产，带上官方声明体积：
-	// downloadWithCDN 会在 CDN 回落路径上拒绝体积不符的产物，
-	// 作为 sha256 之外的第一道防线。找不到就传 0（只靠 sha256）。
-	assetSize := selfAssetSize(rel, name)
-	m.logger.Infof("downloading auroramihomo %s (%s)", tag, name)
-
-	tmpDir, err := os.MkdirTemp("", "aurora-self-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	archivePath := filepath.Join(tmpDir, name)
-	// 完整性主路径是 GitHub 发布时附带的 .sha256 / SHA256SUMS.txt：
-	// 下载后必须比对，不匹配即丢弃（防 CDN 篡改/截断）。
-	if err := m.downloadWithCDN(ctx, officialURL, archivePath, assetSize); err != nil {
-		return err
-	}
-	if err := m.verifySelfChecksum(ctx, m.repoSelf(), tag, officialURL, archivePath); err != nil {
-		return err
-	}
-
-	extractDir := filepath.Join(tmpDir, "extract")
-	if err := os.MkdirAll(extractDir, 0o755); err != nil {
-		return err
-	}
-	if strings.HasSuffix(strings.ToLower(name), ".zip") {
-		if err := unzip(archivePath, extractDir); err != nil {
-			return err
-		}
-	} else {
-		if err := untarGz(archivePath, extractDir); err != nil {
-			return err
-		}
-	}
-	binPath, err := findExtractedBinary(extractDir, "auroramihomo")
-	if err != nil {
-		return err
-	}
-
-	// 临时目录里先验证新二进制能跑通 -version，再动磁盘上的文件：
-	// 校验失败立即返回，不会留下一个待生效的坏版本。
-	if err := verifySelfBinary(ctx, binPath); err != nil {
-		return err
-	}
-
-	target := m.SelfBinaryPath()
-	if target == "" {
-		return errors.New("cannot resolve current binary path for self update")
-	}
-	stage := target + ".new"
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	if err := copyFile(binPath, stage); err != nil {
-		return err
-	}
-	if runtime.GOOS != "windows" {
-		_ = os.Chmod(stage, 0o755)
-	}
-	committed = true
-	m.logger.Infof("auroramihomo %s staged to %s, will swap on shutdown", tag, stage)
+	m.setSelfPhase("preparing", "准备升级…")
+	// 用 Background 派生：调用方 ctx（HTTP 请求）在应答后即被取消，
+	// 不能传给会持续数分钟的后台下载。
+	go m.runSelfUpdate(context.WithoutCancel(ctx))
 	return nil
+}
+
+// runSelfUpdate 在后台执行主程序自升级并推进状态机。
+// 成功路径：暂存 .new → ready hook（备份+重启）→ 状态 restarting，
+// selfUpdating 保持 true 直到进程退出（关停换二进制）。
+// 失败路径：置 failed + 结构化错误，清除 selfUpdating 允许重试。
+func (m *Manager) runSelfUpdate(ctx context.Context) {
+	do := func() error {
+		if !m.SelfRepoConfigured() {
+			return ErrSelfRepoNotConfigured
+		}
+		rel, err := m.latestRelease(ctx, m.repoSelf())
+		if err != nil {
+			return fmt.Errorf("%w: %v", errSelfCheckFailed, err)
+		}
+		tag := rel.TagName
+		m.setSelfTarget(tag)
+		name := selfArchiveName(tag)
+		officialURL := m.selfDownloadURL(tag, name)
+		// 若 release JSON 里刚好有同名资产，带上官方声明体积：
+		// downloadWithCDN 会在 CDN 回落路径上拒绝体积不符的产物，
+		// 作为 sha256 之外的第一道防线。找不到就传 0（只靠 sha256）。
+		assetSize := selfAssetSize(rel, name)
+		m.logger.Infof("downloading auroramihomo %s (%s)", tag, name)
+
+		tmpDir, err := os.MkdirTemp("", "aurora-self-*")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		archivePath := filepath.Join(tmpDir, name)
+		m.setSelfPhase("downloading", "下载新版主程序…")
+		// 下载进度：expectedSize 已知时按已下载/总字节换算百分比。
+		// 经代理或任一 CDN 源都可能成功，每次尝试都会回调。
+		if err := m.downloadWithCDN(ctx, officialURL, archivePath, assetSize, func(done, total int64) {
+			if total > 0 {
+				pct := int(done * 100 / total)
+				if pct > 100 {
+					pct = 100
+				}
+				m.setSelfProgress(pct)
+			}
+		}); err != nil {
+			return fmt.Errorf("%w: %v", errSelfDownloadFailed, err)
+		}
+
+		m.setSelfPhase("verifying", "校验下载完整性…")
+		if err := m.verifySelfChecksum(ctx, m.repoSelf(), tag, officialURL, archivePath); err != nil {
+			return err // verifySelfChecksum 内部已按阶段包装 sentinel
+		}
+
+		m.setSelfPhase("extracting", "解压新版主程序…")
+		extractDir := filepath.Join(tmpDir, "extract")
+		if err := os.MkdirAll(extractDir, 0o755); err != nil {
+			return err
+		}
+		if strings.HasSuffix(strings.ToLower(name), ".zip") {
+			if err := unzip(archivePath, extractDir); err != nil {
+				return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+			}
+		} else {
+			if err := untarGz(archivePath, extractDir); err != nil {
+				return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+			}
+		}
+		binPath, err := findExtractedBinary(extractDir, "auroramihomo")
+		if err != nil {
+			return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+		}
+
+		m.setSelfPhase("preparing", "验证并暂存新版主程序…")
+		if err := verifySelfBinary(ctx, binPath); err != nil {
+			return fmt.Errorf("%w: %v", errSelfVerifyFailed, err)
+		}
+
+		target := m.SelfBinaryPath()
+		if target == "" {
+			return errors.New("cannot resolve current binary path for self update")
+		}
+		stage := target + ".new"
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := copyFile(binPath, stage); err != nil {
+			return err
+		}
+		if runtime.GOOS != "windows" {
+			_ = os.Chmod(stage, 0o755)
+		}
+		m.logger.Infof("auroramihomo %s staged to %s, will swap on shutdown", tag, stage)
+		return nil
+	}
+
+	if err := do(); err != nil {
+		m.selfUpdating.Store(false)
+		m.setSelfError("", classifySelfUpdateError(err))
+		m.logger.Errorf("self update failed: %v", err)
+		return
+	}
+	// 成功：保持 selfUpdating=true 直到进程退出；触发备份+重启回调。
+	m.runSelfReadyHook()
+	m.setSelfPhase("restarting", "新版本已下载并校验通过，即将重启生效")
 }
 
 // verifySelfChecksum 校验下载的主程序包与官方发布的 sha256 一致。
@@ -413,7 +438,7 @@ func (m *Manager) verifySelfChecksum(ctx context.Context, repo, tag, archiveURL,
 	}
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != want {
-		return fmt.Errorf("checksum mismatch: want %s got %s", want, got)
+		return fmt.Errorf("%w: want %s got %s", errSelfChecksumMismatch, want, got)
 	}
 	return nil
 }
@@ -432,11 +457,11 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 	sumsURL := m.selfDownloadURL(tag, "SHA256SUMS.txt")
 	body, err := m.fetchBytesWithCDN(ctx, sumsURL)
 	if err != nil {
-		return "", fmt.Errorf("无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %w", err)
+		return "", fmt.Errorf("%w: 无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %v", errSelfDownloadFailed, err)
 	}
 	sum, err := parseChecksumFile(body, archiveName)
 	if err != nil {
-		return "", fmt.Errorf("SHA256SUMS.txt 中未找到 %s 的校验和: %w", archiveName, err)
+		return "", fmt.Errorf("%w: SHA256SUMS.txt 中未找到 %s 的校验和: %v", errSelfChecksumMismatch, archiveName, err)
 	}
 	return sum, nil
 }
