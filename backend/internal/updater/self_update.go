@@ -351,7 +351,7 @@ func (m *Manager) runSelfUpdate(ctx context.Context) {
 		}
 		rel, err := m.latestRelease(ctx, m.repoSelf())
 		if err != nil {
-			return fmt.Errorf("%w: %v", errSelfCheckFailed, err)
+			return fmt.Errorf("%w: %w", errSelfCheckFailed, err)
 		}
 		tag := rel.TagName
 		m.setSelfTarget(tag)
@@ -382,7 +382,7 @@ func (m *Manager) runSelfUpdate(ctx context.Context) {
 				m.setSelfProgress(pct)
 			}
 		}); err != nil {
-			return fmt.Errorf("%w: %v", errSelfDownloadFailed, err)
+			return fmt.Errorf("%w: %w", errSelfDownloadFailed, err)
 		}
 
 		m.setSelfPhase("verifying", "校验下载完整性…")
@@ -397,21 +397,21 @@ func (m *Manager) runSelfUpdate(ctx context.Context) {
 		}
 		if strings.HasSuffix(strings.ToLower(name), ".zip") {
 			if err := unzip(archivePath, extractDir); err != nil {
-				return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+				return fmt.Errorf("%w: %w", errSelfExtractFailed, err)
 			}
 		} else {
 			if err := untarGz(archivePath, extractDir); err != nil {
-				return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+				return fmt.Errorf("%w: %w", errSelfExtractFailed, err)
 			}
 		}
 		binPath, err := findExtractedBinary(extractDir, "auroramihomo")
 		if err != nil {
-			return fmt.Errorf("%w: %v", errSelfExtractFailed, err)
+			return fmt.Errorf("%w: %w", errSelfExtractFailed, err)
 		}
 
 		m.setSelfPhase("preparing", "验证并暂存新版主程序…")
 		if err := verifySelfBinary(ctx, binPath); err != nil {
-			return fmt.Errorf("%w: %v", errSelfVerifyFailed, err)
+			return fmt.Errorf("%w: %w", errSelfVerifyFailed, err)
 		}
 
 		target := m.SelfBinaryPath()
@@ -490,11 +490,11 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 	sumsURL := m.selfDownloadURL(tag, "SHA256SUMS.txt")
 	body, err := m.fetchBytesWithCDN(ctx, sumsURL)
 	if err != nil {
-		return "", fmt.Errorf("%w: 无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %v", errSelfDownloadFailed, err)
+		return "", fmt.Errorf("%w: 无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %w", errSelfDownloadFailed, err)
 	}
 	sum, err := parseChecksumFile(body, archiveName)
 	if err != nil {
-		return "", fmt.Errorf("%w: SHA256SUMS.txt 中未找到 %s 的校验和: %v", errSelfChecksumMismatch, archiveName, err)
+		return "", fmt.Errorf("%w: SHA256SUMS.txt 中未找到 %s 的校验和: %w", errSelfChecksumMismatch, archiveName, err)
 	}
 	return sum, nil
 }
