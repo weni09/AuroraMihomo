@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import api from '../api'
 import { useNotifyStore } from './notify'
+import { useMihomoStore } from './mihomo'
 
 export interface UpdateSettings {
   autoUpdateEnabled: boolean
@@ -87,6 +88,8 @@ export const useSettingsStore = defineStore('settings', {
     selfUpdatePollTimer: null as number | null,
     /** 连续轮询失败次数：瞬时 5xx 不该停；重启断连会连续失败后停 */
     selfUpdatePollFails: 0,
+    /** 轮询开始时间：restarting 超时（服务未恢复）提示用 */
+    selfUpdatePollStartedAt: 0,
     settings: null as UpdateSettings | null,
     loading: false,
   }),
@@ -219,6 +222,8 @@ export const useSettingsStore = defineStore('settings', {
     },
     startSelfUpdatePolling() {
       this.stopSelfUpdatePolling()
+      this.selfUpdatePollFails = 0
+      this.selfUpdatePollStartedAt = Date.now()
       void this.pollSelfUpdate()
       this.selfUpdatePollTimer = window.setInterval(() => {
         void this.pollSelfUpdate()
@@ -246,8 +251,15 @@ export const useSettingsStore = defineStore('settings', {
           await this.afterSelfUpdateDone()
         }
       } catch (e) {
-        // 正在重启（restarting）时断连是预期：不计数，等服务重启恢复
+        // 正在重启（restarting）时断连是预期：不计数，等服务重启恢复。
+        // 但 supervisor 卡住时服务可能一直起不来，90s 后提示并停止，
+        // 避免前端无限空轮询（1s 一次）。
         if (this.selfUpdateStatus?.phase === 'restarting') {
+          if (this.selfUpdatePollStartedAt && Date.now() - this.selfUpdatePollStartedAt > 90_000) {
+            this.stopSelfUpdatePolling()
+            this.updatingSelf = false
+            useNotifyStore().error('服务重启超时未恢复，请检查进程管理器或手动刷新')
+          }
           return
         }
         // 下载中瞬时失败不该停轮询：连续 5 次才停（约 5s）
@@ -260,17 +272,28 @@ export const useSettingsStore = defineStore('settings', {
       }
     },
     // 升级完成（服务已重启并恢复）：刷新数据让界面反映新版本。
-    // 版本号走 /ws 实时通道更新，这里刷新设置与版本检查结果。
+    // 设置页「当前版本」读 mihomoStore.appVersion；WS 重连快照不含
+    // appVersion（只带内核 version/pid），必须显式拉 /system/status。
     async afterSelfUpdateDone() {
       this.selfUpdateStatus = null
       useNotifyStore().success('主程序升级完成，已切换到新版本')
+      // fetch / fetchStatus 失败不阻断版本复查：各自独立 catch，
+      // 服务刚起偶发未就绪不该让「是否已最新」的展示也跟着失败
       try {
         await this.fetch()
+      } catch (e: unknown) {
+        console.error('升级后刷新设置失败', e)
+      }
+      try {
+        await useMihomoStore().fetchStatus()
+      } catch (e: unknown) {
+        console.error('升级后刷新宿主状态失败', e)
+      }
+      try {
         const res = await api.get<SelfUpdateInfo>('/system/self-update/check')
         this.selfUpdateInfo = res.data
       } catch (e: unknown) {
-        // 服务刚起、接口偶发未就绪：刷新失败不阻断，下次进入设置页会重拉
-        console.error(e)
+        console.error('升级后复查版本失败', e)
       }
     },
   },

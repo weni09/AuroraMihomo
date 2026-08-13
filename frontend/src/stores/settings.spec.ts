@@ -77,10 +77,11 @@ describe('useSettingsStore self-update & backup', () => {
   })
 
   it('升级完成（服务重启后恢复 idle）自动刷新数据', async () => {
+    localStorage.setItem('aurora_token', 'test-token')
     const store = useSettingsStore()
     store.updatingSelf = true
     store.selfUpdateStatus = { running: true, phase: 'restarting', percent: 0, message: '即将重启' }
-    // /status 返回 idle（服务已重启、内存态清空）；随后 fetch 与 check 被调用
+    // /status 返回 idle（服务已重启、内存态清空）；随后 fetch、宿主状态、check 被调用
     mockedApi.get.mockImplementation((url: string) => {
       if (url === '/system/self-update/status') {
         return Promise.resolve({ data: { running: false, phase: 'idle', percent: 0, message: '' } })
@@ -106,6 +107,11 @@ describe('useSettingsStore self-update & backup', () => {
           },
         })
       }
+      if (url === '/system/status') {
+        return Promise.resolve({
+          data: { status: 'stopped', version: '', pid: 0, appVersion: 'v0.12.0' },
+        })
+      }
       if (url === '/system/self-update/check') {
         return Promise.resolve({
           data: {
@@ -128,7 +134,10 @@ describe('useSettingsStore self-update & backup', () => {
       expect(store.selfUpdateInfo?.updateAvailable).toBe(false)
     })
     expect(mockedApi.get).toHaveBeenCalledWith('/settings/update')
+    expect(mockedApi.get).toHaveBeenCalledWith('/system/status')
     expect(mockedApi.get).toHaveBeenCalledWith('/system/self-update/check')
+    const { useMihomoStore } = await import('./mihomo')
+    expect(useMihomoStore().appVersion).toBe('v0.12.0')
   })
 
   it('轮询到 failed 状态时展示错误并停止', async () => {
