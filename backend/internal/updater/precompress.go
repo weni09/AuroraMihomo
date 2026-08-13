@@ -91,7 +91,7 @@ func precompressFile(src string) error {
 		return err
 	}
 	gz := gzip.NewWriter(out)
-	gz.Header.ModTime = st.ModTime()
+	gz.ModTime = st.ModTime()
 	if _, err := io.Copy(gz, in); err != nil {
 		_ = gz.Close()
 		_ = out.Close()
