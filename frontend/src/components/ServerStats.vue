@@ -6,6 +6,14 @@ import api from '../api'
 import { useSettingsStore } from '../stores/settings'
 
 /** 与 GET /api/v1/system/stats 的返回结构对齐（见 backend/api/AuroraMihomo-Go-Zero-API.api） */
+interface DiskVolume {
+  path: string
+  total: number
+  used: number
+  percent: number
+  fstype: string
+}
+
 interface SystemStats {
   cpuPercent: number
   memTotal: number
@@ -19,6 +27,7 @@ interface SystemStats {
   diskUsed: number
   diskPercent: number
   diskPath?: string
+  diskVolumes?: DiskVolume[]
   uptimeSeconds: number
 }
 
@@ -164,10 +173,11 @@ function usedTotalText(used: number | undefined, total: number | undefined): str
         </div>
       </div>
 
-      <!-- 磁盘：探测面板数据目录所在分区，路径放 tooltip 说明来源 -->
+      <!-- 磁盘：合计所有常规文件系统（排除 tmpfs/overlay 等），明细列在副行 -->
       <div class="bg-elevated rounded-xl p-3 sm:p-4">
         <div class="flex items-center gap-1.5 text-xs text-fg-muted mb-1.5">
           <HardDrive class="size-3.5" aria-hidden="true" /> 磁盘
+          <span v-if="stats?.diskPath" class="font-normal text-fg-subtle truncate">{{ stats.diskPath }}</span>
         </div>
         <div class="text-lg font-bold text-fg tabular-nums">{{ pctText(stats?.diskPercent) }}</div>
         <Progress
@@ -175,12 +185,23 @@ function usedTotalText(used: number | undefined, total: number | undefined): str
           class="mt-2 h-1.5"
           aria-label="磁盘使用率"
         />
-        <div
-          class="text-xs text-fg-subtle mt-1.5 tabular-nums truncate"
-          :title="stats?.diskPath || ''"
-        >
+        <div class="text-xs text-fg-subtle mt-1.5 tabular-nums">
           {{ usedTotalText(stats?.diskUsed, stats?.diskTotal) }}
         </div>
+        <ul
+          v-if="stats?.diskVolumes && stats.diskVolumes.length > 1"
+          class="mt-1.5 space-y-0.5 text-[11px] text-fg-subtle"
+        >
+          <li
+            v-for="vol in stats.diskVolumes"
+            :key="vol.path"
+            class="flex items-baseline justify-between gap-2 tabular-nums"
+            :title="vol.fstype ? `${vol.path} (${vol.fstype})` : vol.path"
+          >
+            <span class="truncate min-w-0">{{ vol.path }}</span>
+            <span class="shrink-0">{{ bytesText(vol.used) }}/{{ bytesText(vol.total) }}</span>
+          </li>
+        </ul>
       </div>
 
       <div class="bg-elevated rounded-xl p-3 sm:p-4">

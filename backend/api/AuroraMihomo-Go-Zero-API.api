@@ -39,6 +39,15 @@ type SelfUpdateCheck {
 	Message string `json:"message,optional"`
 }
 
+// DiskVolume 一块计入资源监控合计的常规文件系统。
+type DiskVolume {
+	Path    string  `json:"path"`
+	Total   uint64  `json:"total"`
+	Used    uint64  `json:"used"`
+	Percent float64 `json:"percent"`
+	Fstype  string  `json:"fstype"`
+}
+
 // SystemStats 宿主服务器资源快照。网络速率为「自上次查询以来的平均速率」
 // （后端保存上次采样做差分），因此两次查询间隔越短，速率越接近瞬时值。
 type SystemStats {
@@ -56,8 +65,10 @@ type SystemStats {
 	DiskTotal    uint64  `json:"diskTotal"`
 	DiskUsed     uint64  `json:"diskUsed"`
 	DiskPercent  float64 `json:"diskPercent"`
-	// DiskPath 磁盘探测目标：面板数据目录所在分区（如 / 或 C:\）
+	// DiskPath 合计标签：单盘时为挂载点，多盘时为「N 个文件系统」
 	DiskPath string `json:"diskPath,optional"`
+	// DiskVolumes 计入合计的常规文件系统明细（已排除 tmpfs/overlay 等）
+	DiskVolumes []DiskVolume `json:"diskVolumes,optional"`
 	// UptimeSeconds 主机开机运行时长（秒）
 	UptimeSeconds uint64 `json:"uptimeSeconds"`
 }
@@ -77,7 +88,6 @@ type MihomoBootReq {
 // ---- 手写路由的契约同步类型 ----
 // 以下类型仅用于本文件对外契约声明；实际实现类型定义在对应 handler/logic
 // 包内（避免 goctl 再生成时覆盖），与本文件的字段保持一致。
-
 // ProbeSubscriptionReq 订阅流量参数探测请求。
 type ProbeSubscriptionReq {
 	URL       string `json:"url"`

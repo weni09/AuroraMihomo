@@ -35,6 +35,16 @@ func (l *SystemStatsLogic) SystemStats() (resp *types.SystemStats, err error) {
 	if err != nil {
 		return nil, err
 	}
+	vols := make([]types.DiskVolume, 0, len(st.DiskVolumes))
+	for _, v := range st.DiskVolumes {
+		vols = append(vols, types.DiskVolume{
+			Path:    v.Path,
+			Total:   v.Total,
+			Used:    v.Used,
+			Percent: v.Percent,
+			Fstype:  v.Fstype,
+		})
+	}
 	return &types.SystemStats{
 		CPUPercent:    st.CPUPercent,
 		MemTotal:      st.MemTotal,
@@ -48,6 +58,7 @@ func (l *SystemStatsLogic) SystemStats() (resp *types.SystemStats, err error) {
 		DiskUsed:      st.DiskUsed,
 		DiskPercent:   st.DiskPercent,
 		DiskPath:      st.DiskPath,
+		DiskVolumes:   vols,
 		UptimeSeconds: st.UptimeSeconds,
 	}, nil
 }

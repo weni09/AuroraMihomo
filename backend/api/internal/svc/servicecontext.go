@@ -421,9 +421,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	_ = db.PromoteTaskLedger("version_check", "auto_update")
 	_ = db.DeleteTask("version_check")
 	_ = db.UpsertTask("config_merge", "on-demand", true)
-	_ = db.UpsertTask("mihomo_reload", "on-demand", true)
-
-	// 宿主资源监控。磁盘探测目标是数据目录所在分区（与面板运行最相关）；
+	// 宿主资源监控。磁盘合计常规文件系统；数据目录仅作分区枚举失败时的回退。
 	// 转绝对路径：Windows 上相对路径无法定位分区。
 	absDataDir, _ := filepath.Abs(dataDir)
 	monitorSvc := service.NewMonitorService(absDataDir)

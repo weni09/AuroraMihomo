@@ -78,6 +78,13 @@ type AdGuardWiringResp struct {
 	AGHDNSPort int      `json:"aghDnsPort"`
 }
 
+type AppLogEntry struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Caller  string `json:"caller,omitempty"`
+}
+
 type ChangePasswordReq struct {
 	OldPassword string `json:"oldPassword"`
 	NewPassword string `json:"newPassword"`
@@ -179,11 +186,24 @@ type DiffReport struct {
 	Changed []DiffItem `json:"changed"`
 }
 
+type DiskVolume struct {
+	Path    string  `json:"path"`
+	Total   uint64  `json:"total"`
+	Used    uint64  `json:"used"`
+	Percent float64 `json:"percent"`
+	Fstype  string  `json:"fstype"`
+}
+
 type FileTokenReq struct {
 	Token string `path:"token"`
 }
 
 type GetMihomoLogsReq struct {
+	Limit int    `form:"limit,optional"`
+	Level string `form:"level,optional"`
+}
+
+type GetSystemLogsReq struct {
 	Limit int    `form:"limit,optional"`
 	Level string `form:"level,optional"`
 }
@@ -229,6 +249,10 @@ type MergeResultEx struct {
 	ConflictCount int    `json:"conflictCount"`
 }
 
+type MihomoBootReq struct {
+	Enabled bool `json:"enabled"`
+}
+
 type PipelineOperator struct {
 	Type    string `json:"type"`
 	Enabled bool   `json:"enabled"`
@@ -259,6 +283,22 @@ type PreviewResp struct {
 	Processed string   `json:"processed"`
 	Count     int      `json:"count"`
 	Warnings  []string `json:"warnings"`
+}
+
+type ProbeCandidate struct {
+	Params      string `json:"params"`
+	URL         string `json:"url"`
+	HasUserInfo bool   `json:"hasUserInfo"`
+}
+
+type ProbeSubscriptionReq struct {
+	URL       string `json:"url"`
+	UserAgent string `json:"userAgent,optional"`
+}
+
+type ProbeSubscriptionResp struct {
+	Candidates []ProbeCandidate `json:"candidates"`
+	BestURL    string           `json:"bestUrl"`
 }
 
 type RefreshAllResult struct {
@@ -304,6 +344,15 @@ type Result struct {
 	Message string `json:"message"`
 }
 
+type SelfUpdateCheck struct {
+	Configured      bool   `json:"configured"`
+	CurrentVersion  string `json:"currentVersion"`
+	LatestVersion   string `json:"latestVersion"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	Error           string `json:"error,omitempty"`
+	Message         string `json:"message,optional"`
+}
+
 type ShareActionReq struct {
 	Kind string `path:"kind"`
 	Id   int64  `path:"id"`
@@ -340,12 +389,10 @@ type ShareUpdateReq struct {
 }
 
 type Status struct {
-	Status     string `json:"status"`
-	Version    string `json:"version"`
-	AppVersion string `json:"appVersion"`
-	Pid        int    `json:"pid"`
-	// DesiredRunning 内核「期望运行」：手动停止后为 false，面板重启
-	// 不自动拉；守护检测到停止时按它决定是否自动拉起。
+	Status         string `json:"status"`
+	Version        string `json:"version"`
+	AppVersion     string `json:"appVersion"`
+	Pid            int    `json:"pid"`
 	DesiredRunning bool   `json:"desiredRunning"`
 	ServerTime     string `json:"serverTime,optional"`
 	Timezone       string `json:"timezone,optional"`
@@ -421,20 +468,26 @@ type Subscription struct {
 	Traffic      *TrafficInfo       `json:"traffic"`
 }
 
+type SystemLogsResp struct {
+	Logs  []AppLogEntry `json:"logs"`
+	Total int           `json:"total"`
+}
+
 type SystemStats struct {
-	CPUPercent    float64 `json:"cpuPercent"`
-	MemTotal      uint64  `json:"memTotal"`
-	MemUsed       uint64  `json:"memUsed"`
-	MemPercent    float64 `json:"memPercent"`
-	NetUpRate     uint64  `json:"netUpRate"`
-	NetDownRate   uint64  `json:"netDownRate"`
-	NetUpTotal    uint64  `json:"netUpTotal"`
-	NetDownTotal  uint64  `json:"netDownTotal"`
-	DiskTotal     uint64  `json:"diskTotal"`
-	DiskUsed      uint64  `json:"diskUsed"`
-	DiskPercent   float64 `json:"diskPercent"`
-	DiskPath      string  `json:"diskPath,optional"`
-	UptimeSeconds uint64  `json:"uptimeSeconds"`
+	CPUPercent    float64      `json:"cpuPercent"`
+	MemTotal      uint64       `json:"memTotal"`
+	MemUsed       uint64       `json:"memUsed"`
+	MemPercent    float64      `json:"memPercent"`
+	NetUpRate     uint64       `json:"netUpRate"`
+	NetDownRate   uint64       `json:"netDownRate"`
+	NetUpTotal    uint64       `json:"netUpTotal"`
+	NetDownTotal  uint64       `json:"netDownTotal"`
+	DiskTotal     uint64       `json:"diskTotal"`
+	DiskUsed      uint64       `json:"diskUsed"`
+	DiskPercent   float64      `json:"diskPercent"`
+	DiskPath      string       `json:"diskPath,optional"`
+	DiskVolumes   []DiskVolume `json:"diskVolumes,optional"`
+	UptimeSeconds uint64       `json:"uptimeSeconds"`
 }
 
 type TaskItem struct {
@@ -507,14 +560,11 @@ type TransparentProvisionStep struct {
 
 type TransparentRulesReq struct {
 	CustomRules string `json:"customRules"`
-	// ExemptPorts 免代理端口（逗号分隔的数字列表，如 "853,443"；空串清空）
 	ExemptPorts string `json:"exemptPorts"`
 }
 
 type TransparentRulesResp struct {
-	CustomRules string `json:"customRules"`
-	// ExemptPorts 用户配置的免代理端口（逗号分隔的原文，如 "853,443"）。
-	// 生成 TCP+UDP 内置 return、排在 catch-all 之前；与 KeepPorts（仅 TCP）分字段。
+	CustomRules     string   `json:"customRules"`
 	ExemptPorts     string   `json:"exemptPorts"`
 	IptablesBackend string   `json:"iptablesBackend"`
 	BuiltinNFTRules string   `json:"builtinNFTRules"`
@@ -546,11 +596,10 @@ type UpdateBaseConfigReq struct {
 }
 
 type UpdateSettings struct {
-	AutoUpdateEnabled bool     `json:"autoUpdateEnabled"`
-	AutoUpdateCron    string   `json:"autoUpdateCron"`
-	CDNProviders      []string `json:"cdnProviders"`
-	UseMihomoProxy    bool     `json:"useMihomoProxy"`
-	// SelfRepo 主程序（AuroraMihomo 自身）仓库，空串 = 显式停用面板内自升级
+	AutoUpdateEnabled  bool     `json:"autoUpdateEnabled"`
+	AutoUpdateCron     string   `json:"autoUpdateCron"`
+	CDNProviders       []string `json:"cdnProviders"`
+	UseMihomoProxy     bool     `json:"useMihomoProxy"`
 	SelfRepo           string   `json:"selfRepo"`
 	MihomoProxyUrl     string   `json:"mihomoProxyUrl"`
 	MihomoPath         string   `json:"mihomoPath"`

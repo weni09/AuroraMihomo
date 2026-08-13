@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
-	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
@@ -32,6 +31,7 @@ type MonitorStats struct {
 	DiskUsed      uint64
 	DiskPercent   float64
 	DiskPath      string
+	DiskVolumes   []DiskVolume
 	UptimeSeconds uint64 // 主机开机时长
 }
 
@@ -63,8 +63,7 @@ type MonitorService struct {
 
 // NewMonitorService 创建资源监控服务。
 //
-// diskPath 是磁盘使用率的探测目标，应为面板数据目录（其所在分区
-// 与面板/内核的运行最相关——磁盘满最先影响的就是这两个进程）。
+// diskPath 仅作回退：分区枚举失败或全部被排除时，对数据目录做单点 Usage。
 // 传入前应转成绝对路径：Windows 上相对路径无法定位分区。
 func NewMonitorService(diskPath string) *MonitorService {
 	return &MonitorService{diskPath: diskPath}
@@ -87,9 +86,9 @@ func (s *MonitorService) Stats(ctx context.Context) (*MonitorStats, error) {
 		return nil, fmt.Errorf("采集内存使用率失败: %w", err)
 	}
 
-	du, err := disk.UsageWithContext(ctx, s.diskPath)
+	vols, diskTotal, diskUsed, diskPct, diskLabel, err := collectHostDisk(ctx, s.diskPath)
 	if err != nil {
-		return nil, fmt.Errorf("采集磁盘使用率失败: %w", err)
+		return nil, err
 	}
 
 	uptimeSec, err := host.UptimeWithContext(ctx)
@@ -119,10 +118,11 @@ func (s *MonitorService) Stats(ctx context.Context) (*MonitorStats, error) {
 		NetDownRate:   downRate,
 		NetUpTotal:    upTotal,
 		NetDownTotal:  downTotal,
-		DiskTotal:     du.Total,
-		DiskUsed:      du.Used,
-		DiskPercent:   du.UsedPercent,
-		DiskPath:      du.Path,
+		DiskTotal:     diskTotal,
+		DiskUsed:      diskUsed,
+		DiskPercent:   diskPct,
+		DiskPath:      diskLabel,
+		DiskVolumes:   vols,
 		UptimeSeconds: uptimeSec,
 	}, nil
 }
