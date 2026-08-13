@@ -418,6 +418,28 @@ func (r *Database) ResolveConflict(id int64, resolution, manual string) error {
 	}).Error
 }
 
+// ResolveConflictsNotIn 把 key 不在保留集合里且仍 unresolved 的行标记为
+// 已解决。用于合并后清理历史残留：冲突已消失（key 未再产生）时，旧行
+// 不应继续让控制台显示「待处理」。只动 unresolved 行，已解决审计历史保留。
+func (r *Database) ResolveConflictsNotIn(keepKeys map[string]bool) error {
+	var rows []model.Conflict
+	if err := r.DB.Where("resolved = 0").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if keepKeys[row.Key] {
+			continue
+		}
+		if err := r.DB.Model(&model.Conflict{}).Where("id = ?", row.ID).Updates(map[string]interface{}{
+			"resolved":   1,
+			"updated_at": time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Database) ListResolvedConflicts() ([]model.Conflict, error) {
 	var rows []model.Conflict
 	err := r.DB.Where("resolved = 1").Find(&rows).Error

@@ -129,11 +129,12 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 			// 设计 §10/§12：provider 同 key 内容不同 -> 冲突（Base 优先）
 			if !jsonEqual(lv, v) {
 				conflicts = append(conflicts, domain.Conflict{
-					ID:     hashKey("provider", k),
-					Type:   "provider",
-					Path:   "rule-providers." + k,
-					Local:  lv,
-					Remote: v,
+					ID:         hashKey("provider", k),
+					Type:       "provider",
+					Path:       "rule-providers." + k,
+					Local:      lv,
+					Remote:     v,
+					Resolution: "local",
 				})
 			}
 			continue
@@ -159,6 +160,9 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 					Path:   "proxies." + rp.Name,
 					Local:  lp,
 					Remote: rp,
+					// 按策略自动决定：local/remote/merge 由引擎处理进结果配置，
+					// 只有 manual 需要用户介入。持久层据此标记 resolved。
+					Resolution: e.policy.ProxyPriority,
 				}
 				conflicts = append(conflicts, c)
 				// default keep local unless policy remote
@@ -224,6 +228,9 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 					Path:   "proxy-groups." + rg.Name,
 					Local:  lg,
 					Remote: rg,
+					// 策略组行为字段冲突没有 local/remote 选择——引擎总是保留
+					// 本地行为、合并节点列表，视为自动 merge 解决
+					Resolution: "merge",
 				})
 			}
 			merged.ProxyGroups[idx] = lg
@@ -255,6 +262,10 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 					Path:   "rules." + p.matcher,
 					Local:  lp.raw,
 					Remote: p.raw,
+					// 规则有顺序语义，merge 自动合并不安全（applyResolvedOverrides
+					// 对 rule 的 merge 退化为保留本地），此处仍按策略标记，
+					// 持久层据此决定是否自动解决
+					Resolution: e.policy.RulePriority,
 				})
 				// default keep local already inserted
 				if e.policy.RulePriority == "remote" {
@@ -618,6 +629,9 @@ func jsonEqual(a, b any) bool {
 // detectSystemConflicts 检测 dns / tun / sniffer 等系统级配置冲突。
 // 设计 §11 规定这些字段禁止远程覆盖（Local First），
 // 但设计 §12 要求把 dns / tun 列为冲突类型并上报，供用户知情。
+//
+// Resolution 填 "local"：系统级冲突没有 manual 语义，引擎始终按策略
+// 解决进结果配置，持久层据此标记 resolved=1（自动解决，不显示待处理）。
 func detectSystemConflicts(base, remote *domain.Config) []domain.Conflict {
 	var out []domain.Conflict
 
@@ -625,33 +639,36 @@ func detectSystemConflicts(base, remote *domain.Config) []domain.Conflict {
 	emptyDNS := domain.DNSConfig{}
 	if !jsonEqual(remote.DNS, emptyDNS) && !jsonEqual(base.DNS, remote.DNS) {
 		out = append(out, domain.Conflict{
-			ID:     hashKey("dns", "dns"),
-			Type:   "dns",
-			Path:   "dns",
-			Local:  base.DNS,
-			Remote: remote.DNS,
+			ID:         hashKey("dns", "dns"),
+			Type:       "dns",
+			Path:       "dns",
+			Local:      base.DNS,
+			Remote:     remote.DNS,
+			Resolution: "local",
 		})
 	}
 
 	emptyTUN := domain.TUNConfig{}
 	if !jsonEqual(remote.TUN, emptyTUN) && !jsonEqual(base.TUN, remote.TUN) {
 		out = append(out, domain.Conflict{
-			ID:     hashKey("tun", "tun"),
-			Type:   "tun",
-			Path:   "tun",
-			Local:  base.TUN,
-			Remote: remote.TUN,
+			ID:         hashKey("tun", "tun"),
+			Type:       "tun",
+			Path:       "tun",
+			Local:      base.TUN,
+			Remote:     remote.TUN,
+			Resolution: "local",
 		})
 	}
 
 	emptySniffer := domain.SnifferConfig{}
 	if !jsonEqual(remote.Sniffer, emptySniffer) && !jsonEqual(base.Sniffer, remote.Sniffer) {
 		out = append(out, domain.Conflict{
-			ID:     hashKey("sniffer", "sniffer"),
-			Type:   "sniffer",
-			Path:   "sniffer",
-			Local:  base.Sniffer,
-			Remote: remote.Sniffer,
+			ID:         hashKey("sniffer", "sniffer"),
+			Type:       "sniffer",
+			Path:       "sniffer",
+			Local:      base.Sniffer,
+			Remote:     remote.Sniffer,
+			Resolution: "local",
 		})
 	}
 

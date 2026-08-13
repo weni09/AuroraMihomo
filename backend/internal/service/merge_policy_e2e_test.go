@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"auroramihomo/backend/internal/domain"
+	"auroramihomo/backend/internal/engine"
 	"auroramihomo/backend/internal/model"
 
 	"gopkg.in/yaml.v3"
@@ -168,4 +169,130 @@ func containsRule(rules []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// 冲突应按合并策略自动解决，不留给用户手动处理：
+// local/remote/merge 策略下，被策略解决的冲突必须标记 resolved=1，
+// 控制台 unresolvedCount 不应再显示它们。
+func TestMergePolicyAutoResolvesConflicts(t *testing.T) {
+	svc, db, _ := newTestConfigService(t)
+	if err := svc.UpdateBaseConfig(conflictingLocalYAML); err != nil {
+		t.Fatalf("写入本地配置失败: %v", err)
+	}
+	if err := db.CreateSubscription(&model.Subscription{
+		Name:    "policy-test",
+		Content: conflictingRemoteYAML,
+	}); err != nil {
+		t.Fatalf("创建订阅失败: %v", err)
+	}
+	svc.SetRemoteSourceProvider(func() domain.RemoteSource {
+		return domain.RemoteSource{Type: domain.RemoteSourceAll}
+	})
+	// 默认策略（全 local）：所有冲突都按 local 自动解决
+	svc.SetPolicyProvider(func() domain.MergePolicy { return domain.DefaultMergePolicy() })
+
+	if _, err := svc.MergeAndApplyDetailed(context.Background(), MergeWithRefresh(0)); err != nil {
+		t.Fatalf("合并失败: %v", err)
+	}
+
+	// 合并后：自动解决的冲突不应留在 unresolved 列表里
+	rows, err := db.ListConflicts(true) // onlyUnresolved
+	if err != nil {
+		t.Fatalf("查询冲突失败: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("local/remote 策略下冲突应被自动解决，仍有 %d 条 unresolved: %+v", len(rows), rows)
+	}
+}
+
+// 引擎应给每条冲突按策略填 Resolution，供持久层判断是否自动解决。
+func TestEngineConflictsCarryResolution(t *testing.T) {
+	e := engine.NewMergeEngine()
+	base, _ := e.LoadAndParse([]byte(`
+proxies:
+  - name: A
+    type: ss
+    server: local.example.com
+    port: 1111
+`))
+	remote, _ := e.LoadAndParse([]byte(`
+proxies:
+  - name: A
+    type: ss
+    server: remote.example.com
+    port: 2222
+`))
+	res := e.MergeDetailedWithPolicy(base, remote, nil, nil, domain.DefaultMergePolicy())
+	if len(res.Conflicts) == 0 {
+		t.Fatal("应产生冲突")
+	}
+	found := false
+	for _, c := range res.Conflicts {
+		if c.Type == "proxy" {
+			found = true
+			if c.Resolution != "local" {
+				t.Fatalf("默认 local 策略下 proxy 冲突 Resolution 应为 local，实际 %q", c.Resolution)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("应有 proxy 冲突")
+	}
+}
+
+// 自动解决的冲突不得持久化为 resolved 记录：否则用户改策略后，旧的
+// 自动解决记录会被 loadResolvedConflicts 重新应用，覆盖新策略。
+// 先 local 合并（自动解决），再改 remote 合并，最终必须取远程值。
+func TestAutoResolvedConflictDoesNotOverrideLaterPolicy(t *testing.T) {
+	svc, db, _ := newTestConfigService(t)
+	if err := svc.UpdateBaseConfig(conflictingLocalYAML); err != nil {
+		t.Fatalf("写入本地配置失败: %v", err)
+	}
+	if err := db.CreateSubscription(&model.Subscription{
+		Name:    "policy-test",
+		Content: conflictingRemoteYAML,
+	}); err != nil {
+		t.Fatalf("创建订阅失败: %v", err)
+	}
+	svc.SetRemoteSourceProvider(func() domain.RemoteSource {
+		return domain.RemoteSource{Type: domain.RemoteSourceAll}
+	})
+
+	// 第一次：local 策略合并（冲突自动解决为本地）
+	svc.SetPolicyProvider(func() domain.MergePolicy { return domain.DefaultMergePolicy() })
+	if _, err := svc.MergeAndApplyDetailed(context.Background(), MergeWithRefresh(0)); err != nil {
+		t.Fatalf("第一次合并失败: %v", err)
+	}
+
+	// 第二次：remote 策略合并。若旧的自动解决记录被重新应用，HK01 会
+	// 被改回本地值——这是回归。正确行为：跟随新策略取远程值。
+	svc.SetPolicyProvider(func() domain.MergePolicy {
+		p := domain.DefaultMergePolicy()
+		p.ProxyPriority = "remote"
+		return p
+	})
+	if _, err := svc.MergeAndApplyDetailed(context.Background(), MergeLocalOnly()); err != nil {
+		t.Fatalf("第二次合并失败: %v", err)
+	}
+
+	raw, err := os.ReadFile(svc.configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg domain.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("生成配置非法: %v", err)
+	}
+	var hk *domain.Proxy
+	for i := range cfg.Proxies {
+		if cfg.Proxies[i].Name == "HK01" {
+			hk = &cfg.Proxies[i]
+		}
+	}
+	if hk == nil {
+		t.Fatal("最终配置应包含 HK01")
+	}
+	if hk.Server != "remote.example.com" || hk.Port != 2222 {
+		t.Fatalf("改 remote 策略后应取远程值，实际 server=%s port=%d（旧自动解决记录覆盖了新策略）", hk.Server, hk.Port)
+	}
 }

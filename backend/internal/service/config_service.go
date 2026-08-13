@@ -626,8 +626,17 @@ func (s *ConfigService) loadResolvedConflicts() []domain.Conflict {
 }
 
 func (s *ConfigService) persistConflicts(conflicts []domain.Conflict) error {
+	// 冲突应按合并策略自动解决，不留给用户手动处理：
+	// local/remote/merge 策略下引擎已把决策写进结果配置，无需用户介入，
+	// 也不持久化为 resolved 记录——否则下次合并会被 loadResolvedConflicts
+	// 加载并经 applyResolvedOverrides 重新应用，用户改策略后旧记录会
+	// 覆盖新策略（如先 local 后 remote，local 的旧解决记录把节点改回本地）。
+	// 只有 manual 策略的冲突需要用户介入，持久化为 unresolved 待处理。
 	rows := make([]model.Conflict, 0, len(conflicts))
 	for _, c := range conflicts {
+		if !strings.EqualFold(c.Resolution, "manual") {
+			continue
+		}
 		lb, _ := json.Marshal(c.Local)
 		rb, _ := json.Marshal(c.Remote)
 		rows = append(rows, model.Conflict{
@@ -640,7 +649,22 @@ func (s *ConfigService) persistConflicts(conflicts []domain.Conflict) error {
 			Resolved:    0,
 		})
 	}
-	return s.db.UpsertConflicts(rows)
+	if err := s.db.UpsertConflicts(rows); err != nil {
+		return err
+	}
+	// 清理残留：合并后把「本次不再产生且仍是 unresolved」的旧行标记 resolved。
+	// 这些是历史遗留（冲突已消失但行没清，或旧版把自动解决也写成 unresolved）。
+	// 保留已解决的审计历史（resolved=1 行不动）与本次仍产生的 manual 行。
+	return s.db.ResolveConflictsNotIn(conflictKeys(conflicts))
+}
+
+// conflictKeys 提取本次冲突的稳定 key 集合。
+func conflictKeys(conflicts []domain.Conflict) map[string]bool {
+	keys := make(map[string]bool, len(conflicts))
+	for _, c := range conflicts {
+		keys[c.ID] = true
+	}
+	return keys
 }
 
 func (s *ConfigService) backupCurrentConfig() (string, error) {
