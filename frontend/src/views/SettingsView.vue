@@ -15,6 +15,8 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
+import ModalDialog from '../components/ModalDialog.vue'
 
 const store = useSettingsStore()
 const notify = useNotifyStore()
@@ -255,15 +257,36 @@ const confirmUpdateZashboard = () => {
 
 // 主程序自升级会替换自身二进制并重启进程，期间服务短暂不可用
 //（由 systemd / docker / supervisor 拉起新版）。升级前会自动备份数据库。
-const confirmUpdateSelf = () => {
-  if (
-    confirm(
-      '将下载并校验新版主程序，替换自身二进制并重启进程（服务短暂中断，由进程管理器拉起新版）。升级前会自动备份数据库，确定继续？',
-    )
-  ) {
-    store.updateSelf()
-  }
+// 升级确认从原生 confirm 改为弹窗：展示变更日志（release notes），
+// 让用户看到新版本改了什么再决定是否升级。
+const selfUpdateDialogOpen = ref(false)
+const openSelfUpdateDialog = () => {
+  selfUpdateDialogOpen.value = true
 }
+const confirmAndStartUpdate = () => {
+  selfUpdateDialogOpen.value = false
+  store.updateSelf()
+}
+
+/** 升级阶段的中文标签 */
+const phaseLabel = (phase: string) => {
+  const map: Record<string, string> = {
+    preparing: '准备中',
+    downloading: '下载中',
+    verifying: '校验中',
+    extracting: '解压中',
+    restarting: '即将重启',
+    failed: '失败',
+  }
+  return map[phase] || phase
+}
+
+/** 失败提示：优先后端结构化 message，兜底通用文案 */
+const selfUpdateErrorText = computed(() => {
+  const err = store.selfUpdateStatus?.error
+  if (err?.message) return `升级失败：${err.message}`
+  return '升级失败，请重试或查看后端日志'
+})
 
 /** 组件开关：与透明代理同样用 model-value + 事件，避免 Switch 在请求失败后 UI 与后端脱节 */
 async function onToggleAdGuardComponent(next: boolean | 'indeterminate') {
@@ -743,17 +766,40 @@ const navOpen = ref(false)
                 <Button
                   variant="outline"
                   :disabled="store.updatingSelf || !store.selfUpdateInfo?.updateAvailable"
-                  @click="confirmUpdateSelf()"
+                  @click="openSelfUpdateDialog()"
                 >
-                  {{ store.updatingSelf ? '下载中…' : '升级并重启' }}
+                  {{ store.updatingSelf ? '处理中…' : '升级并重启' }}
                 </Button>
               </div>
             </div>
-            <p class="mt-3 text-xs text-fg-subtle">
-              升级流程：下载新版并校验完整性 → 自动备份数据库 → 优雅关停时替换
-              自身二进制 → 由进程管理器（systemd / docker / NSSM）拉起新版。
-              升级期间服务有短暂中断，属预期行为。
-            </p>
+            <div class="mt-3 text-xs text-fg-subtle">
+              <!-- 升级进行中：阶段徽标 + 下载进度条 -->
+              <template v-if="store.selfUpdateStatus?.running">
+                <div class="flex items-center gap-2 mb-1.5">
+                  <Badge variant="info">{{ phaseLabel(store.selfUpdateStatus.phase) }}</Badge>
+                  <span class="flex-1">{{ store.selfUpdateStatus.message }}</span>
+                </div>
+                <Progress
+                  v-if="store.selfUpdateStatus.phase === 'downloading'"
+                  :model-value="store.selfUpdateStatus.percent"
+                  class="h-1.5"
+                  aria-label="主程序下载进度"
+                />
+                <p v-else-if="store.selfUpdateStatus.phase === 'restarting'" class="text-fg">
+                  新版本已下载并校验通过，即将重启生效…
+                </p>
+              </template>
+              <!-- 失败：结构化错误原因 + 重试引导 -->
+              <template v-else-if="store.selfUpdateStatus?.phase === 'failed'">
+                <p class="text-destructive">{{ selfUpdateErrorText }}</p>
+              </template>
+              <!-- 静态说明 -->
+              <template v-else>
+                升级流程：下载新版并校验完整性 → 自动备份数据库 → 优雅关停时替换
+                自身二进制 → 由进程管理器（systemd / docker / NSSM）拉起新版。
+                升级期间服务有短暂中断，属预期行为。
+              </template>
+            </div>
           </div>
 
           <div class="mt-3 p-4 rounded-lg border border-line bg-elevated/50">
@@ -770,6 +816,39 @@ const navOpen = ref(false)
               </Button>
             </div>
           </div>
+
+          <!-- 升级确认弹窗：展示变更日志后再让用户决定 -->
+          <ModalDialog
+            :open="selfUpdateDialogOpen"
+            :title="`升级到 ${store.selfUpdateInfo?.latestVersion || '新版本'}`"
+            max-width="max-w-xl"
+            @close="selfUpdateDialogOpen = false"
+          >
+            <div class="space-y-4 text-sm">
+              <p class="text-xs text-fg-subtle">
+                当前 <code class="font-mono">{{ mihomoStore.appVersion }}</code>
+                → 目标 <code class="font-mono">{{ store.selfUpdateInfo?.latestVersion }}</code>
+              </p>
+              <div
+                v-if="store.selfUpdateInfo?.releaseNotes"
+                class="rounded-lg border border-line bg-elevated/50 p-3"
+                data-testid="self-update-release-notes"
+              >
+                <div class="text-xs font-semibold text-fg mb-2">变更日志</div>
+                <pre class="text-xs text-fg-subtle whitespace-pre-wrap font-sans max-h-64 overflow-y-auto">{{
+                  store.selfUpdateInfo.releaseNotes
+                }}</pre>
+              </div>
+              <p class="text-xs text-fg-subtle">
+                将下载并校验新版主程序，替换自身二进制并重启进程（服务短暂中断，
+                由进程管理器拉起新版）。升级前会自动备份数据库。
+              </p>
+              <div class="flex justify-end gap-2 pt-1">
+                <Button variant="ghost" @click="selfUpdateDialogOpen = false">取消</Button>
+                <Button @click="confirmAndStartUpdate()">升级并重启</Button>
+              </div>
+            </div>
+          </ModalDialog>
         </section>
 
         <section id="auto-update" class="scroll-mt-20">

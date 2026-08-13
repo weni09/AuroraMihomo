@@ -9,6 +9,7 @@ vi.mock('../api', () => ({
 
 import api from '../api'
 import SettingsView from './SettingsView.vue'
+import { useSettingsStore } from '../stores/settings'
 
 const mockedApi = vi.mocked(api, true)
 
@@ -305,6 +306,74 @@ describe('SettingsView 自定义防火墙规则', () => {
       )
     })
 
+    wrapper.unmount()
+  })
+})
+
+describe('SettingsView 主程序升级', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    FakeIntersectionObserver.instances = []
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    stubApi()
+  })
+
+  it('升级中显示下载阶段与进度条', async () => {
+    const store = useSettingsStore()
+    store.selfUpdateStatus = {
+      running: true,
+      phase: 'downloading',
+      percent: 42,
+      message: '下载新版主程序…',
+      targetVersion: 'v0.12.0',
+    }
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('下载中')
+    expect(wrapper.text()).toContain('下载新版主程序…')
+    expect(wrapper.find('[aria-label="主程序下载进度"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('升级失败展示结构化错误文案', async () => {
+    const store = useSettingsStore()
+    store.selfUpdateStatus = {
+      running: false,
+      phase: 'failed',
+      percent: 0,
+      message: '',
+      error: { code: 'checksum_mismatch', message: '下载内容校验和不匹配，可能被篡改或截断，请重试或更换下载源' },
+    }
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('校验和不匹配')
+    wrapper.unmount()
+  })
+
+  it('确认升级弹窗展示变更日志', async () => {
+    const store = useSettingsStore()
+    store.selfUpdateInfo = {
+      configured: true,
+      currentVersion: 'v0.11.11',
+      latestVersion: 'v0.12.0',
+      updateAvailable: true,
+      releaseNotes: '- 修复若干问题\n- 新增功能',
+    }
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await wrapper.vm.$nextTick()
+    const vm = wrapper.vm as unknown as { openSelfUpdateDialog: () => void }
+    vm.openSelfUpdateDialog()
+    // reka-ui Dialog 经 Teleport 挂到 body，断言须查 body 而非 wrapper
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('升级到 v0.12.0')
+    })
+    expect(document.body.textContent).toContain('变更日志')
+    expect(document.body.textContent).toContain('修复若干问题')
     wrapper.unmount()
   })
 })
