@@ -433,7 +433,7 @@ const sourceLabel = (f: any) => {
   <main class="max-w-6xl mx-auto space-y-4 sm:space-y-6">
     <div class="flex justify-between items-center gap-3 flex-wrap">
       <div class="min-w-0">
-        <h1 class="text-2xl sm:text-3xl font-bold text-fg">模板文件</h1>
+        <h1 class="text-2xl sm:text-3xl font-bold text-fg">模板转换</h1>
         <p class="text-xs sm:text-sm text-fg-subtle mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5">
           <span>原样输出或 Mihomo 配置模板。语法参考：</span>
           <template v-for="(ex, i) in TEMPLATE_EXAMPLES" :key="ex.lang">
@@ -456,17 +456,17 @@ const sourceLabel = (f: any) => {
           以上示例也可直接当作模板使用：把对应 raw 链接填进「远程地址」，选择远程拉取即可。
         </p>
       </div>
-      <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建模板文件</Button>
+      <Button @click="openCreate"><Plus class="h-4 w-4" aria-hidden="true" />新建模板转换</Button>
     </div>
 
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->
 
-    <!-- 模板文件列表。卡片与徽标改用 components/ui 下的 shadcn 组件，
+    <!-- 模板转换列表。卡片与徽标改用 components/ui 下的 shadcn 组件，
          与订阅页、组合页共享同一套排版与状态配色。 -->
     <div class="space-y-3 sm:space-y-4">
       <Card v-if="store.files.length === 0" class="border-dashed shadow-none">
         <CardContent class="p-8 sm:p-10 text-center text-sm text-fg-subtle flex flex-col gap-3 items-center">
-          <p class="italic">当前暂无模板文件。</p>
+          <p class="italic">当前暂无模板转换。</p>
           <p class="text-xs max-w-md">
             新建时可选择 YAML 覆写、Go 模板或 JS 脚本。三种语法的完整示例：
           </p>
@@ -580,7 +580,7 @@ const sourceLabel = (f: any) => {
 
     <ModalDialog
       :open="dialogOpen"
-      :title="editing ? '编辑模板文件' : '新建模板文件'"
+      :title="editing ? '编辑模板转换' : '新建模板转换'"
       max-width="max-w-4xl"
       @close="closeDialog"
     >

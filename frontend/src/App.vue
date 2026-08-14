@@ -120,7 +120,7 @@ const { collapsed, toggle: toggleCollapsed } = useSidebar()
 const allNavItems = [
   { to: '/', label: '控制台', icon: LayoutDashboard },
   { to: '/mihomo', label: '内核管理', icon: Cpu },
-  { to: '/substore', label: 'Sub-Store 管理', prefix: '/substore', icon: Layers3 },
+  { to: '/substore', label: 'SubStore功能', prefix: '/substore', icon: Layers3 },
   { to: '/config', label: '配置中心', icon: Settings2 },
   { to: '/diff', label: '配置差异', icon: GitCompare },
   { to: '/logs', label: '运行日志', icon: ScrollText },

@@ -158,7 +158,7 @@ const statusOf = (item: ShareItem) => {
     </div>
 
     <div v-else-if="visible.length === 0" class="text-sm text-fg-subtle italic py-10 text-center bg-elevated rounded-lg border border-dashed">
-      暂无分享。可在单个订阅、组合订阅或模板文件中创建。
+      暂无分享。可在单个订阅、组合订阅或模板转换中创建。
     </div>
 
     <div v-else class="space-y-3">

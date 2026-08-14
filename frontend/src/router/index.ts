@@ -24,7 +24,7 @@ const router = createRouter({
       component: SubStoreLayout,
       // 子路由各自的标题由 SubStoreLayout 内的标签栏体现，
       // 移动端顶栏统一显示父级标题
-      meta: { title: 'Sub-Store 管理' },
+      meta: { title: 'SubStore功能' },
       children: [
         { path: '', redirect: '/substore/subscriptions' },
         { path: 'subscriptions', name: 'subscriptions', component: SubscriptionsView },

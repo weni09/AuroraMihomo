@@ -154,7 +154,7 @@ const shareTarget = ref<any>(null)
     </div>
 
     <!-- 组合列表。卡片与徽标改用 components/ui 下的 shadcn 组件，
-         与订阅页、模板文件页共享同一套排版与状态配色。 -->
+         与订阅页、模板转换页共享同一套排版与状态配色。 -->
     <div class="space-y-3 sm:space-y-4">
       <!-- 空态此前缺失，只会显示一片空白，看不出是没数据还是没加载出来 -->
       <Card v-if="store.collections.length === 0" class="border-dashed shadow-none">

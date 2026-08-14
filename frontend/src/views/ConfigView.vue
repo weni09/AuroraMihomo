@@ -423,15 +423,15 @@ const displayValue = (key: string, type: string) => {
           <SelectTrigger class="text-sm w-auto"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="none">不使用（仅本地配置）</SelectItem>
-            <SelectItem value="subscription">本地订阅：单条</SelectItem>
-            <SelectItem value="collection">本地订阅：组合</SelectItem>
-            <SelectItem value="file">本地文件模板</SelectItem>
+            <SelectItem value="subscription">SubStore订阅：单条</SelectItem>
+            <SelectItem value="collection">SubStore订阅：组合</SelectItem>
+            <SelectItem value="file">SubStore模板转换</SelectItem>
             <SelectItem value="url">外部订阅链接</SelectItem>
             <!-- 「全部聚合」已移除：多机场聚合会把互相冲突的节点、策略组与规则
                  一起并进最终配置，结果难以预期；需要多机场请建「组合订阅」，
                  在其中显式配置筛选与处理管道。仅存量数据可能仍是该值。 -->
             <SelectItem v-if="store.remoteSourceType === 'all'" value="all">
-              本地订阅：全部聚合（已弃用）
+              SubStore订阅：全部聚合（已弃用）
             </SelectItem>
           </SelectContent>
         </Select>
@@ -517,10 +517,10 @@ const displayValue = (key: string, type: string) => {
       </p>
       <p v-if="store.remoteSourceType === 'all'" class="text-xs text-amber-600 dark:text-amber-400 mt-2">
         「全部聚合」已弃用：它把所有启用订阅的节点、策略组与规则不加筛选地并在一起，
-        多机场场景下结果难以预期。建议改用「本地订阅：组合」，在组合里显式选择订阅与处理管道。
+        多机场场景下结果难以预期。建议改用「SubStore订阅：组合」，在组合里显式选择订阅与处理管道。
       </p>
       <p v-if="needsEntity && currentOptions.length === 0" class="text-xs text-amber-600 dark:text-amber-400 mt-2">
-        暂无可选项，请先在 Sub-Store 管理中创建。
+        暂无可选项，请先在 SubStore功能中创建。
       </p>
     </section>
 
