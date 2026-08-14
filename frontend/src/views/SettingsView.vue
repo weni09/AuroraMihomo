@@ -1371,7 +1371,7 @@ const navOpen = ref(false)
         <section id="merge-policy" class="border-t pt-5 scroll-mt-20">
           <h2 class="text-lg font-semibold mb-3">配置合并策略</h2>
           <p class="text-xs text-fg-muted mb-4">
-            当本地配置与订阅内容冲突时，默认采用哪一方。可选：本地优先 / 远程优先 / 自动合并 / 手动确认。
+            当本地配置与订阅内容冲突时，自动采用所选策略解决。可选：本地优先 / 远程优先 / 自动合并。
           </p>
           <div class="grid md:grid-cols-3 gap-4">
             <div>
@@ -1384,7 +1384,6 @@ const navOpen = ref(false)
                   <SelectItem value="local">本地优先</SelectItem>
                   <SelectItem value="remote">远程优先</SelectItem>
                   <SelectItem value="merge">自动合并</SelectItem>
-                  <SelectItem value="manual">手动确认</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1397,7 +1396,6 @@ const navOpen = ref(false)
                 <SelectContent>
                   <SelectItem value="local">本地优先</SelectItem>
                   <SelectItem value="remote">远程优先</SelectItem>
-                  <SelectItem value="manual">手动确认</SelectItem>
                 </SelectContent>
               </Select>
               <p class="mt-1 text-xs text-fg-subtle">规则有先后顺序语义，无法安全地自动合并，因此不提供「自动合并」。</p>

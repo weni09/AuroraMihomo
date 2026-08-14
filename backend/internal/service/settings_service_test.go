@@ -82,15 +82,37 @@ func TestSetMergePolicyRejectsInvalidDNSTUNValues(t *testing.T) {
 	}
 }
 
-// proxy/rule 策略支持 merge/manual 等对象级合并语义
-func TestSetMergePolicyAcceptsComplexProxyRuleValues(t *testing.T) {
+// proxy 策略支持 merge（对象级合并）；manual 已移除——冲突全部自动解决，
+// 没有手动处理入口，策略选 manual 只会让控制台显示无法处理的「待处理」。
+func TestSetMergePolicyRejectsManual(t *testing.T) {
 	svc, _ := newTestSettingsService(t)
-	if _, err := svc.SetMergePolicy("merge", "manual", "", "", ""); err != nil {
-		t.Fatalf("proxy=merge, rule=manual 应被接受: %v", err)
+	if _, err := svc.SetMergePolicy("merge", "local", "", "", ""); err != nil {
+		t.Fatalf("proxy=merge 应被接受: %v", err)
+	}
+	// manual 必须被拒绝
+	if _, err := svc.SetMergePolicy("manual", "", "", "", ""); err == nil {
+		t.Fatal("proxy=manual 应被拒绝（冲突已统一自动解决）")
+	}
+	if _, err := svc.SetMergePolicy("", "manual", "", "", ""); err == nil {
+		t.Fatal("rule=manual 应被拒绝")
 	}
 	p := svc.GetMergePolicy()
-	if p.ProxyPriority != "merge" || p.RulePriority != "manual" {
-		t.Fatalf("策略应已更新，实际 proxy=%q rule=%q", p.ProxyPriority, p.RulePriority)
+	if p.ProxyPriority != "merge" || p.RulePriority != "local" {
+		t.Fatalf("manual 拒绝后不应污染已持久化值，实际 proxy=%q rule=%q", p.ProxyPriority, p.RulePriority)
+	}
+}
+
+// 存量数据可能已是 manual（旧版允许保存）：读取时应归一化回默认 local，
+// 否则旧 manual 会继续让引擎产生 unresolved 冲突、控制台显示无法处理的条数。
+func TestGetMergePolicyNormalizesStaleManual(t *testing.T) {
+	svc, db := newTestSettingsService(t)
+	// 直接写库模拟旧版存量 manual 值
+	if err := db.SetSetting("merge.policy.proxy", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	p := svc.GetMergePolicy()
+	if p.ProxyPriority != "local" {
+		t.Fatalf("存量 manual 应归一化回 local，实际 %q", p.ProxyPriority)
 	}
 }
 

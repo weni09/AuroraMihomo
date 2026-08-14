@@ -403,10 +403,10 @@ func validMonitorInterval(sec int) bool {
 func (s *SettingsService) GetMergePolicy() domain.MergePolicy {
 	p := domain.DefaultMergePolicy()
 	if v, err := s.db.GetSetting(settingMergePolicyProxy); err == nil && v != "" {
-		p.ProxyPriority = v
+		p.ProxyPriority = normalizeStaleManual(v)
 	}
 	if v, err := s.db.GetSetting(settingMergePolicyRule); err == nil && v != "" {
-		p.RulePriority = v
+		p.RulePriority = normalizeStaleManual(v)
 	}
 	if v, err := s.db.GetSetting(settingMergePolicyDNS); err == nil && v != "" {
 		p.DNSPriority = v
@@ -420,9 +420,21 @@ func (s *SettingsService) GetMergePolicy() domain.MergePolicy {
 	return p
 }
 
+// normalizeStaleManual 把旧版允许保存的 manual 策略归一化回默认 local。
+// manual 已移除（冲突统一自动解决），存量值继续使用会让引擎产生
+// unresolved 冲突、控制台显示无法处理的「待处理」。
+func normalizeStaleManual(v string) string {
+	if v == "manual" {
+		return "local"
+	}
+	return v
+}
+
 // SetMergePolicy 持久化用户选择的合并策略
 func (s *SettingsService) SetMergePolicy(proxy, rule, dns, tun, general string) (domain.MergePolicy, error) {
-	valid := map[string]bool{"local": true, "remote": true, "merge": true, "manual": true}
+	// manual 已移除：冲突全部按策略自动解决，没有手动处理入口，
+	// 选 manual 只会让控制台显示无法处理的「待处理」。
+	valid := map[string]bool{"local": true, "remote": true, "merge": true}
 	// dns/tun 只是系统级配置的 Local/Remote First 切换（设计 §11/§16），
 	// 不支持 merge/manual 这类需要对象级合并策略的语义
 	simpleValid := map[string]bool{"local": true, "remote": true}
