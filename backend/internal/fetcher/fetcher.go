@@ -23,19 +23,15 @@ type Client struct {
 	httpClient *http.Client
 	userAgent  string
 
-	// mu 保护运行期可变的字段：rawProviders / rawSuccess / proxyURLFn。
-	// 设置保存或启动装载时会写入 rawProviders，而拉取是并发的，
-	// 无锁读写 slice 是 data race（slice header 可能撕裂）。
+	// mu 保护运行期可变的字段：rawProviderFunc / rawSuccess / proxyURLFn。
+	// 设置保存或启动装载时会写入，而拉取是并发的，无锁读写是 data race。
 	mu sync.RWMutex
-	// rawProviders 为 raw.githubusercontent.com 内容的加速源列表（已清洗，
-	// 官方源兜底）。空列表表示不加速、直连官方。由 SetRawCDNProviders 注入，
-	// 与 updater 管理的 Release 下载源独立。
-	rawProviders []string
-	// lastRaw 上次成功的 raw 加速源（列表里的原写法）。拉取时把它挪到最前，
-	// 与 updater 的「上次成功源优先」语义一致；进程内自维护，重启后清空。
-	lastRaw string
-	// rawSuccess 记录上次成功的 raw 加速源；由 service 层注入（落库），
-	// 默认空操作。与 updater 的 rememberLastRawCDN 对应。
+	// rawProviderFunc 返回当前应使用的 GitHub 下载源列表（已优先化，官方源兜底）。
+	// 与 Release 下载共用同一份 CDN 配置：由 service 层注入 updater 的
+	// PrioritizedCDNProviders，raw 拉取每次现查，last 变化即时生效。
+	rawProviderFunc func() []string
+	// rawSuccess 记录一次成功的下载源（落库 last 优先序）；由 service 层注入
+	// updater.RememberCDNSuccess。默认空操作。
 	rawSuccess func(string)
 	// proxyURLFn 返回本地 mihomo 的 HTTP 代理地址（如 http://127.0.0.1:7890）。
 	// 由 service 层注入；raw 官方链接拉取时优先经它直取官方，失败再回落镜像。
@@ -75,26 +71,27 @@ func New(timeout time.Duration) *Client {
 // 刷新流程卡在一个连不上的订阅上。
 const dialTimeout = 10 * time.Second
 
-// SetRawCDNProviders 注入 raw 加速源列表（按优先级）。
-// 列表为空时清空加速、回落直连官方。updater 已清洗并保证官方源兜底，
-// 这里仅做防御性去空。
-func (c *Client) SetRawCDNProviders(providers []string) {
-	clean := make([]string, 0, len(providers))
-	seen := map[string]bool{}
-	for _, p := range providers {
-		p = strings.TrimSpace(p)
-		if p == "" || seen[strings.ToLower(p)] {
-			continue
-		}
-		seen[strings.ToLower(p)] = true
-		clean = append(clean, p)
-	}
+// SetRawCDNProviderFunc 注入 raw 拉取用的下载源查询函数。
+// 返回的列表应已优先化（上次成功源在前）且官方源兜底——由调用方
+// （updater.PrioritizedCDNProviders）保证；nil 表示不加速、直连官方。
+func (c *Client) SetRawCDNProviderFunc(fn func() []string) {
 	c.mu.Lock()
-	c.rawProviders = clean
+	c.rawProviderFunc = fn
 	c.mu.Unlock()
 }
 
-// SetRawSuccessCallback 注入 raw 加速源成功回调（记录上次成功源）。
+// rawProviders 现查当前应使用的下载源列表；未注入时返回 nil（不加速）。
+func (c *Client) rawProviders() []string {
+	c.mu.RLock()
+	fn := c.rawProviderFunc
+	c.mu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+// SetRawSuccessCallback 注入下载源成功回调（记入全局 last 优先序）。
 func (c *Client) SetRawSuccessCallback(fn func(string)) {
 	if fn == nil {
 		fn = func(string) {}
@@ -147,36 +144,9 @@ func (c *Client) proxyClient() (*http.Client, string) {
 	}, proxy
 }
 
-// rawProvidersSnapshot 返回当前 raw 加速源列表的副本，上次成功的源挪到最前。
+// rawProvidersSnapshot 返回当前应使用的下载源列表（调用方现查）。
 func (c *Client) rawProvidersSnapshot() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return prioritizeRawProviders(c.rawProviders, c.lastRaw)
-}
-
-// prioritizeRawProviders 把上次成功的源挪到最前，其余保持原相对顺序。
-// last 为空或不在列表里时原样返回副本。不修改入参。
-// 与 updater 的 prioritizeCDNProviders 同构。
-func prioritizeRawProviders(list []string, last string) []string {
-	out := append([]string{}, list...)
-	last = strings.TrimSpace(last)
-	if last == "" {
-		return out
-	}
-	idx := -1
-	for i, p := range out {
-		if strings.EqualFold(p, last) {
-			idx = i
-			break
-		}
-	}
-	if idx <= 0 {
-		return out
-	}
-	picked := out[idx]
-	copy(out[1:idx+1], out[:idx])
-	out[0] = picked
-	return out
+	return c.rawProviders()
 }
 
 func (c *Client) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
@@ -205,7 +175,7 @@ func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([
 	// raw 官方链接且配置了加速源时，走「代理优先 + 镜像轮换」；否则单源直拉。
 	// 普通订阅 URL 不加速也不代理：机场地址本就走 fwmark 直连，
 	// 强行套本地代理会改变既有出网路径。
-	if isRawOfficial(rawURL) && len(c.rawProvidersSnapshot()) > 0 {
+	if isRawOfficial(rawURL) && len(c.rawProviders()) > 0 {
 		return c.fetchWithRawCDN(ctx, rawURL, userAgent)
 	}
 	return c.fetchSingle(ctx, rawURL, userAgent)
@@ -283,8 +253,9 @@ func shouldRememberRaw(provider string) bool {
 }
 
 // fetchWithRawCDN 拉取 raw 官方链接：先经 mihomo 代理直取官方地址，
-// 失败再按镜像列表轮换——与 updater 的 Release 下载规则同构。
-// 代理与官方源成功都不记 lastRaw（直连官方无需下次优先）。
+// 失败再按下载源列表轮换——与 updater 的 Release 下载规则同构。
+// 代理与官方源成功都不记 last（直连官方无需下次优先）；
+// 镜像成功记入全局 last 优先序（与 Release 下载共用）。
 func (c *Client) fetchWithRawCDN(ctx context.Context, rawURL, userAgent string) ([]byte, UserInfo, error) {
 	var errs []string
 
@@ -298,7 +269,7 @@ func (c *Client) fetchWithRawCDN(ctx context.Context, rawURL, userAgent string) 
 	}
 
 	// 2) 镜像轮换：按列表顺序尝试，官方源（github）作最后兜底。
-	for _, p := range c.rawProvidersSnapshot() {
+	for _, p := range c.rawProviders() {
 		u := rawCDNURLFor(rawURL, p)
 		if u == "" {
 			continue
@@ -377,18 +348,13 @@ func isJsdelivrHost(provider string) bool {
 
 // rememberRawSuccess 记下本次成功的源（进程内优先化用）并触发注入的回调（落库）。
 // 官方源成功不会走到这里（shouldRememberRaw 已过滤）。
+// rememberRawSuccess 触发注入的回调，把本次成功的镜像记入全局 last 优先序
+// （updater.RememberCDNSuccess 落库）。官方源成功不会走到这里。
 func (c *Client) rememberRawSuccess(provider string) {
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return
-	}
-	c.mu.Lock()
-	if !strings.EqualFold(c.lastRaw, provider) {
-		c.lastRaw = provider
-	}
+	c.mu.RLock()
 	fn := c.rawSuccess
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	if fn != nil {
-		fn(provider)
+		fn(strings.TrimSpace(provider))
 	}
 }

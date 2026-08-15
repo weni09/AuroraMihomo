@@ -18,10 +18,10 @@ func NewEngine() *Engine {
 	return &Engine{fetcher: fetcher.New(0)}
 }
 
-// SetRawCDNProviders 把 raw 加速源列表推给内部 fetcher。
+// SetRawCDNProviderFunc 把下载源查询函数转发给内部 fetcher。
 // 订阅 URL 可能是 raw.githubusercontent.com 直链，同样享受加速。
-func (e *Engine) SetRawCDNProviders(providers []string) {
-	e.fetcher.SetRawCDNProviders(providers)
+func (e *Engine) SetRawCDNProviderFunc(fn func() []string) {
+	e.fetcher.SetRawCDNProviderFunc(fn)
 }
 
 // SetRawSuccessCallback 把 raw 加速源成功回调转发给内部 fetcher。

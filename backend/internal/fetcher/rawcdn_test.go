@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// raw 官方链接且配置了加速源时，应依次尝试各源，成功即停。
+// raw 官方链接且配置了下载源时，应依次尝试各源，成功即停。
 // 用本地服务器 + 完整前缀源构造，验证轮换、成功回调与错误聚合。
 func TestFetchWithRawCDNRotatesSources(t *testing.T) {
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,8 +25,11 @@ func TestFetchWithRawCDNRotatesSources(t *testing.T) {
 	var remembered []string
 	c := New(3 * time.Second)
 	c.SetRawSuccessCallback(func(p string) { remembered = append(remembered, p) })
-	// 第一个源失败（500），第二个源成功——应跳过失败源、取成功源并记 lastRaw
-	c.SetRawCDNProviders([]string{failSrv.URL + "/", okSrv.URL + "/", "github"})
+	// 注入的列表已优先化（模拟 updater.PrioritizedCDNProviders）；
+	// 第一个源失败（500），第二个源成功——应跳过失败源、取成功源并记 last。
+	c.SetRawCDNProviderFunc(func() []string {
+		return []string{failSrv.URL + "/", okSrv.URL + "/", "github"}
+	})
 
 	data, _, err := c.fetchWithRawCDN(context.Background(),
 		"https://raw.githubusercontent.com/owner/repo/main/f.yaml", "")
@@ -41,7 +44,7 @@ func TestFetchWithRawCDNRotatesSources(t *testing.T) {
 	}
 }
 
-// 官方源成功不应记 lastRaw（与 Release 下载「代理成功不写入」同构）。
+// 官方源成功不应记 last（与 Release 下载「代理成功不写入」同构）。
 func TestShouldRememberRaw(t *testing.T) {
 	cases := []struct {
 		provider string
@@ -70,7 +73,7 @@ func TestFetchWithRawCDNAllFailed(t *testing.T) {
 	defer failSrv.Close()
 
 	c := New(3 * time.Second)
-	c.SetRawCDNProviders([]string{failSrv.URL})
+	c.SetRawCDNProviderFunc(func() []string { return []string{failSrv.URL + "/"} })
 
 	_, _, err := c.fetchWithRawCDN(context.Background(),
 		"https://raw.githubusercontent.com/owner/repo/main/f.yaml", "")
@@ -97,11 +100,11 @@ func TestFetchWithRawCDNProxyFirst(t *testing.T) {
 	c := New(3 * time.Second)
 	c.SetRawSuccessCallback(func(p string) { remembered = append(remembered, p) })
 	c.SetProxyURLFunc(func() string { return proxySrv.URL })
-	c.SetRawCDNProviders([]string{"github"})
+	c.SetRawCDNProviderFunc(func() []string { return []string{"github"} })
 
 	// 目标 scheme 用 http：Go 对 http 目标经代理发绝对 URL 的 GET，
 	// 代理服务器（httptest）可直接接收并回包。https 目标会走 CONNECT 隧道，
-	// 单测难以模拟 TLS 层，此处验证「代理优先 + 不记 lastRaw」的规则本身。
+	// 单测难以模拟 TLS 层，此处验证「代理优先 + 不记 last」的规则本身。
 	data, _, err := c.fetchWithRawCDN(context.Background(),
 		"http://raw.githubusercontent.com/owner/repo/main/f.yaml", "")
 	if err != nil {
@@ -113,13 +116,13 @@ func TestFetchWithRawCDNProxyFirst(t *testing.T) {
 	if proxiedHost != "raw.githubusercontent.com" {
 		t.Fatalf("代理请求目标应为 raw 官方, got %q", proxiedHost)
 	}
-	// 代理成功不记 lastRaw（与 Release 下载「代理成功不写入」同构）
+	// 代理成功不记 last（与 Release 下载「代理成功不写入」同构）
 	if len(remembered) != 0 {
-		t.Fatalf("代理成功不应记 lastRaw, got %#v", remembered)
+		t.Fatalf("代理成功不应记 last, got %#v", remembered)
 	}
 }
 
-// 代理不可用时自动回落镜像列表；镜像成功记 lastRaw。
+// 代理不可用时自动回落镜像列表；镜像成功记 last（与 Release 下载共用优先序）。
 func TestFetchWithRawCDNProxyUnavailableFallsBack(t *testing.T) {
 	okSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/yaml")
@@ -130,8 +133,8 @@ func TestFetchWithRawCDNProxyUnavailableFallsBack(t *testing.T) {
 	var remembered []string
 	c := New(3 * time.Second)
 	c.SetRawSuccessCallback(func(p string) { remembered = append(remembered, p) })
-	// 代理指向不可达地址（未注入 proxyURLFn → 直接回落镜像）
-	c.SetRawCDNProviders([]string{okSrv.URL + "/", "github"})
+	// 未注入 proxyURLFn → 直接回落镜像
+	c.SetRawCDNProviderFunc(func() []string { return []string{okSrv.URL + "/", "github"} })
 
 	data, _, err := c.fetchWithRawCDN(context.Background(),
 		"https://raw.githubusercontent.com/owner/repo/main/f.yaml", "")
@@ -142,7 +145,7 @@ func TestFetchWithRawCDNProxyUnavailableFallsBack(t *testing.T) {
 		t.Fatalf("应经镜像取到正文, got %q", string(data))
 	}
 	if len(remembered) != 1 || remembered[0] != okSrv.URL+"/" {
-		t.Fatalf("镜像成功应记 lastRaw, got %#v", remembered)
+		t.Fatalf("镜像成功应记 last, got %#v", remembered)
 	}
 }
 
@@ -154,7 +157,7 @@ func TestFetchWithRawCDNErrorRedactsURL(t *testing.T) {
 	defer failSrv.Close()
 
 	c := New(3 * time.Second)
-	c.SetRawCDNProviders([]string{failSrv.URL + "/"})
+	c.SetRawCDNProviderFunc(func() []string { return []string{failSrv.URL + "/"} })
 
 	_, _, err := c.fetchWithRawCDN(context.Background(),
 		"https://raw.githubusercontent.com/owner/repo/main/f.yaml?token=SECRET", "")
@@ -178,67 +181,10 @@ func TestIsRawOfficial(t *testing.T) {
 	}
 }
 
-func TestSetRawCDNProvidersDedupes(t *testing.T) {
+// 未注入下载源查询函数时，raw 官方链接走单源直拉（不加速）。
+func TestFetchWithRawCDNNoProviderFuncFallsBackToDirect(t *testing.T) {
 	c := New(3 * time.Second)
-	c.SetRawCDNProviders([]string{"ghproxy.com", "ghproxy.com", "  ", "github"})
-	if len(c.rawProviders) != 2 {
-		t.Fatalf("应去重并去掉空白, got %#v", c.rawProviders)
-	}
-}
-
-// 上次成功的源应被挪到最前（与发布包下载的 lastCDN 优先语义一致）。
-func TestPrioritizeRawProviders(t *testing.T) {
-	in := []string{"github", "ghproxy.com", "gitdl.cn"}
-	got := prioritizeRawProviders(in, "ghproxy.com")
-	want := []string{"ghproxy.com", "github", "gitdl.cn"}
-	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
-		t.Fatalf("got %#v want %#v", got, want)
-	}
-	// 原切片不得被改
-	if in[0] != "github" {
-		t.Fatal("prioritizeRawProviders 不得改入参")
-	}
-}
-
-// last 为空或不在列表里时保持原序。
-func TestPrioritizeRawProvidersEmptyOrMissing(t *testing.T) {
-	in := []string{"github", "ghproxy.com"}
-	if got := prioritizeRawProviders(in, ""); got[0] != "github" {
-		t.Fatalf("空 last 应保持原序, got %#v", got)
-	}
-	if got := prioritizeRawProviders(in, "mirror.ghproxy.com"); got[0] != "github" {
-		t.Fatalf("不在列表里的 last 应忽略, got %#v", got)
-	}
-}
-
-// 成功后 snapshot 应把 lastRaw 挪前；官方源成功不更新 lastRaw。
-func TestFetchWithRawCDNLastRawPrioritized(t *testing.T) {
-	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/yaml")
-		_, _ = w.Write([]byte("first\n"))
-	}))
-	defer first.Close()
-	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/yaml")
-		_, _ = w.Write([]byte("second\n"))
-	}))
-	defer second.Close()
-
-	c := New(3 * time.Second)
-	c.SetRawSuccessCallback(func(string) {})
-	c.SetRawCDNProviders([]string{first.URL + "/", second.URL + "/"})
-
-	// 首次：first 在前，成功 → 记住 first
-	data, _, err := c.fetchWithRawCDN(context.Background(),
-		"https://raw.githubusercontent.com/owner/repo/main/f.yaml", "")
-	if err != nil || string(data) != "first\n" {
-		t.Fatalf("首次拉取应走 first, err=%v data=%q", err, data)
-	}
-	// 用「first 不可用 + second 可用」验证优先化：把 first 指向失败服务器后，
-	// snapshot 应仍把 first（lastRaw）挪前，first 失败后回落 second。
-	// 直接检查 snapshot 顺序即可（不依赖服务器状态）。
-	got := c.rawProvidersSnapshot()
-	if got[0] != first.URL+"/" {
-		t.Fatalf("lastRaw 应挪到最前, got %#v", got)
+	if got := c.rawProviders(); got != nil {
+		t.Fatalf("未注入时应返回 nil, got %#v", got)
 	}
 }

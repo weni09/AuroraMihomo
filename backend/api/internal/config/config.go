@@ -80,12 +80,10 @@ type Config struct {
 		ZashboardRepo string `json:",default=Zephyruso/zashboard"`
 		GitHubAPI     string `json:",default=https://api.github.com"`
 		TimeoutSec    int    `json:",default=180"`
-		// CDNProviders 为 GitHub Release 资产（内核/面板二进制）的下载源。
-		// 只有这一类需要镜像：API 查询不走镜像（无镜像支持 REST API）。
+		// CDNProviders 为 GitHub 下载源（Release 资产与 raw 内容共用）：
+		// 内核/面板二进制下载与模板转换/订阅远程源的 raw 拉取都用它。
+		// 留空由 updater 兜底默认列表。
 		CDNProviders []string `json:",optional"`
-		// RawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源
-		//（模板转换远程地址、订阅远程源等）。留空由 updater 兜底默认列表。
-		RawCDNProviders []string `json:",optional"`
 		// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理。
 		// 默认开启：内核跑起来后走它出网通常比第三方镜像更快也更可靠。
 		UseMihomoProxy bool `json:",default=true"`

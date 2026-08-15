@@ -157,14 +157,14 @@ func (s *ConfigService) SetPolicyProvider(fn func() domain.MergePolicy) {
 	s.policyProvider = fn
 }
 
-// SetRawCDNProviders 把 raw 加速源列表推给本服务内部所有 fetcher：
+// SetRawCDNProviderFunc 把下载源查询函数推给本服务内部所有 fetcher：
 // 订阅 URL 拉取与 substore 引擎的订阅解析都可能拿到 raw 直链。
-func (s *ConfigService) SetRawCDNProviders(providers []string) {
-	s.fetcher.SetRawCDNProviders(providers)
-	s.ssEngine.SetRawCDNProviders(providers)
+func (s *ConfigService) SetRawCDNProviderFunc(fn func() []string) {
+	s.fetcher.SetRawCDNProviderFunc(fn)
+	s.ssEngine.SetRawCDNProviderFunc(fn)
 }
 
-// SetRawSuccessCallback 注入 raw 加速源成功回调（记录上次成功源）。
+// SetRawSuccessCallback 注入下载源成功回调（记入全局 last 优先序）。
 func (s *ConfigService) SetRawSuccessCallback(fn func(provider string)) {
 	s.fetcher.SetRawSuccessCallback(fn)
 	s.ssEngine.SetRawSuccessCallback(fn)

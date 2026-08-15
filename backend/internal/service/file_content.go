@@ -38,10 +38,10 @@ func NewFileContentResolver() *FileContentResolver {
 	return &FileContentResolver{client: fetcher.New(fileFetchTimeout)}
 }
 
-// SetRawCDNProviders 把 raw 加速源列表推给内部 fetcher。
+// SetRawCDNProviderFunc 把下载源查询函数转发给内部 fetcher。
 // 文件远程地址（模板转换等）可能是 raw.githubusercontent.com 直链。
-func (r *FileContentResolver) SetRawCDNProviders(providers []string) {
-	r.client.SetRawCDNProviders(providers)
+func (r *FileContentResolver) SetRawCDNProviderFunc(fn func() []string) {
+	r.client.SetRawCDNProviderFunc(fn)
 }
 
 // SetProxyURLFunc 把本地 mihomo 代理查询回调转发给内部 fetcher。

@@ -60,9 +60,9 @@ func (s *RenderService) FileContent() *FileContentResolver {
 	return s.fileContent
 }
 
-// SetRawCDNProviders 把 raw 加速源列表推给文件正文解析器的 fetcher。
-func (s *RenderService) SetRawCDNProviders(providers []string) {
-	s.fileContent.SetRawCDNProviders(providers)
+// SetRawCDNProviderFunc 把下载源查询函数转发给文件正文解析器的 fetcher。
+func (s *RenderService) SetRawCDNProviderFunc(fn func() []string) {
+	s.fileContent.SetRawCDNProviderFunc(fn)
 }
 
 // SetRawProxyURLFunc 把本地 mihomo 代理查询回调转发给文件正文解析器的 fetcher。

@@ -718,14 +718,8 @@ type UpdateSettings {
 	// 因此版本查询一律直连官方，网络不通时由 mihomo 代理兜底。
 	CDNProviders []string `json:"cdnProviders"`
 	// LastCDNProvider 上次成功的全局下载源（列表中的原写法），下次优先尝试。
-	// 只读：由下载成功路径写入，设置页不可改。
+	// 只读：由下载成功路径写入，设置页不可改。raw 拉取与 Release 下载共用。
 	LastCDNProvider string `json:"lastCdnProvider,optional"`
-	// RawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源
-	//（模板转换远程地址、订阅远程源等）。与 Release 下载源独立。
-	RawCDNProviders []string `json:"rawCdnProviders"`
-	// LastRawCDNProvider 上次成功的 raw 加速源（列表中的原写法），下次优先尝试。
-	// 只读：由 raw 拉取成功路径写入，设置页不可改。
-	LastRawCDNProvider string `json:"lastRawCdnProvider,optional"`
 	// UseMihomoProxy 下载与版本查询是否优先经由本地 mihomo 代理
 	UseMihomoProxy bool `json:"useMihomoProxy"`
 	// SelfRepo 主程序（AuroraMihomo 自身）的发布仓库。
@@ -742,9 +736,7 @@ type UpdateSettings {
 	MihomoVersion string `json:"mihomoVersion"`
 	// ZashboardVersion 为上次更新记录的 release tag，历史安装为空串
 	ZashboardVersion string   `json:"zashboardVersion"`
-	DefaultCDN       []string `json:"defaultCDN"`
-	// DefaultRawCDN 为内置默认 raw 加速源列表（只读展示）
-	DefaultRawCDN []string `json:"defaultRawCDN"`
+	DefaultCDN []string `json:"defaultCDN"`
 	// LogRetentionDays 应用日志文件的保留天数（只影响轮转归档）
 	LogRetentionDays int `json:"logRetentionDays"`
 	// LogCleanupCron 清理任务的调度表达式（6 段，含秒）
@@ -760,10 +752,8 @@ type UpdateSettings {
 type UpdateSettingsReq {
 	AutoUpdateEnabled *bool    `json:"autoUpdateEnabled,optional"`
 	AutoUpdateCron    string   `json:"autoUpdateCron,optional"`
-	CDNProviders      []string `json:"cdnProviders,optional"`
-	// RawCDNProviders 为 raw 加速源列表，nil 表示不修改；空数组 = 清除加速
-	RawCDNProviders []string `json:"rawCdnProviders,optional"`
-	UseMihomoProxy    *bool    `json:"useMihomoProxy,optional"`
+	CDNProviders   []string `json:"cdnProviders,optional"`
+	UseMihomoProxy *bool    `json:"useMihomoProxy,optional"`
 	// SelfRepo 主程序仓库，nil 表示不修改；空串 = 停用面板内自升级
 	SelfRepo *string `json:"selfRepo,optional"`
 	// LogRetentionDays 日志保留天数，取值夹到 [1, 365]

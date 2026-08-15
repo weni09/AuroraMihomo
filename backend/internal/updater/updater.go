@@ -52,26 +52,22 @@ type Config struct {
 	// 不依赖 release JSON 里的 browser_download_url；测试可注入本地服务器。
 	SelfDownloadBase   string
 	HTTPTimeoutSeconds int
-	// CDNProviders 为 GitHub Release 资产的下载源（内核与面板都以 Release 分发）
+	// CDNProviders 为 GitHub 下载源（Release 资产与 raw 内容共用）：
+	// 内核/面板二进制下载与模板转换/订阅远程源的 raw 拉取都用它。
+	// 空值由 New 兜底为默认列表。
 	CDNProviders []string
-	// RawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源
-	//（模板转换远程地址、订阅远程源等）。空值由 New 兜底为默认列表。
-	RawCDNProviders []string
 	// UseMihomoProxy 决定下载与版本查询是否优先经由本地 mihomo 代理。
 	// 默认开启：内核跑起来后，走它出网通常比第三方镜像更快也更可靠。
 	UseMihomoProxy bool
 }
 
 type RuntimeSettings struct {
-	AutoUpdateEnabled bool     `json:"autoUpdateEnabled"`
-	AutoUpdateCron    string   `json:"autoUpdateCron"`
-	CDNProviders      []string `json:"cdnProviders"`
+	AutoUpdateEnabled bool   `json:"autoUpdateEnabled"`
+	AutoUpdateCron    string `json:"autoUpdateCron"`
+	// CDNProviders 为 GitHub 下载源（Release 资产与 raw 内容共用）
+	CDNProviders []string `json:"cdnProviders"`
 	// LastCDNProvider 上次成功的全局下载源；空串表示尚未记过。
 	LastCDNProvider string `json:"lastCdnProvider"`
-	// RawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源。
-	RawCDNProviders []string `json:"rawCdnProviders"`
-	// LastRawCDNProvider 上次成功的 raw 加速源；空串表示尚未记过。
-	LastRawCDNProvider string `json:"lastRawCdnProvider"`
 	// UseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	UseMihomoProxy bool `json:"useMihomoProxy"`
 	// SelfRepo 为主程序（AuroraMihomo 自身）的仓库，运行期可配置。
@@ -131,15 +127,10 @@ type Manager struct {
 	// 不进入 downloadWithCDN / fetchBytesWithCDN（那些只认全局 GitHub 下载源）。
 	adguardCDN []string
 	// lastCDNProvider 上次经全局下载源成功拉取时用的源（列表里的原写法）。
-	// 下次 downloadWithCDN / fetchBytesWithCDN 把它排到最前。代理成功不写入。
+	// 下次 downloadWithCDN / raw 拉取把它排到最前。代理成功不写入。
 	lastCDNProvider string
 	// persistLastCDN 把上次成功源写入持久层；回调注入，updater 不依赖 repository。
 	persistLastCDN func(provider string) error
-	// lastRawCDNProvider 上次经 raw 加速源成功拉取时用的源（列表里的原写法）。
-	// 下次 raw 拉取把它排到最前。代理成功不写入。
-	lastRawCDNProvider string
-	// persistLastRawCDN 把上次成功的 raw 加速源写入持久层；回调注入。
-	persistLastRawCDN func(provider string) error
 }
 
 type githubRelease struct {
@@ -212,7 +203,6 @@ func New(cfg Config) *Manager {
 		cfg.AutoUpdateCron = "0 0 4 * * *"
 	}
 	cfg.CDNProviders = normalizeCDNList(cfg.CDNProviders)
-	cfg.RawCDNProviders = normalizeRawCDNList(cfg.RawCDNProviders)
 
 	return &Manager{
 		cfg: cfg,
@@ -343,19 +333,17 @@ func (m *Manager) GetSettings() RuntimeSettings {
 	m.mu.RLock()
 	proxyEnabled := m.cfg.UseMihomoProxy
 	st := RuntimeSettings{
-		AutoUpdateEnabled:  m.cfg.AutoUpdateEnabled,
-		AutoUpdateCron:     m.cfg.AutoUpdateCron,
-		CDNProviders:       append([]string{}, m.cfg.CDNProviders...),
-		LastCDNProvider:    m.lastCDNProvider,
-		RawCDNProviders:    append([]string{}, m.cfg.RawCDNProviders...),
-		LastRawCDNProvider: m.lastRawCDNProvider,
-		UseMihomoProxy:     proxyEnabled,
-		SelfRepo:           strings.TrimSpace(m.cfg.SelfRepo),
-		MihomoPath:         m.cfg.MihomoBinaryPath,
-		ZashboardDir:       m.cfg.ZashboardDir,
-		MihomoPresent:      fileExists(m.cfg.MihomoBinaryPath),
-		ZashboardPresent:   zashboardReady(m.cfg.ZashboardDir),
-		ZashboardVersion:   m.zashboardVersion,
+		AutoUpdateEnabled: m.cfg.AutoUpdateEnabled,
+		AutoUpdateCron:    m.cfg.AutoUpdateCron,
+		CDNProviders:      append([]string{}, m.cfg.CDNProviders...),
+		LastCDNProvider:   m.lastCDNProvider,
+		UseMihomoProxy:    proxyEnabled,
+		SelfRepo:          strings.TrimSpace(m.cfg.SelfRepo),
+		MihomoPath:        m.cfg.MihomoBinaryPath,
+		ZashboardDir:      m.cfg.ZashboardDir,
+		MihomoPresent:     fileExists(m.cfg.MihomoBinaryPath),
+		ZashboardPresent:  zashboardReady(m.cfg.ZashboardDir),
+		ZashboardVersion:  m.zashboardVersion,
 	}
 	m.mu.RUnlock()
 
@@ -366,7 +354,7 @@ func (m *Manager) GetSettings() RuntimeSettings {
 	return st
 }
 
-func (m *Manager) ApplySettings(enabled *bool, cron string, cdn []string, rawCDN []string, useProxy *bool) error {
+func (m *Manager) ApplySettings(enabled *bool, cron string, cdn []string, useProxy *bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -387,9 +375,6 @@ func (m *Manager) ApplySettings(enabled *bool, cron string, cdn []string, rawCDN
 	}
 	if cdn != nil {
 		m.cfg.CDNProviders = normalizeCDNList(cdn)
-	}
-	if rawCDN != nil {
-		m.cfg.RawCDNProviders = normalizeRawCDNList(rawCDN)
 	}
 	if useProxy != nil {
 		m.cfg.UseMihomoProxy = *useProxy
@@ -519,69 +504,22 @@ func (m *Manager) rememberLastCDN(provider string) {
 }
 
 // prioritizedCDNProviders 当前全局下载源，上次成功的排最前。
+// raw 拉取（fetcher）与 Release 下载共用同一份配置与同一优先序。
 func (m *Manager) prioritizedCDNProviders() []string {
 	return prioritizeCDNProviders(m.CDNProviders(), m.LastCDNProvider())
 }
 
-// RawCDNProviders 返回当前 raw 加速源列表（副本）。
-func (m *Manager) RawCDNProviders() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return append([]string{}, m.cfg.RawCDNProviders...)
+// PrioritizedCDNProviders 公开当前优先化后的下载源列表。
+// 供 fetcher 的 raw 拉取注入：每次现查，last 变化即时生效。
+func (m *Manager) PrioritizedCDNProviders() []string {
+	return m.prioritizedCDNProviders()
 }
 
-// LastRawCDNProvider 返回上次成功的 raw 加速源，尚未记过时为空串。
-func (m *Manager) LastRawCDNProvider() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.lastRawCDNProvider
-}
-
-// RememberRawCDNSuccess 记录一次成功的 raw 加速源并异步落库。
-// 供 fetcher 的成功回调调用：镜像成功才记，官方源/代理成功不写。
-func (m *Manager) RememberRawCDNSuccess(provider string) {
-	m.rememberLastRawCDN(provider)
-}
-
-// SetLastRawCDNProvider 回灌上次成功的 raw 加速源（启动时从 settings 读出）。
-func (m *Manager) SetLastRawCDNProvider(provider string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastRawCDNProvider = strings.TrimSpace(provider)
-}
-
-// SetLastRawCDNPersister 注入上次成功的 raw 加速源落库回调。
-func (m *Manager) SetLastRawCDNPersister(fn func(provider string) error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.persistLastRawCDN = fn
-}
-
-// rememberLastRawCDN 记下本次成功的 raw 加速源并异步落库。相同值不重复写。
-func (m *Manager) rememberLastRawCDN(provider string) {
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return
-	}
-	m.mu.Lock()
-	if strings.EqualFold(m.lastRawCDNProvider, provider) {
-		m.mu.Unlock()
-		return
-	}
-	m.lastRawCDNProvider = provider
-	persist := m.persistLastRawCDN
-	m.mu.Unlock()
-	if persist == nil {
-		return
-	}
-	if err := persist(provider); err != nil {
-		m.logger.Errorf("记录上次成功 raw 加速源失败: %v", err)
-	}
-}
-
-// DefaultRawCDNProvidersList 返回默认 raw 加速源列表（副本）。
-func (m *Manager) DefaultRawCDNProvidersList() []string {
-	return append([]string{}, DefaultRawCDNProviders...)
+// RememberCDNSuccess 记录一次成功的下载源并异步落库。
+// 供 fetcher 的 raw 拉取成功回调调用：镜像成功才记，官方源/代理成功不写。
+// raw 与 Release 下载共用同一 last 优先序，互学习最可靠的镜像。
+func (m *Manager) RememberCDNSuccess(provider string) {
+	m.rememberLastCDN(provider)
 }
 
 func (m *Manager) DefaultCDNProviders() []string {

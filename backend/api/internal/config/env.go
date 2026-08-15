@@ -48,10 +48,6 @@ func (c *Config) ApplyEnvOverrides() {
 	if out := csvEnv("AURORA_CDN_PROVIDERS"); len(out) > 0 {
 		c.Updater.CDNProviders = out
 	}
-	// 逗号分隔的 raw 加速源列表（raw.githubusercontent.com 内容）
-	if out := csvEnv("AURORA_RAW_CDN_PROVIDERS"); len(out) > 0 {
-		c.Updater.RawCDNProviders = out
-	}
 	if v := env("AURORA_USE_MIHOMO_PROXY"); v != "" {
 		c.Updater.UseMihomoProxy = isTruthy(v)
 	}

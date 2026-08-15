@@ -120,7 +120,6 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		GitHubAPI:          c.Updater.GitHubAPI,
 		HTTPTimeoutSeconds: c.Updater.TimeoutSec,
 		CDNProviders:       c.Updater.CDNProviders,
-		RawCDNProviders:    c.Updater.RawCDNProviders,
 		UseMihomoProxy:     c.Updater.UseMihomoProxy,
 		SelfRepo:           c.Updater.SelfRepo,
 	})
@@ -207,26 +206,17 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		renderSvc.RenderFileTemplate,
 	)
 
-	// raw 加速源注入：settings 变更/启动装载后，把清洗后的列表推给
-	// 所有持有 fetcher 的服务（订阅拉取、substore 引擎、文件正文解析）。
-	// 用可变闭包在构造尾部绑定，LoadAndApply 在 NewServiceContext 返回后
-	// 才调用，此时 cfgSvc 与 renderSvc 均已就绪。
-	var applyRawCDN func([]string)
-	settingsService.SetRawCDNFunc(func(providers []string) {
-		if applyRawCDN != nil {
-			applyRawCDN(providers)
-		}
-	})
-	applyRawCDN = func(providers []string) {
-		cfgSvc.SetRawCDNProviders(providers)
-		renderSvc.SetRawCDNProviders(providers)
-	}
+	// raw 拉取（模板/订阅远程源）与 Release 下载共用同一份 CDN 配置：
+	// fetcher 通过查询函数现查 updater 的优先化列表，last 变化即时生效，
+	// 无需在设置变更时推送。镜像成功也记入同一 last 优先序。
+	cfgSvc.SetRawCDNProviderFunc(upd.PrioritizedCDNProviders)
+	renderSvc.SetRawCDNProviderFunc(upd.PrioritizedCDNProviders)
 	// raw 官方链接拉取优先经本地 mihomo 代理直取官方（与发布包下载一致）。
 	// 端口由 ConfigService 解析，这里只注入查询回调。
 	cfgSvc.SetRawProxyURLFunc(cfgSvc.LocalProxyURL)
 	renderSvc.SetRawProxyURLFunc(cfgSvc.LocalProxyURL)
-	// raw 镜像成功时记录上次成功源（落库，重启后仍优先该镜像）
-	cfgSvc.SetRawSuccessCallback(upd.RememberRawCDNSuccess)
+	// raw 镜像成功时记入全局 last 优先序（落库，重启后仍优先该镜像）
+	cfgSvc.SetRawSuccessCallback(upd.RememberCDNSuccess)
 
 	// 透明代理。reloadFn 走一次完整的合并下发，使开关立即作用到内核配置上
 	// （注入逻辑在 ConfigService 的合并流程里，见 netcheck.Inject 的调用点）。
