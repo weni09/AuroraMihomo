@@ -21,10 +21,6 @@ var DefaultRawCDNProviders = []string{
 	"ghp.ci",
 }
 
-// rawOfficialHost 是 raw 内容的官方主机。raw 加速的 URL 展开在 fetcher 包内
-// 实现（它是实际拉取方），updater 只负责维护默认列表与清洗。
-const rawOfficialHost = "raw.githubusercontent.com"
-
 // normalizeRawCDNList 去空白、按大小写不敏感去重，并保证官方源始终兜底。
 // 列表为空时回落到默认值。与 normalizeCDNList 同构。
 func normalizeRawCDNList(list []string) []string {
