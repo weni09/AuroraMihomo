@@ -16,6 +16,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
+import {
+  Activity,
+  Boxes,
+  Clock,
+  FileClock,
+  GitMerge,
+  Globe,
+  KeyRound,
+  RefreshCcw,
+  Settings2,
+  ShieldCheck,
+} from 'lucide-vue-next'
 import ModalDialog from '../components/ModalDialog.vue'
 
 const store = useSettingsStore()
@@ -526,16 +538,19 @@ function stepBadge(s: { success: boolean; skipped: boolean }) {
  * 不是标签切换，顺序不一致会让高亮与实际位置错位）。
  */
 const sections = [
-  { id: 'password', title: '管理员密码' },
-  { id: 'components', title: '组件状态' },
-  { id: 'self-update', title: '主程序升级与备份' },
-  { id: 'auto-update', title: '自动更新' },
-  { id: 'transparent', title: '透明代理' },
-  { id: 'network', title: '下载与更新出网' },
-  { id: 'monitor', title: '服务器资源监控' },
-  { id: 'logs', title: '日志' },
-  { id: 'merge-policy', title: '配置合并策略' },
+  { id: 'password', title: '管理员密码', icon: KeyRound },
+  { id: 'components', title: '组件状态', icon: Boxes },
+  { id: 'self-update', title: '主程序升级与备份', icon: RefreshCcw },
+  { id: 'auto-update', title: '自动更新', icon: Clock },
+  { id: 'transparent', title: '透明代理', icon: ShieldCheck },
+  { id: 'network', title: '下载与更新出网', icon: Globe },
+  { id: 'monitor', title: '服务器资源监控', icon: Activity },
+  { id: 'logs', title: '日志', icon: FileClock },
+  { id: 'merge-policy', title: '配置合并策略', icon: GitMerge },
 ] as const
+
+// 供模板按 section id 取图标，保持与导航同源（不另写一份映射）
+const sectionIcon = (id: string) => sections.find((s) => s.id === id)?.icon
 
 const activeSection = ref<string>(sections[0].id)
 
@@ -598,9 +613,20 @@ const navOpen = ref(false)
   <!-- pb-28 给底部悬浮操作条让位：否则滚到最底时它会盖住
        「配置合并策略」的最后一行内容与那一节自己的保存按钮 -->
   <main class="p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28 max-w-7xl mx-auto">
-    <div class="mb-4 sm:mb-6">
-      <h1 class="text-2xl sm:text-3xl font-bold">系统设置</h1>
-      <p class="text-xs sm:text-sm text-fg-subtle mt-1">管理 AuroraMihomo 管理面板自身的基础配置、更新服务与应用日志</p>
+    <div class="mb-4 sm:mb-6 border-b border-line pb-4 sm:pb-5">
+      <div class="flex items-center gap-3">
+        <span
+          class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+        >
+          <Settings2 class="h-5 w-5" aria-hidden="true" />
+        </span>
+        <div>
+          <h1 class="text-2xl sm:text-3xl font-bold leading-tight">系统设置</h1>
+          <p class="text-xs sm:text-sm text-fg-subtle mt-1">
+            管理 AuroraMihomo 管理面板自身的基础配置、更新服务与应用日志
+          </p>
+        </div>
+      </div>
     </div>
 
     <!-- 操作结果统一走 toast（见 stores/notify.ts），不在页面里占位 -->
@@ -648,17 +674,29 @@ const navOpen = ref(false)
                 class="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent-text"
                 aria-hidden="true"
               />
-              {{ sec.title }}
+              <span class="flex items-center gap-2">
+                <component :is="sec.icon" class="h-4 w-4 shrink-0" aria-hidden="true" />
+                {{ sec.title }}
+              </span>
             </button>
           </li>
         </ul>
       </nav>
 
-      <div class="min-w-0 flex-1 bg-surface rounded-lg shadow border border-line p-4 sm:p-6 space-y-6">
+      <div class="min-w-0 flex-1 bg-surface rounded-lg shadow border border-line p-4 sm:p-6 flex flex-col">
         <!-- 各 section 带 id 供导航锚点定位；scroll-mt 让跳转后标题不被
-             窄屏顶部 sticky header 盖住（App.vue 里那条，约 48px）。 -->
-        <section id="password" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">管理员密码</h2>
+             窄屏顶部 sticky header 盖住（App.vue 里那条，约 48px）。
+             section 之间用上边框分隔而非纯空白：9 组设置各自成块，
+             滚长页时边界更清晰。 -->
+        <section id="password" class="scroll-mt-20 pb-6">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('password')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">管理员密码</h2>
+          </div>
           <div class="grid md:grid-cols-3 gap-3">
             <div>
               <Label for="pwd-old" class="block text-sm text-fg-muted mb-1">当前密码</Label>
@@ -680,8 +718,15 @@ const navOpen = ref(false)
           </div>
         </section>
 
-        <section id="components" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">组件状态</h2>
+        <section id="components" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('components')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">组件状态</h2>
+          </div>
           <div class="grid md:grid-cols-2 gap-3 text-sm">
             <div class="p-3 rounded bg-elevated">
               <div class="text-fg-muted">Mihomo 内核</div>
@@ -756,8 +801,15 @@ const navOpen = ref(false)
         <!-- 主程序（AuroraMihomo 自身）升级与数据库备份。
              升级会替换正在运行的二进制并重启进程（服务短暂中断），
              升级前自动备份数据库；备份按钮随时可触发在线备份。 -->
-        <section id="self-update" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">主程序升级与备份</h2>
+        <section id="self-update" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('self-update')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">主程序升级与备份</h2>
+          </div>
 
           <div class="p-4 rounded-lg border border-line bg-elevated/50">
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -869,22 +921,37 @@ const navOpen = ref(false)
           </ModalDialog>
         </section>
 
-        <section id="auto-update" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">自动更新</h2>
-          <label class="flex items-center gap-3 mb-4">
-            <Checkbox v-model="form.autoUpdateEnabled" />
-            <span>启用 Mihomo / Zashboard 自动更新</span>
-          </label>
-
-          <Label for="settings-cron" class="block text-sm text-fg-muted mb-1">Cron 表达式（支持 5 位或 6 位，6 位含秒）</Label>
-          <Input id="settings-cron"
-            v-model="form.autoUpdateCron"
-            class="font-mono text-sm"
-            placeholder="0 0 4 * * *"
-          />
-          <p class="text-xs text-fg-subtle mt-1">
-            示例：每天 04:00 => <code>0 0 4 * * *</code>；每 12 小时 => <code>0 0 */12 * * *</code>
-          </p>
+        <section id="auto-update" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('auto-update')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">自动更新</h2>
+          </div>
+          <div class="grid gap-4 md:grid-cols-2 md:items-start">
+            <div class="rounded-lg border border-line bg-elevated/50 p-3">
+              <label class="flex items-center gap-3">
+                <Checkbox v-model="form.autoUpdateEnabled" />
+                <span>启用 Mihomo / Zashboard 自动更新</span>
+              </label>
+              <p class="mt-1.5 text-xs text-fg-subtle">
+                按下方 Cron 定时检查并更新内核与面板；关闭后仅保留手动更新入口。
+              </p>
+            </div>
+            <div>
+              <Label for="settings-cron" class="block text-sm text-fg-muted mb-1">Cron 表达式（支持 5 位或 6 位，6 位含秒）</Label>
+              <Input id="settings-cron"
+                v-model="form.autoUpdateCron"
+                class="font-mono text-sm"
+                placeholder="0 0 4 * * *"
+              />
+              <p class="text-xs text-fg-subtle mt-1">
+                示例：每天 04:00 => <code>0 0 4 * * *</code>；每 12 小时 => <code>0 0 */12 * * *</code>
+              </p>
+            </div>
+          </div>
         </section>
 
         <!-- 透明代理。让局域网设备无需各自设置代理即可分流。
@@ -894,8 +961,15 @@ const navOpen = ref(false)
              并在退出时清理，不需要确认。
              开关状态写入基础配置的 tun.enable / tproxy-port，
              与「配置中心」编辑的是同一份数据。 -->
-        <section id="transparent" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">透明代理</h2>
+        <section id="transparent" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('transparent')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">透明代理</h2>
+          </div>
 
           <!-- 待确认横幅放在最前：此刻用户的网络可能正在中断，
                必须第一眼就看到倒计时与确认按钮 -->
@@ -1214,8 +1288,15 @@ const navOpen = ref(false)
           </details>
         </section>
 
-        <section id="network" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">下载与更新出网</h2>
+        <section id="network" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('network')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">下载与更新出网</h2>
+          </div>
 
           <label class="flex items-start gap-3 mb-2">
             <Checkbox v-model="form.useMihomoProxy" class="mt-0.5" />
@@ -1294,84 +1375,115 @@ const navOpen = ref(false)
 
         <!-- 服务器资源监控：控制台资源卡片的开关与刷新节奏。
              纯展示功能，关闭后控制台不再轮询（设置保存即生效）。 -->
-        <section id="monitor" class="border-t pt-5 scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">服务器资源监控</h2>
-          <label class="flex items-center gap-3">
-            <Switch v-model="form.monitorEnabled" />
-            <span class="text-sm font-medium">启用资源监控</span>
-          </label>
-          <p class="text-xs text-fg-subtle mt-1">
-            在控制台显示 CPU / 内存 / 网络上下行 / 磁盘 / 运行时长卡片。
-            关闭后控制台不再展示与轮询。
-          </p>
-
-          <label class="block text-sm mt-4 mb-1">刷新间隔</label>
-          <Select v-model="form.monitorIntervalSec" :disabled="!form.monitorEnabled">
-            <SelectTrigger id="settings-monitor-interval" class="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem :value="1">1 秒</SelectItem>
-              <SelectItem :value="3">3 秒</SelectItem>
-              <SelectItem :value="5">5 秒</SelectItem>
-              <SelectItem :value="10">10 秒</SelectItem>
-              <SelectItem :value="30">30 秒</SelectItem>
-            </SelectContent>
-          </Select>
-          <p class="text-xs text-fg-subtle mt-1">
-            资源卡片的轮询频率，默认 3 秒。越短实时性越好，代价是更频繁的
-            资源采集与网络请求；网络速率按两次采样的差计算，间隔越短越接近瞬时值。
-          </p>
+        <section id="monitor" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('monitor')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">服务器资源监控</h2>
+          </div>
+          <div class="grid gap-4 md:grid-cols-2 md:items-start">
+            <div>
+              <label class="flex items-center gap-3">
+                <Switch v-model="form.monitorEnabled" />
+                <span class="text-sm font-medium">启用资源监控</span>
+              </label>
+              <p class="text-xs text-fg-subtle mt-1">
+                在控制台显示 CPU / 内存 / 网络上下行 / 磁盘 / 运行时长卡片。
+                关闭后控制台不再展示与轮询。
+              </p>
+            </div>
+            <div>
+              <label class="block text-sm mb-1">刷新间隔</label>
+              <Select v-model="form.monitorIntervalSec" :disabled="!form.monitorEnabled">
+                <SelectTrigger id="settings-monitor-interval" class="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem :value="1">1 秒</SelectItem>
+                  <SelectItem :value="3">3 秒</SelectItem>
+                  <SelectItem :value="5">5 秒</SelectItem>
+                  <SelectItem :value="10">10 秒</SelectItem>
+                  <SelectItem :value="30">30 秒</SelectItem>
+                </SelectContent>
+              </Select>
+              <p class="text-xs text-fg-subtle mt-1">
+                资源卡片的轮询频率，默认 3 秒。越短实时性越好，代价是更频繁的
+                资源采集与网络请求；网络速率按两次采样的差计算，间隔越短越接近瞬时值。
+              </p>
+            </div>
+          </div>
         </section>
 
-        <section id="logs" class="scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">日志</h2>
-          <label class="block text-sm mb-1">日志保留天数</label>
-          <Input
-            id="settings-log-retention"
-            v-model="form.logRetentionDays"
-            type="number"
-            min="1"
-            max="365"
-            class="w-32"
-          />
-          <p class="text-xs text-fg-subtle mt-1">
-            超过该天数的日志归档会被自动删除，范围 1~365 天，默认 7 天。
-          </p>
-
-          <label class="flex items-start gap-2 text-sm mt-4">
-            <Checkbox v-model="form.logCleanupEnabled" class="mt-0.5" />
-            <span>
-              启用定时清理
-              <span class="block text-xs text-fg-subtle mt-0.5">
-                关闭后仅靠大小轮转限制磁盘占用（单个 8MB、最多 5 份），
-                过期归档不会被删除。
-              </span>
+        <section id="logs" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('logs')" class="h-4 w-4" aria-hidden="true" />
             </span>
-          </label>
+            <h2 class="text-lg font-semibold leading-tight">日志</h2>
+          </div>
+          <div class="grid gap-4 md:grid-cols-2 md:items-start">
+            <div>
+              <label class="block text-sm mb-1">日志保留天数</label>
+              <Input
+                id="settings-log-retention"
+                v-model="form.logRetentionDays"
+                type="number"
+                min="1"
+                max="365"
+                class="w-32"
+              />
+              <p class="text-xs text-fg-subtle mt-1">
+                超过该天数的日志归档会被自动删除，范围 1~365 天，默认 7 天。
+              </p>
+            </div>
+            <div>
+              <label class="flex items-start gap-2 text-sm">
+                <Checkbox v-model="form.logCleanupEnabled" class="mt-0.5" />
+                <span>
+                  启用定时清理
+                  <span class="block text-xs text-fg-subtle mt-0.5">
+                    关闭后仅靠大小轮转限制磁盘占用（单个 8MB、最多 5 份），
+                    过期归档不会被删除。
+                  </span>
+                </span>
+              </label>
 
-          <label class="block text-sm mt-3 mb-1">清理时间（Cron）</label>
-          <Input
-            id="settings-log-cron"
-            v-model="form.logCleanupCron"
-            :disabled="!form.logCleanupEnabled"
-            class="w-full sm:w-72 font-mono text-sm"
-            placeholder="0 30 3 * * *"
-          />
-          <p class="text-xs text-fg-subtle mt-1">
-            支持 5 段（分 时 日 月 周）或 6 段（含秒）。默认
-            <code>0 30 3 * * *</code> 即每天凌晨 3:30——清理要遍历目录删文件，
-            放在低峰期。保存后即时生效，无需重启。
-          </p>
-          <p class="text-xs text-fg-subtle mt-2">
+              <label class="block text-sm mt-3 mb-1">清理时间（Cron）</label>
+              <Input
+                id="settings-log-cron"
+                v-model="form.logCleanupCron"
+                :disabled="!form.logCleanupEnabled"
+                class="w-full sm:w-72 font-mono text-sm"
+                placeholder="0 30 3 * * *"
+              />
+              <p class="text-xs text-fg-subtle mt-1">
+                支持 5 段（分 时 日 月 周）或 6 段（含秒）。默认
+                <code>0 30 3 * * *</code> 即每天凌晨 3:30——清理要遍历目录删文件，
+                放在低峰期。保存后即时生效，无需重启。
+              </p>
+            </div>
+          </div>
+          <p class="text-xs text-fg-subtle mt-3">
             清理只影响已归档的历史文件；当前正在写的日志文件由大小轮转管理，
             不会被按时间删除。界面上「运行日志」页的清空按钮只清内存中的实时列表，
             不动磁盘文件。
           </p>
         </section>
 
-        <section id="merge-policy" class="border-t pt-5 scroll-mt-20">
-          <h2 class="text-lg font-semibold mb-3">配置合并策略</h2>
+        <section id="merge-policy" class="border-t border-line py-6 scroll-mt-20">
+          <div class="flex items-center gap-2.5 mb-4">
+            <span
+              class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent-solid/10 text-accent-text dark:bg-accent-solid/20"
+            >
+              <component :is="sectionIcon('merge-policy')" class="h-4 w-4" aria-hidden="true" />
+            </span>
+            <h2 class="text-lg font-semibold leading-tight">配置合并策略</h2>
+          </div>
           <p class="text-xs text-fg-muted mb-4">
             当本地配置与订阅内容冲突时，自动采用所选策略解决。可选：本地优先 / 远程优先 / 自动合并。
           </p>
