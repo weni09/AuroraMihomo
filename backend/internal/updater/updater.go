@@ -343,19 +343,19 @@ func (m *Manager) GetSettings() RuntimeSettings {
 	m.mu.RLock()
 	proxyEnabled := m.cfg.UseMihomoProxy
 	st := RuntimeSettings{
-		AutoUpdateEnabled: m.cfg.AutoUpdateEnabled,
-		AutoUpdateCron:    m.cfg.AutoUpdateCron,
-		CDNProviders:      append([]string{}, m.cfg.CDNProviders...),
-		LastCDNProvider:   m.lastCDNProvider,
-		RawCDNProviders:   append([]string{}, m.cfg.RawCDNProviders...),
+		AutoUpdateEnabled:  m.cfg.AutoUpdateEnabled,
+		AutoUpdateCron:     m.cfg.AutoUpdateCron,
+		CDNProviders:       append([]string{}, m.cfg.CDNProviders...),
+		LastCDNProvider:    m.lastCDNProvider,
+		RawCDNProviders:    append([]string{}, m.cfg.RawCDNProviders...),
 		LastRawCDNProvider: m.lastRawCDNProvider,
-		UseMihomoProxy:    proxyEnabled,
-		SelfRepo:          strings.TrimSpace(m.cfg.SelfRepo),
-		MihomoPath:        m.cfg.MihomoBinaryPath,
-		ZashboardDir:      m.cfg.ZashboardDir,
-		MihomoPresent:     fileExists(m.cfg.MihomoBinaryPath),
-		ZashboardPresent:  zashboardReady(m.cfg.ZashboardDir),
-		ZashboardVersion:  m.zashboardVersion,
+		UseMihomoProxy:     proxyEnabled,
+		SelfRepo:           strings.TrimSpace(m.cfg.SelfRepo),
+		MihomoPath:         m.cfg.MihomoBinaryPath,
+		ZashboardDir:       m.cfg.ZashboardDir,
+		MihomoPresent:      fileExists(m.cfg.MihomoBinaryPath),
+		ZashboardPresent:   zashboardReady(m.cfg.ZashboardDir),
+		ZashboardVersion:   m.zashboardVersion,
 	}
 	m.mu.RUnlock()
 
