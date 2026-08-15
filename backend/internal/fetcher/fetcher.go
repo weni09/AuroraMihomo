@@ -144,11 +144,6 @@ func (c *Client) proxyClient() (*http.Client, string) {
 	}, proxy
 }
 
-// rawProvidersSnapshot 返回当前应使用的下载源列表（调用方现查）。
-func (c *Client) rawProvidersSnapshot() []string {
-	return c.rawProviders()
-}
-
 func (c *Client) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	return c.FetchWithUA(ctx, rawURL, "")
 }
