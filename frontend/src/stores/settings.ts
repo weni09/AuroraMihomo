@@ -13,6 +13,13 @@ export interface UpdateSettings {
   cdnProviders: string[]
   /** 上次成功的全局下载源；空串表示尚未记过。下次优先尝试此源 */
   lastCdnProvider?: string
+  /**
+   * raw.githubusercontent.com 内容的加速下载源
+   * （模板转换远程地址、订阅远程源等）。与 Release 下载源独立。
+   */
+  rawCdnProviders: string[]
+  /** 上次成功的 raw 加速源；空串表示尚未记过。下次优先尝试此源 */
+  lastRawCdnProvider?: string
   /** 下载与版本查询是否优先经由本地 mihomo 代理 */
   useMihomoProxy: boolean
   /** 主程序（AuroraMihomo 自身）仓库，空串 = 停用面板内自升级 */
@@ -28,6 +35,8 @@ export interface UpdateSettings {
   /** 上次更新记录的 release tag，历史安装为空串 */
   zashboardVersion: string
   defaultCDN: string[]
+  /** 默认 raw 加速源列表（后端内置） */
+  defaultRawCDN?: string[]
   /** 日志归档保留天数，只影响已轮转的历史文件 */
   logRetentionDays: number
   /** 日志清理任务的调度表达式（6 段，含秒） */
@@ -118,6 +127,7 @@ export const useSettingsStore = defineStore('settings', {
       autoUpdateEnabled?: boolean
       autoUpdateCron?: string
       cdnProviders?: string[]
+      rawCdnProviders?: string[]
       useMihomoProxy?: boolean
       selfRepo?: string
       logRetentionDays?: number

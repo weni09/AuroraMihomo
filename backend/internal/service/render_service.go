@@ -60,6 +60,16 @@ func (s *RenderService) FileContent() *FileContentResolver {
 	return s.fileContent
 }
 
+// SetRawCDNProviders 把 raw 加速源列表推给文件正文解析器的 fetcher。
+func (s *RenderService) SetRawCDNProviders(providers []string) {
+	s.fileContent.SetRawCDNProviders(providers)
+}
+
+// SetRawProxyURLFunc 把本地 mihomo 代理查询回调转发给文件正文解析器的 fetcher。
+func (s *RenderService) SetRawProxyURLFunc(fn func() string) {
+	s.fileContent.SetProxyURLFunc(fn)
+}
+
 // cachedRender 为公开分享端点提供缓存 + 并发闸门。
 // key 需覆盖影响输出的全部参数，否则会串味返回错误内容。
 func (s *RenderService) cachedRender(ctx context.Context, key string, fn func() (*ShareResult, error)) (*ShareResult, error) {

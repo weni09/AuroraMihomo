@@ -27,6 +27,11 @@ const (
 	settingCDNProviders = "auto_update.cdn_providers"
 	// settingLastCDNProvider 上次成功的全局下载源，下次优先尝试
 	settingLastCDNProvider = "auto_update.last_cdn_provider"
+	// settingRawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源
+	//（模板转换远程地址、订阅远程源等）
+	settingRawCDNProviders = "auto_update.raw_cdn_providers"
+	// settingLastRawCDNProvider 上次成功的 raw 加速源，下次优先尝试
+	settingLastRawCDNProvider = "auto_update.last_raw_cdn_provider"
 	// settingUseMihomoProxy 是否优先经由本地 mihomo 代理访问 GitHub
 	settingUseMihomoProxy = "auto_update.use_mihomo_proxy"
 	// settingSelfRepo 主程序（AuroraMihomo 自身）的仓库，运行期可配置。
@@ -81,7 +86,11 @@ type SettingsService struct {
 	logCleanupReloadFn func(enabled bool, cronExpr string) error
 	// mihomoVersionFn 查询内核版本，由 API 层注入
 	mihomoVersionFn func() string
-	logger          logx.Logger
+	// rawCDNFn 把当前 raw 加速源推给所有 fetcher 实例（模板/订阅拉取）。
+	// 设置变更后需即时生效，而 fetcher 实例散落在各 service 内，
+	// 由 API 层统一注入、遍历注册。
+	rawCDNFn func(providers []string)
+	logger   logx.Logger
 }
 
 func NewSettingsService(db *repository.Database, upd *updater.Manager) *SettingsService {
@@ -96,10 +105,24 @@ func (s *SettingsService) SetReloadFunc(fn func(enabled bool, cronExpr string) e
 	s.reloadFn = fn
 }
 
+// SetRawCDNFunc 注入 raw 加速源推送回调。设置变更或启动装载后触发，
+// 由 API 层把清洗后的列表推给所有 fetcher 实例。
+func (s *SettingsService) SetRawCDNFunc(fn func(providers []string)) {
+	s.rawCDNFn = fn
+}
+
+// pushRawCDN 把当前生效的 raw 加速源推给注册的接收方。
+func (s *SettingsService) pushRawCDN() {
+	if s.rawCDNFn != nil {
+		s.rawCDNFn(s.updater.RawCDNProviders())
+	}
+}
+
 func (s *SettingsService) LoadAndApply() error {
 	enabled := s.updater.AutoUpdateEnabled()
 	cronExpr := s.updater.AutoUpdateCron()
 	cdn := s.updater.CDNProviders()
+	rawCDN := s.updater.RawCDNProviders()
 	useProxy := s.updater.UseMihomoProxy()
 
 	if v, err := s.db.GetSetting(settingAutoUpdateEnabled); err == nil {
@@ -116,6 +139,11 @@ func (s *SettingsService) LoadAndApply() error {
 		return err
 	} else if arr != nil {
 		cdn = arr
+	}
+	if arr, err := s.loadCDNSetting(settingRawCDNProviders); err != nil {
+		return err
+	} else if arr != nil {
+		rawCDN = arr
 	}
 	if v, err := s.db.GetSetting(settingUseMihomoProxy); err == nil {
 		useProxy = v == "1" || strings.EqualFold(v, "true")
@@ -157,10 +185,20 @@ func (s *SettingsService) LoadAndApply() error {
 	s.updater.SetLastCDNPersister(func(provider string) error {
 		return s.db.SetSetting(settingLastCDNProvider, provider)
 	})
-
-	if err := s.updater.ApplySettings(&enabled, cronExpr, cdn, &useProxy); err != nil {
+	// 上次成功的 raw 加速源：同样回灌 + 落库，重启后仍优先该源
+	if v, err := s.db.GetSetting(settingLastRawCDNProvider); err == nil {
+		s.updater.SetLastRawCDNProvider(v)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+	s.updater.SetLastRawCDNPersister(func(provider string) error {
+		return s.db.SetSetting(settingLastRawCDNProvider, provider)
+	})
+
+	if err := s.updater.ApplySettings(&enabled, cronExpr, cdn, rawCDN, &useProxy); err != nil {
+		return err
+	}
+	s.pushRawCDN()
 	if s.reloadFn != nil {
 		return s.reloadFn(enabled, s.updater.AutoUpdateCron())
 	}
@@ -191,6 +229,9 @@ type UpdateSettingsInput struct {
 	AutoUpdateEnabled *bool    `json:"autoUpdateEnabled,optional"`
 	AutoUpdateCron    string   `json:"autoUpdateCron,optional"`
 	CDNProviders      []string `json:"cdnProviders,optional"`
+	// RawCDNProviders 为 raw.githubusercontent.com 内容的加速下载源，
+	// 空串列表表示清除加速、回落直连官方。
+	RawCDNProviders []string `json:"rawCdnProviders,optional"`
 	// UseMihomoProxy 是否优先经由本地 mihomo 代理出网，nil 表示不修改
 	UseMihomoProxy *bool `json:"useMihomoProxy,optional"`
 	// SelfRepo 主程序（AuroraMihomo 自身）仓库，nil 表示不修改。
@@ -267,7 +308,7 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 		return updater.RuntimeSettings{}, fmt.Errorf("日志清理%w", err)
 	}
 
-	if err := s.updater.ApplySettings(in.AutoUpdateEnabled, cronExpr, in.CDNProviders, in.UseMihomoProxy); err != nil {
+	if err := s.updater.ApplySettings(in.AutoUpdateEnabled, cronExpr, in.CDNProviders, in.RawCDNProviders, in.UseMihomoProxy); err != nil {
 		return updater.RuntimeSettings{}, err
 	}
 	// 主程序仓库先应用再取快照：st.SelfRepo 必须是 SetSelfRepo 之后的新值，
@@ -290,6 +331,10 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 	// 落库归一化后的结果（而非入参），保证读回与运行期一致
 	b, _ := json.Marshal(st.CDNProviders)
 	if err := s.db.SetSetting(settingCDNProviders, string(b)); err != nil {
+		return updater.RuntimeSettings{}, err
+	}
+	rb, _ := json.Marshal(st.RawCDNProviders)
+	if err := s.db.SetSetting(settingRawCDNProviders, string(rb)); err != nil {
 		return updater.RuntimeSettings{}, err
 	}
 	if err := s.db.SetSetting(settingUseMihomoProxy, boolToStr(st.UseMihomoProxy)); err != nil {
@@ -345,6 +390,7 @@ func (s *SettingsService) Update(in UpdateSettingsInput) (updater.RuntimeSetting
 		}
 	}
 
+	s.pushRawCDN()
 	if s.reloadFn != nil {
 		if err := s.reloadFn(st.AutoUpdateEnabled, st.AutoUpdateCron); err != nil {
 			return updater.RuntimeSettings{}, err

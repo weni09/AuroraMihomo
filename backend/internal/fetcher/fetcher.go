@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"auroramihomo/backend/internal/netcheck"
@@ -13,10 +15,31 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
+// rawOfficialHost 是 raw 内容的官方主机，识别「需要加速」的链接。
+const rawOfficialHost = "raw.githubusercontent.com"
+
 // Client downloads remote subscription content.
 type Client struct {
 	httpClient *http.Client
 	userAgent  string
+
+	// mu 保护运行期可变的字段：rawProviders / rawSuccess / proxyURLFn。
+	// 设置保存或启动装载时会写入 rawProviders，而拉取是并发的，
+	// 无锁读写 slice 是 data race（slice header 可能撕裂）。
+	mu sync.RWMutex
+	// rawProviders 为 raw.githubusercontent.com 内容的加速源列表（已清洗，
+	// 官方源兜底）。空列表表示不加速、直连官方。由 SetRawCDNProviders 注入，
+	// 与 updater 管理的 Release 下载源独立。
+	rawProviders []string
+	// lastRaw 上次成功的 raw 加速源（列表里的原写法）。拉取时把它挪到最前，
+	// 与 updater 的「上次成功源优先」语义一致；进程内自维护，重启后清空。
+	lastRaw string
+	// rawSuccess 记录上次成功的 raw 加速源；由 service 层注入（落库），
+	// 默认空操作。与 updater 的 rememberLastRawCDN 对应。
+	rawSuccess func(string)
+	// proxyURLFn 返回本地 mihomo 的 HTTP 代理地址（如 http://127.0.0.1:7890）。
+	// 由 service 层注入；raw 官方链接拉取时优先经它直取官方，失败再回落镜像。
+	proxyURLFn func() string
 }
 
 func New(timeout time.Duration) *Client {
@@ -52,6 +75,110 @@ func New(timeout time.Duration) *Client {
 // 刷新流程卡在一个连不上的订阅上。
 const dialTimeout = 10 * time.Second
 
+// SetRawCDNProviders 注入 raw 加速源列表（按优先级）。
+// 列表为空时清空加速、回落直连官方。updater 已清洗并保证官方源兜底，
+// 这里仅做防御性去空。
+func (c *Client) SetRawCDNProviders(providers []string) {
+	clean := make([]string, 0, len(providers))
+	seen := map[string]bool{}
+	for _, p := range providers {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[strings.ToLower(p)] {
+			continue
+		}
+		seen[strings.ToLower(p)] = true
+		clean = append(clean, p)
+	}
+	c.mu.Lock()
+	c.rawProviders = clean
+	c.mu.Unlock()
+}
+
+// SetRawSuccessCallback 注入 raw 加速源成功回调（记录上次成功源）。
+func (c *Client) SetRawSuccessCallback(fn func(string)) {
+	if fn == nil {
+		fn = func(string) {}
+	}
+	c.mu.Lock()
+	c.rawSuccess = fn
+	c.mu.Unlock()
+}
+
+// SetProxyURLFunc 注入本地 mihomo 代理地址的查询回调。
+func (c *Client) SetProxyURLFunc(fn func() string) {
+	c.mu.Lock()
+	c.proxyURLFn = fn
+	c.mu.Unlock()
+}
+
+// proxyURL 返回当前可用的 mihomo 代理地址，不可用时为空串。
+func (c *Client) proxyURL() string {
+	c.mu.RLock()
+	fn := c.proxyURLFn
+	c.mu.RUnlock()
+	if fn == nil {
+		return ""
+	}
+	return strings.TrimSpace(fn())
+}
+
+// proxyClient 返回走 mihomo 代理的客户端；代理不可用时返回直连客户端与空串。
+// 每次调用都重新判断：内核可能在运行期被启停。保留 CheckRedirect，
+// 否则经代理路径会丢掉 SSRF 重定向校验。
+func (c *Client) proxyClient() (*http.Client, string) {
+	proxy := c.proxyURL()
+	if proxy == "" {
+		return c.httpClient, ""
+	}
+	u, err := url.Parse(proxy)
+	if err != nil || u.Host == "" {
+		logx.Errorf("mihomo 代理地址无法解析，改为直连: %q", proxy)
+		return c.httpClient, ""
+	}
+	return &http.Client{
+		Timeout:       c.httpClient.Timeout,
+		CheckRedirect: c.httpClient.CheckRedirect,
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(u),
+			// 与直连路径一样打 fwmark：到 mihomo 混合端口是本地回环连接，
+			// 本不会被 TPROXY 抓，但两条路径同构可避免「改了一处漏了一处」。
+			DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
+		},
+	}, proxy
+}
+
+// rawProvidersSnapshot 返回当前 raw 加速源列表的副本，上次成功的源挪到最前。
+func (c *Client) rawProvidersSnapshot() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return prioritizeRawProviders(c.rawProviders, c.lastRaw)
+}
+
+// prioritizeRawProviders 把上次成功的源挪到最前，其余保持原相对顺序。
+// last 为空或不在列表里时原样返回副本。不修改入参。
+// 与 updater 的 prioritizeCDNProviders 同构。
+func prioritizeRawProviders(list []string, last string) []string {
+	out := append([]string{}, list...)
+	last = strings.TrimSpace(last)
+	if last == "" {
+		return out
+	}
+	idx := -1
+	for i, p := range out {
+		if strings.EqualFold(p, last) {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		return out
+	}
+	picked := out[idx]
+	copy(out[1:idx+1], out[:idx])
+	out[0] = picked
+	return out
+}
+
 func (c *Client) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	return c.FetchWithUA(ctx, rawURL, "")
 }
@@ -75,6 +202,23 @@ func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([
 		return nil, UserInfo{}, err
 	}
 
+	// raw 官方链接且配置了加速源时，走「代理优先 + 镜像轮换」；否则单源直拉。
+	// 普通订阅 URL 不加速也不代理：机场地址本就走 fwmark 直连，
+	// 强行套本地代理会改变既有出网路径。
+	if isRawOfficial(rawURL) && len(c.rawProvidersSnapshot()) > 0 {
+		return c.fetchWithRawCDN(ctx, rawURL, userAgent)
+	}
+	return c.fetchSingle(ctx, rawURL, userAgent)
+}
+
+// fetchSingle 用默认直连客户端拉取。
+func (c *Client) fetchSingle(ctx context.Context, rawURL, userAgent string) ([]byte, UserInfo, error) {
+	return c.fetchSingleWithClient(ctx, rawURL, userAgent, c.httpClient)
+}
+
+// fetchSingleWithClient 单次完整拉取：请求、校验状态码与 HTML、返回正文与 userinfo。
+// 是 fetchWithRawCDN 的每个候选源（代理路径或镜像路径）的拉取单元。
+func (c *Client) fetchSingleWithClient(ctx context.Context, rawURL, userAgent string, client *http.Client) ([]byte, UserInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, UserInfo{}, fmt.Errorf("invalid subscription url: %w", err)
@@ -86,7 +230,7 @@ func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([
 	}
 	req.Header.Set("Accept", "text/plain, text/yaml, application/yaml, application/octet-stream, */*")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, UserInfo{}, fmt.Errorf("fetch subscription failed: %w", err)
 	}
@@ -115,4 +259,136 @@ func (c *Client) FetchWithMeta(ctx context.Context, rawURL, userAgent string) ([
 		return nil, info, fmt.Errorf("远程地址返回的是网页而非配置正文，请改用 raw 直链（GitHub 可用 raw.githubusercontent.com）")
 	}
 	return data, info, nil
+}
+
+// isRawOfficial 判断 URL 主机是否为 raw.githubusercontent.com。
+// 仅对该主机的链接应用加速；其它主机按原样单源直拉。
+func isRawOfficial(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return strings.ToLower(u.Hostname()) == rawOfficialHost
+}
+
+// shouldRememberRaw 判断某个 raw 源成功时是否值得记录为「上次成功源」。
+// 官方源（github/official/raw 官方主机）成功不记录：记录的语义是
+// 「镜像优先」，直连官方不需要下次优先。
+func shouldRememberRaw(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "github", "official", rawOfficialHost:
+		return false
+	}
+	return true
+}
+
+// fetchWithRawCDN 拉取 raw 官方链接：先经 mihomo 代理直取官方地址，
+// 失败再按镜像列表轮换——与 updater 的 Release 下载规则同构。
+// 代理与官方源成功都不记 lastRaw（直连官方无需下次优先）。
+func (c *Client) fetchWithRawCDN(ctx context.Context, rawURL, userAgent string) ([]byte, UserInfo, error) {
+	var errs []string
+
+	// 1) 代理优先：内核在跑时走它通常比第三方镜像更快，且拿到官方原始文件。
+	if client, proxy := c.proxyClient(); proxy != "" {
+		data, info, err := c.fetchSingleWithClient(ctx, rawURL, userAgent, client)
+		if err == nil {
+			return data, info, nil
+		}
+		errs = append(errs, fmt.Sprintf("mihomo 代理(%s) => %v", proxy, err))
+	}
+
+	// 2) 镜像轮换：按列表顺序尝试，官方源（github）作最后兜底。
+	for _, p := range c.rawProvidersSnapshot() {
+		u := rawCDNURLFor(rawURL, p)
+		if u == "" {
+			continue
+		}
+		data, info, err := c.fetchSingle(ctx, u, userAgent)
+		if err != nil {
+			// 只拼源标识不拼完整 URL：订阅 URL 可能带 token 等凭据参数，
+			// 该错误会随 error_message 回显给前端
+			errs = append(errs, fmt.Sprintf("%s => %v", p, err))
+			continue
+		}
+		if shouldRememberRaw(p) {
+			c.rememberRawSuccess(p)
+		}
+		return data, info, nil
+	}
+	return nil, UserInfo{}, fmt.Errorf("all raw sources failed: %s", strings.Join(errs, " | "))
+}
+
+// rawCDNURLFor 把单个 raw 加速源展开成可请求的 URL；无法识别时返回空串。
+// 与 updater 的 Release CDN 展开同构：官方源原样、含 %s 模板替换、
+// 完整前缀拼接、裸域名忽略、jsdelivr 跳过。
+func rawCDNURLFor(official, provider string) string {
+	switch strings.ToLower(provider) {
+	case "github", "official", "raw.githubusercontent.com":
+		return official
+	case "ghproxy.com":
+		return "https://ghproxy.com/" + official
+	case "mirror.ghproxy.com":
+		return "https://mirror.ghproxy.com/" + official
+	case "gh.llkk.cc":
+		return "https://gh.llkk.cc/" + official
+	case "ghproxy.net":
+		return "https://ghproxy.net/" + official
+	case "gh.ddlc.top":
+		return "https://gh.ddlc.top/" + official
+	case "gitdl.cn":
+		return "https://gitdl.cn/" + official
+	case "ghp.ci":
+		return "https://ghp.ci/" + official
+	default:
+		if strings.Contains(provider, "%s") {
+			return fmt.Sprintf(provider, official)
+		}
+		// jsdelivr 只镜像仓库内文件、代理不了 raw 路径，跳过
+		if isJsdelivrHost(provider) {
+			return ""
+		}
+		if strings.HasPrefix(provider, "http://") || strings.HasPrefix(provider, "https://") {
+			if strings.HasSuffix(provider, "/") {
+				return provider + official
+			}
+			return provider + "/" + official
+		}
+		return ""
+	}
+}
+
+// jsdelivrHosts 列出已知的 jsdelivr 镜像域名，raw 加速填进来会被跳过。
+var jsdelivrHosts = []string{"jsdelivr.net", "jsdelivr.com"}
+
+// isJsdelivrHost 判断一个源是否为 jsdelivr 镜像（只看域名部分）。
+func isJsdelivrHost(provider string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	p = strings.TrimPrefix(strings.TrimPrefix(p, "https://"), "http://")
+	if i := strings.IndexAny(p, "/?#"); i >= 0 {
+		p = p[:i]
+	}
+	for _, h := range jsdelivrHosts {
+		if p == h || strings.HasSuffix(p, "."+h) {
+			return true
+		}
+	}
+	return false
+}
+
+// rememberRawSuccess 记下本次成功的源（进程内优先化用）并触发注入的回调（落库）。
+// 官方源成功不会走到这里（shouldRememberRaw 已过滤）。
+func (c *Client) rememberRawSuccess(provider string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return
+	}
+	c.mu.Lock()
+	if !strings.EqualFold(c.lastRaw, provider) {
+		c.lastRaw = provider
+	}
+	fn := c.rawSuccess
+	c.mu.Unlock()
+	if fn != nil {
+		fn(provider)
+	}
 }

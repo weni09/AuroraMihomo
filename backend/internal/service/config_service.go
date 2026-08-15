@@ -157,6 +157,26 @@ func (s *ConfigService) SetPolicyProvider(fn func() domain.MergePolicy) {
 	s.policyProvider = fn
 }
 
+// SetRawCDNProviders 把 raw 加速源列表推给本服务内部所有 fetcher：
+// 订阅 URL 拉取与 substore 引擎的订阅解析都可能拿到 raw 直链。
+func (s *ConfigService) SetRawCDNProviders(providers []string) {
+	s.fetcher.SetRawCDNProviders(providers)
+	s.ssEngine.SetRawCDNProviders(providers)
+}
+
+// SetRawSuccessCallback 注入 raw 加速源成功回调（记录上次成功源）。
+func (s *ConfigService) SetRawSuccessCallback(fn func(provider string)) {
+	s.fetcher.SetRawSuccessCallback(fn)
+	s.ssEngine.SetRawSuccessCallback(fn)
+}
+
+// SetRawProxyURLFunc 注入本地 mihomo 代理地址查询回调。
+// raw 官方链接拉取时优先经它直取官方，失败再回落镜像列表。
+func (s *ConfigService) SetRawProxyURLFunc(fn func() string) {
+	s.fetcher.SetProxyURLFunc(fn)
+	s.ssEngine.SetProxyURLFunc(fn)
+}
+
 // SetRemoteSourceProvider 注入远程来源选择，未注入时聚合所有启用订阅
 func (s *ConfigService) SetRemoteSourceProvider(fn func() domain.RemoteSource) {
 	s.remoteSourceProvider = fn

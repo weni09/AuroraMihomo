@@ -616,6 +616,8 @@ type UpdateSettings struct {
 	AutoUpdateCron     string   `json:"autoUpdateCron"`
 	CDNProviders       []string `json:"cdnProviders"`
 	LastCDNProvider    string   `json:"lastCdnProvider,optional"`
+	RawCDNProviders    []string `json:"rawCdnProviders"`
+	LastRawCDNProvider string   `json:"lastRawCdnProvider,optional"`
 	UseMihomoProxy     bool     `json:"useMihomoProxy"`
 	SelfRepo           string   `json:"selfRepo"`
 	MihomoProxyUrl     string   `json:"mihomoProxyUrl"`
@@ -626,6 +628,7 @@ type UpdateSettings struct {
 	MihomoVersion      string   `json:"mihomoVersion"`
 	ZashboardVersion   string   `json:"zashboardVersion"`
 	DefaultCDN         []string `json:"defaultCDN"`
+	DefaultRawCDN      []string `json:"defaultRawCDN,optional"`
 	LogRetentionDays   int      `json:"logRetentionDays"`
 	LogCleanupCron     string   `json:"logCleanupCron"`
 	LogCleanupEnabled  bool     `json:"logCleanupEnabled"`
@@ -637,6 +640,7 @@ type UpdateSettingsReq struct {
 	AutoUpdateEnabled  *bool    `json:"autoUpdateEnabled,optional"`
 	AutoUpdateCron     string   `json:"autoUpdateCron,optional"`
 	CDNProviders       []string `json:"cdnProviders,optional"`
+	RawCDNProviders    []string `json:"rawCdnProviders,optional"`
 	UseMihomoProxy     *bool    `json:"useMihomoProxy,optional"`
 	SelfRepo           *string  `json:"selfRepo,optional"`
 	LogRetentionDays   *int     `json:"logRetentionDays,optional"`

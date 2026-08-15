@@ -18,6 +18,22 @@ func NewEngine() *Engine {
 	return &Engine{fetcher: fetcher.New(0)}
 }
 
+// SetRawCDNProviders 把 raw 加速源列表推给内部 fetcher。
+// 订阅 URL 可能是 raw.githubusercontent.com 直链，同样享受加速。
+func (e *Engine) SetRawCDNProviders(providers []string) {
+	e.fetcher.SetRawCDNProviders(providers)
+}
+
+// SetRawSuccessCallback 把 raw 加速源成功回调转发给内部 fetcher。
+func (e *Engine) SetRawSuccessCallback(fn func(string)) {
+	e.fetcher.SetRawSuccessCallback(fn)
+}
+
+// SetProxyURLFunc 把本地 mihomo 代理查询回调转发给内部 fetcher。
+func (e *Engine) SetProxyURLFunc(fn func() string) {
+	e.fetcher.SetProxyURLFunc(fn)
+}
+
 // Nodes 只解析出节点，不做改写、管道与渲染，
 // 供 ConvertMany 逐个处理子订阅时复用。
 func (e *Engine) Nodes(ctx context.Context, req ConvertRequest) ([]Node, error) {

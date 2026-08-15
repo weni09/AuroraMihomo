@@ -627,6 +627,7 @@ nslookup www.google.com
 |---|---|---|
 | 优先经由本地 Mihomo 代理出网 | 开 | 内核在跑时，下载与版本查询都先走它。拿到的是 GitHub 官方原始文件，不用担心第三方镜像返回被篡改或截断的内容 |
 | 下载源（每行一个） | 8 个内置源 | 按顺序尝试，失败自动回退 |
+| raw 加速源（每行一个） | 8 个内置源 | 用于 `raw.githubusercontent.com` 类链接（模板转换远程地址、订阅远程源等），同样按顺序回退 |
 
 下载源的写法：完整前缀（如 `https://mirror.example.com`，会拼在官方地址前）或含 `%s` 的模板。**裸域名会被忽略**，jsdelivr 会被跳过（它只镜像仓库内文件，代理不了 Release 资产）。
 
@@ -824,6 +825,7 @@ Linux 上启用并安装后，AGH 注册为系统服务（systemd 单元 `aurora
 | `AURORA_AUTO_UPDATE_CRON` | 自动更新 cron（6 段，含秒） |
 | `AURORA_GITHUB_API` | GitHub API 地址，可指向自建镜像 |
 | `AURORA_CDN_PROVIDERS` | CDN 源列表，逗号分隔 |
+| `AURORA_RAW_CDN_PROVIDERS` | raw 加速源列表，逗号分隔 |
 | `AURORA_USE_MIHOMO_PROXY` | 是否优先经内核代理出网 |
 
 ---

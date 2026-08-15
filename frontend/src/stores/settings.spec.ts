@@ -252,4 +252,36 @@ describe('useSettingsStore self-update & backup', () => {
     )
     expect(store.settings?.selfRepo).toBe('myuser/AuroraMihomo')
   })
+
+  it('save 携带 rawCdnProviders 到 PUT /settings/update', async () => {
+    mockedApi.put.mockResolvedValue({
+      data: {
+        autoUpdateEnabled: true,
+        autoUpdateCron: '0 0 4 * * *',
+        cdnProviders: [],
+        rawCdnProviders: ['ghproxy.com', 'github'],
+        useMihomoProxy: true,
+        selfRepo: 'weni09/AuroraMihomo',
+        mihomoPath: '',
+        zashboardDir: '',
+        mihomoPresent: false,
+        zashboardPresent: false,
+        defaultCDN: [],
+        defaultRawCDN: ['github', 'ghproxy.com'],
+        logRetentionDays: 7,
+        logCleanupCron: '0 30 3 * * *',
+        logCleanupEnabled: true,
+        monitorEnabled: true,
+        monitorIntervalSec: 3,
+      },
+    })
+    const store = useSettingsStore()
+    await store.save({ rawCdnProviders: ['ghproxy.com', 'github'] })
+    expect(mockedApi.put).toHaveBeenCalledWith(
+      '/settings/update',
+      expect.objectContaining({ rawCdnProviders: ['ghproxy.com', 'github'] }),
+    )
+    expect(store.settings?.rawCdnProviders).toEqual(['ghproxy.com', 'github'])
+    expect(store.settings?.defaultRawCDN).toEqual(['github', 'ghproxy.com'])
+  })
 })

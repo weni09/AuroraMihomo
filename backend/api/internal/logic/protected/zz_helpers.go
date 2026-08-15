@@ -219,6 +219,8 @@ func toUpdateSettings(svcCtx *svc.ServiceContext, st updater.RuntimeSettings) *t
 		AutoUpdateCron:    st.AutoUpdateCron,
 		CDNProviders:      st.CDNProviders,
 		LastCDNProvider:   st.LastCDNProvider,
+		RawCDNProviders:   st.RawCDNProviders,
+		LastRawCDNProvider: st.LastRawCDNProvider,
 		UseMihomoProxy:    st.UseMihomoProxy,
 		SelfRepo:          st.SelfRepo,
 		MihomoProxyUrl:    st.MihomoProxyURL,
@@ -229,6 +231,7 @@ func toUpdateSettings(svcCtx *svc.ServiceContext, st updater.RuntimeSettings) *t
 		MihomoVersion:     st.MihomoVersion,
 		ZashboardVersion:  st.ZashboardVersion,
 		DefaultCDN:        svcCtx.Updater.DefaultCDNProviders(),
+		DefaultRawCDN:     svcCtx.Updater.DefaultRawCDNProvidersList(),
 		// 日志保留天数不属于 updater 的运行期设置（那管的是组件更新），
 		// 直接从 applog 读当前生效值
 		LogRetentionDays:  applog.RetentionDays(),

@@ -28,6 +28,8 @@ const form = reactive({
   autoUpdateEnabled: false,
   autoUpdateCron: '0 0 4 * * *',
   cdnText: '',
+  // raw.githubusercontent.com 内容的加速源（模板转换远程地址、订阅远程源等）
+  rawCdnText: '',
   // 出网优先走本地内核代理，失败再回落镜像/直连
   useMihomoProxy: true,
   // 主程序仓库：与后端 DefaultSelfRepo 一致。
@@ -115,6 +117,7 @@ function syncForm() {
   form.autoUpdateEnabled = store.settings.autoUpdateEnabled
   form.autoUpdateCron = store.settings.autoUpdateCron
   form.cdnText = (store.settings.cdnProviders || []).join('\n')
+  form.rawCdnText = (store.settings.rawCdnProviders || []).join('\n')
   form.useMihomoProxy = store.settings.useMihomoProxy !== false
   form.selfRepo = store.settings.selfRepo || ''
   form.logRetentionDays = store.settings.logRetentionDays || 7
@@ -126,12 +129,23 @@ function syncForm() {
 
 const defaultCDNText = computed(() => (store.settings?.defaultCDN || []).join(', '))
 
+// 默认 raw 加速源列表（后端内置）
+const defaultRawCDNText = computed(() => (store.settings?.defaultRawCDN || []).join(', '))
+
 // 上次成功源：只读展示。在当前编辑列表里才提示「下次优先」。
 const lastCdnProvider = computed(() => (store.settings?.lastCdnProvider || '').trim())
 const lastCdnInList = computed(() => {
   const last = lastCdnProvider.value.toLowerCase()
   if (!last) return false
   return parseList(form.cdnText).some((p) => p.toLowerCase() === last)
+})
+
+// 上次成功的 raw 加速源：只读展示。
+const lastRawCdnProvider = computed(() => (store.settings?.lastRawCdnProvider || '').trim())
+const lastRawCdnInList = computed(() => {
+  const last = lastRawCdnProvider.value.toLowerCase()
+  if (!last) return false
+  return parseList(form.rawCdnText).some((p) => p.toLowerCase() === last)
 })
 
 // 代理地址为空表示内核未运行或未开放 mixed-port/port，此时会自动回落
@@ -192,6 +206,7 @@ async function onSave() {
     autoUpdateEnabled: form.autoUpdateEnabled,
     autoUpdateCron: form.autoUpdateCron,
     cdnProviders: parseList(form.cdnText),
+    rawCdnProviders: parseList(form.rawCdnText),
     useMihomoProxy: form.useMihomoProxy,
     // 主程序仓库 trim 后提交：空串 = 停用自升级
     selfRepo: form.selfRepo.trim(),
@@ -208,6 +223,11 @@ async function onSave() {
 function useDefaultCDN() {
   if (!store.settings) return
   form.cdnText = (store.settings.defaultCDN || []).join('\n')
+}
+
+function useDefaultRawCDN() {
+  if (!store.settings) return
+  form.rawCdnText = (store.settings.defaultRawCDN || []).join('\n')
 }
 
 // 修改管理员密码
@@ -1272,6 +1292,41 @@ const navOpen = ref(false)
             检查更新（<code>api.github.com</code>）不使用这些源：没有镜像代理 GitHub 的 REST API，
             套上前缀只会得到 404。该请求一律直连官方，网络不通时由上面的 Mihomo 代理兜底。
           </p>
+
+          <div class="mt-5 border-t border-line pt-4">
+            <div class="flex items-center justify-between mb-1">
+              <Label for="cdn-raw" class="text-sm font-semibold text-fg">
+                raw 加速源（按优先级，每行一个）
+              </Label>
+              <Button variant="ghost" size="sm" @click="useDefaultRawCDN">恢复默认</Button>
+            </div>
+            <p class="text-xs text-fg-subtle mb-1.5">
+              用于 <code>raw.githubusercontent.com</code> 类链接的加速——模板转换的远程地址、
+              订阅远程源等都会用到。代理不可用或失败时按此顺序回落；上次成功的源会排到最前，
+              官方源始终作为最后兜底。
+            </p>
+            <Textarea
+              id="cdn-raw"
+              v-model="form.rawCdnText"
+              rows="6"
+              class="font-mono text-xs"
+              placeholder="每行一个，如 ghproxy.com"
+            />
+            <p
+              v-if="lastRawCdnProvider"
+              class="text-xs mt-1.5 flex flex-wrap items-center gap-1.5"
+            >
+              <Badge variant="ok">上次成功</Badge>
+              <code class="font-mono">{{ lastRawCdnProvider }}</code>
+              <span v-if="lastRawCdnInList" class="text-fg-subtle">下次优先尝试，失败再按列表顺序回落</span>
+              <span v-else class="text-fg-subtle">已不在当前列表，保存后不再优先</span>
+            </p>
+            <p v-if="defaultRawCDNText" class="text-xs text-fg-subtle mt-1">默认：{{ defaultRawCDNText }}</p>
+            <p class="text-xs text-fg-subtle mt-3">
+              支持写法与上面的下载源相同：完整前缀、含 <code>%s</code> 模板或
+              <code>github</code>（直连官方）。jsdelivr 类镜像代理不了 raw 路径，填进来会被跳过。
+            </p>
+          </div>
 
           <div class="mt-5">
             <Label for="self-repo" class="text-sm font-semibold text-fg">主程序仓库</Label>
