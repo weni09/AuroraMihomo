@@ -13,15 +13,16 @@ func TestRunProbeFramework(t *testing.T) {
 		calls++
 		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
 	})
-	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 5*time.Second, []Probe{probe})
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypeTCP, Target: "x"}}, PathDirect, 5*time.Second, map[string]Probe{TypeTCP: probe})
 	run.Execute(context.Background(), func(ProbeResult) {})
 	if calls != 1 {
 		t.Fatalf("探测应执行一次, got %d", calls)
 	}
-	if len(run.Results) != 1 || run.Results[0].Status != StatusSuccess {
-		t.Fatalf("结果应回填, got %+v", run.Results)
+	snap := run.Snapshot()
+	if len(snap.Results) != 1 || snap.Results[0].Status != StatusSuccess {
+		t.Fatalf("结果应回填, got %+v", snap.Results)
 	}
-	if !run.Done {
+	if !snap.Done {
 		t.Fatal("执行完成后应置 Done")
 	}
 }
@@ -32,15 +33,16 @@ func TestRunProbeTimeout(t *testing.T) {
 		<-ctx.Done() // 等框架的超时
 		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusTimeout}
 	})
-	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 100*time.Millisecond, []Probe{probe})
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 100*time.Millisecond, map[string]Probe{TypePing: probe})
 	run.Execute(context.Background(), func(ProbeResult) {})
-	if len(run.Results) != 1 {
-		t.Fatalf("应有 1 条结果, got %d", len(run.Results))
+	snap := run.Snapshot()
+	if len(snap.Results) != 1 {
+		t.Fatalf("应有 1 条结果, got %d", len(snap.Results))
 	}
-	if run.Results[0].Status != StatusTimeout {
-		t.Fatalf("超时应标记 timeout, got %q", run.Results[0].Status)
+	if snap.Results[0].Status != StatusTimeout {
+		t.Fatalf("超时应标记 timeout, got %q", snap.Results[0].Status)
 	}
-	if !run.Done {
+	if !snap.Done {
 		t.Fatal("超时探测结束后应置 Done")
 	}
 }
@@ -57,12 +59,95 @@ func TestRunProbeProgressSingleOwner(t *testing.T) {
 		}
 		return res
 	})
-	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 5*time.Second, []Probe{probe})
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 5*time.Second, map[string]Probe{TypePing: probe})
 	run.Execute(context.Background(), func(ProbeResult) { events++ })
 	if events != 1 {
 		t.Fatalf("onProgress 应只收到一次最终事件, got %d", events)
 	}
-	if len(run.Results) != 1 || run.Results[0].Status != StatusSuccess {
-		t.Fatalf("结果应回填, got %+v", run.Results)
+	snap := run.Snapshot()
+	if len(snap.Results) != 1 || snap.Results[0].Status != StatusSuccess {
+		t.Fatalf("结果应回填, got %+v", snap.Results)
+	}
+}
+
+func TestExecuteDispatchesByType(t *testing.T) {
+	// 验证按类型分派：多个探测器注册不同类型，每个目标只执行匹配类型的探测器，
+	// 未注册类型回填 StatusError 且不 panic
+	tcpCalls, dnsCalls := 0, 0
+	tcpProbe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		tcpCalls++
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+	})
+	dnsProbe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		dnsCalls++
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+	})
+	targets := []DiagnosticTarget{
+		{Type: TypeTCP, Target: "t1"},
+		{Type: TypeDNS, Target: "d1"},
+		{Type: TypeTCP, Target: "t2"},
+		{Type: "ftp", Target: "u1"}, // 未注册类型
+	}
+	run := NewRun("req-1", targets, PathDirect, 5*time.Second, map[string]Probe{TypeTCP: tcpProbe, TypeDNS: dnsProbe})
+	run.Execute(context.Background(), func(ProbeResult) {})
+	if tcpCalls != 2 {
+		t.Fatalf("tcp 探测应执行 2 次, got %d", tcpCalls)
+	}
+	if dnsCalls != 1 {
+		t.Fatalf("dns 探测应执行 1 次, got %d", dnsCalls)
+	}
+	snap := run.Snapshot()
+	if len(snap.Results) != len(targets) {
+		t.Fatalf("应有 %d 条结果, got %d", len(targets), len(snap.Results))
+	}
+	if snap.Results[3].Status != StatusError || snap.Results[3].Error == "" {
+		t.Fatalf("未注册类型应回填 StatusError, got %+v", snap.Results[3])
+	}
+}
+
+func TestSnapshotConcurrencySafe(t *testing.T) {
+	// 验证并发安全快照：Execute 在 goroutine 中运行，主协程循环 Snapshot()
+	// 读取不产生数据竞争（配合 go test -race 验证），且快照是深拷贝——
+	// 修改快照内容不影响后续快照。
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		time.Sleep(1 * time.Millisecond)
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+	})
+	const n = 50
+	targets := make([]DiagnosticTarget, n)
+	for i := range targets {
+		targets[i] = DiagnosticTarget{Type: TypeTCP, Target: "x"}
+	}
+	run := NewRun("req-1", targets, PathDirect, 5*time.Second, map[string]Probe{TypeTCP: probe})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run.Execute(context.Background(), func(ProbeResult) {})
+	}()
+
+	for {
+		select {
+		case <-done:
+			goto finished
+		default:
+		}
+		snap := run.Snapshot()
+		if len(snap.Results) > n {
+			t.Fatalf("结果数不应超过目标数, got %d", len(snap.Results))
+		}
+		if len(snap.Results) > 0 {
+			snap.Results[0] = ProbeResult{} // 修改拷贝，不得影响内部状态
+		}
+	}
+finished:
+	snap := run.Snapshot()
+	if !snap.Done || len(snap.Results) != n {
+		t.Fatalf("执行完成后快照应含全部结果, got done=%v len=%d", snap.Done, len(snap.Results))
+	}
+	for i, res := range snap.Results {
+		if res.Status != StatusSuccess {
+			t.Fatalf("结果 %d 被并发快照污染: %+v", i, res)
+		}
 	}
 }
