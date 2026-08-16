@@ -817,6 +817,45 @@ type DashboardEntryResp {
 	Message    string `json:"message"`
 }
 
+// ---------- 网络诊断 ----------
+type DiagnosticTarget {
+	Type   string `json:"type"` // ping|dns|tcp|http|traceroute
+	Target string `json:"target"` // 主机/域名/URL
+	Port   int    `json:"port,optional"` // tcp 用
+}
+
+type DiagnosticRunReq {
+	Targets []DiagnosticTarget `json:"targets"`
+	Path    string             `json:"path,optional"` // direct|proxy|both，默认 both
+}
+
+type DiagnosticRunResp {
+	RequestId string `json:"requestId"`
+}
+
+// DiagnosticResultReq result 轮询的路径参数。requestId 是字符串
+// （diag-<unixnano>-<seq>），故不能用 int64 的 IdPathReq 承载。
+type DiagnosticResultReq {
+	RequestId string `path:"requestId"`
+}
+
+type DiagnosticResultResp {
+	RequestId string        `json:"requestId"`
+	Done      bool          `json:"done"`
+	Results   []ProbeResult `json:"results,optional"`
+}
+
+// ProbeResult 是后端 diagnostics 包结果结构的镜像（避免类型循环依赖）。
+type ProbeResult {
+	Target    string      `json:"target"`
+	Type      string      `json:"type"`
+	Path      string      `json:"path"`
+	Status    string      `json:"status"`
+	LatencyMs int64       `json:"latencyMs,omitempty"`
+	Detail    interface{} `json:"detail,omitempty"`
+	Error     string      `json:"error,omitempty"`
+}
+
 // ---------- AdGuard Home（可选嵌入） ----------
 // AdGuardStatusResp 面板状态视图；EntryPath 为同源反代前缀（默认 /adguard/）。
 type AdGuardStatusResp {
@@ -1247,5 +1286,13 @@ service aurora-api {
 
 	@handler listTasks
 	get /api/v1/tasks returns ([]TaskItem)
+
+	// 网络诊断：发起异步诊断，立即返回 requestId；进度经 /ws 推 diagnostic.progress
+	@handler runDiagnostics
+	post /api/v1/diagnostics/run (DiagnosticRunReq) returns (DiagnosticRunResp)
+
+	// 网络诊断：轮询兜底拿全量结果（WS 断开也能用）
+	@handler getDiagnosticsResult
+	get /api/v1/diagnostics/result/:requestId (DiagnosticResultReq) returns (DiagnosticResultResp)
 }
 

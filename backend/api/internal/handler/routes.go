@@ -213,6 +213,16 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 			},
 			{
 				Method:  http.MethodGet,
+				Path:    "/api/v1/diagnostics/result/:requestId",
+				Handler: protected.GetDiagnosticsResultHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/api/v1/diagnostics/run",
+				Handler: protected.RunDiagnosticsHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
 				Path:    "/api/v1/files",
 				Handler: protected.ListFilesHandler(serverCtx),
 			},

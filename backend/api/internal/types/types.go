@@ -173,6 +173,31 @@ type DashboardEntryResp struct {
 	Message    string `json:"message"`
 }
 
+type DiagnosticResultReq struct {
+	RequestId string `path:"requestId"`
+}
+
+type DiagnosticResultResp struct {
+	RequestId string        `json:"requestId"`
+	Done      bool          `json:"done"`
+	Results   []ProbeResult `json:"results,optional"`
+}
+
+type DiagnosticRunReq struct {
+	Targets []DiagnosticTarget `json:"targets"`
+	Path    string             `json:"path,optional"` // direct|proxy|both，默认 both
+}
+
+type DiagnosticRunResp struct {
+	RequestId string `json:"requestId"`
+}
+
+type DiagnosticTarget struct {
+	Type   string `json:"type"`          // ping|dns|tcp|http|traceroute
+	Target string `json:"target"`        // 主机/域名/URL
+	Port   int    `json:"port,optional"` // tcp 用
+}
+
 type DiffItem struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
@@ -289,6 +314,16 @@ type ProbeCandidate struct {
 	Params      string `json:"params"`
 	URL         string `json:"url"`
 	HasUserInfo bool   `json:"hasUserInfo"`
+}
+
+type ProbeResult struct {
+	Target    string      `json:"target"`
+	Type      string      `json:"type"`
+	Path      string      `json:"path"`
+	Status    string      `json:"status"`
+	LatencyMs int64       `json:"latencyMs,omitempty"`
+	Detail    interface{} `json:"detail,omitempty"`
+	Error     string      `json:"error,omitempty"`
 }
 
 type ProbeSubscriptionReq struct {
