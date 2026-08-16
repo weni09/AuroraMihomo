@@ -7,6 +7,7 @@ import LoginView from '../views/LoginView.vue'
 import SubStoreLayout from '../views/SubStoreLayout.vue'
 import SubscriptionsView from '../views/SubscriptionsView.vue'
 import SettingsView from '../views/SettingsView.vue'
+import DiagnosticsView from '../views/DiagnosticsView.vue'
 import DiffView from '../views/DiffView.vue'
 import CollectionsView from '../views/CollectionsView.vue'
 import LogsView from '../views/LogsView.vue'
@@ -43,6 +44,7 @@ const router = createRouter({
     { path: '/diff', name: 'diff', component: DiffView, meta: { title: '配置差异' } },
     { path: '/logs', name: 'logs', component: LogsView, meta: { title: '运行日志' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '系统设置' } },
+    { path: '/diagnostics', name: 'diagnostics', component: DiagnosticsView, meta: { title: '网络诊断' } },
     // 内嵌 zashboard（后端把面板静态资源挂在同源的 /ui/）
     { path: '/zashboard', name: 'zashboard', component: ZashboardView, meta: { title: 'Zashboard' } },
     // 内嵌 AdGuard Home（SPA /adguard；官方 UI 反代 /adguard-ui/）
