@@ -183,6 +183,12 @@ func TestIsBlockedMetadataIP(t *testing.T) {
 	if !isBlockedMetadataIP(net.ParseIP("169.254.0.1")) {
 		t.Error("link-local 应拦截")
 	}
+	if !isBlockedMetadataIP(net.ParseIP("100.100.100.200")) {
+		t.Error("阿里云 metadata 应拦截")
+	}
+	if !isBlockedMetadataIP(net.ParseIP("fd00:ec2::254")) {
+		t.Error("AWS IMDSv6 应拦截")
+	}
 	if isBlockedMetadataIP(net.ParseIP("127.0.0.1")) {
 		t.Error("loopback 不应拦截")
 	}
@@ -191,6 +197,9 @@ func TestIsBlockedMetadataIP(t *testing.T) {
 	}
 	if isBlockedMetadataIP(net.ParseIP("8.8.8.8")) {
 		t.Error("公网不应拦截")
+	}
+	if isBlockedMetadataIP(net.ParseIP("fd00::1")) {
+		t.Error("普通 ULA 不应拦截")
 	}
 }
 

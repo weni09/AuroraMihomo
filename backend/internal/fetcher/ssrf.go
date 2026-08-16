@@ -1,11 +1,17 @@
 package fetcher
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"auroramihomo/backend/internal/netcheck"
+
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // 云环境链路本地 / 元数据地址：订阅 URL 由登录用户提供，但服务端代发请求。
@@ -145,7 +151,12 @@ func isBlockedMetadataIP(ip net.IP) bool {
 	if ip.IsLinkLocalUnicast() {
 		return true
 	}
-	// IPv6 唯一本地地址不拦（fc00::/7 类似 RFC1918）
+	// AWS EC2 IMDSv6 的固定地址 fd00:ec2::254 落在 ULA 范围内，
+	// 而 ULA 默认放行——这里显式拦截，避免云实例凭据被读出。
+	if strings.EqualFold(ip.String(), "fd00:ec2::254") {
+		return true
+	}
+	// IPv6 唯一本地地址不拦（fc00::/7 类似 RFC1918），上面的精确地址除外
 	return false
 }
 
@@ -166,4 +177,50 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("订阅地址重定向目标被拒绝: %w", err)
 	}
 	return nil
+}
+
+// guardedDialContext 在 MarkedDialContext 外再包一层 DNS 复验。
+//
+// validateFetchURL / checkRedirect 只检查 URL 的主机名字面量与字面 IP，
+// 而域名可在请求时经 DNS 重绑定解析到云 metadata（169.254.169.254）等
+// 被拦地址。本函数在真正拨号前先解析域名，对每个解析出的 IP 执行
+// isBlockedMetadataIP，命中则拒绝建连——从而封死 DNS 重绑定绕过 SSRF
+// 防护的通道。
+//
+// 对已是 IP 字面量的地址直接检查（与 validateFetchURL 一致）；
+// 对域名先 LookupIP 再逐个检查，最后用已检查过的 IP 直接拨号，
+// 避免底层 Dialer 二次解析时被重绑定到不同地址。
+func guardedDialContext(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	dialer := netcheck.MarkedDialer(timeout, logx.Errorf)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			// 无端口（如 unix 域或纯 IP 场景），按原样回退到标记拨号器
+			return dialer.DialContext(ctx, network, addr)
+		}
+
+		// 已是 IP 字面量：直接检查后拨号
+		if ip := net.ParseIP(host); ip != nil {
+			if isBlockedMetadataIP(ip) {
+				return nil, fmt.Errorf("订阅地址解析到被拦截的 metadata 地址 %s", ip)
+			}
+			return dialer.DialContext(ctx, network, addr)
+		}
+
+		// 域名：先解析并逐个检查，再用第一个通过检查的 IP 拨号，
+		// 避免 Dialer 二次解析时的 DNS 重绑定窗口。
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		for _, ip := range ips {
+			if isBlockedMetadataIP(ip) {
+				return nil, fmt.Errorf("订阅地址 %s 解析到被拦截的 metadata 地址 %s", host, ip)
+			}
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("订阅地址 %s 未解析到任何 IP", host)
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	}
 }

@@ -559,6 +559,14 @@ func (s *AdGuardService) WiringRollback(ctx context.Context) error {
 	_ = s.db.SetSetting(settingAdGuardSnapshot, "")
 	s.clearDNSPortOverride()
 
+	// 模式 1 回滚恢复了 AGH 端口配置，若进程在跑需重启让 dns.port 生效。
+	// 用 Running 而非 DesiredRunning：用户手动停掉的 AGH 不该被回滚偷偷拉起。
+	if plan.DidBind53 && s.mgr.Status().Running {
+		if err := s.Restart(ctx); err != nil {
+			s.logger.Errorf("回滚后重启 AdGuard 使端口恢复生效失败: %v", err)
+		}
+	}
+
 	if s.transp != nil {
 		if err := s.transp.Resync(ctx); err != nil {
 			return fmt.Errorf("回滚完成，但 TProxy 规则同步失败: %w", err)
@@ -983,7 +991,13 @@ func (s *AdGuardService) rollbackWiringPlan(ctx context.Context, plan WiringPlan
 			}
 		}
 	}
-	// DidBind53：退出模式 1 时不在此恢复 AGH 端口（由 enterDNSMode0/其它模式重写）
+	// DidBind53：退出模式 1 时恢复 AGH 原始端口（进入前的高位端口）。
+	// 恢复后若 AGH 正在运行需重启使其生效。
+	if plan.DidBind53 && plan.OriginalDNSPort > 0 {
+		if err := adguard.SetDNSPort(s.workDir, plan.OriginalDNSPort); err != nil {
+			errs = append(errs, "恢复 AdGuard DNS 端口: "+err.Error())
+		}
+	}
 
 	if len(errs) > 0 {
 		return errors.New(strings.Join(errs, "; "))

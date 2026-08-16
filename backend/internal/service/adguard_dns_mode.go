@@ -140,9 +140,11 @@ func (s *AdGuardService) enterDNSMode1(ctx context.Context) error {
 	}
 
 	plan := WiringPlan{
-		Actions:              make([]string, 0, 6),
-		AGHDNSPort:           53,
-		OriginalDNSPort:      cur.MihomoDNSPort,
+		Actions:    make([]string, 0, 6),
+		AGHDNSPort: 53,
+		// 保存进入模式 1 前 AGH 的端口（如 1053），退出时据此恢复——
+		// 语义是「AGH 原始端口」，不是 mihomo 的 DNS 端口。
+		OriginalDNSPort:      cur.AGHDNSPort,
 		OriginalMihomoListen: cur.MihomoDNSListen,
 		OriginalUpstream:     append([]string(nil), cur.OriginalUpstream...),
 		WiringOn:             true,

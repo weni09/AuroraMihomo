@@ -52,7 +52,10 @@ func New(timeout time.Duration) *Client {
 			// 模式下不被 mihomo 自己接管（理由见 netcheck.MarkedDialer）。
 			// 非 Linux 平台上打标是空操作，行为与改动前一致。
 			Transport: &http.Transport{
-				DialContext: netcheck.MarkedDialContext(dialTimeout, logx.Errorf),
+				// 在 MarkedDialContext 外再包一层 DNS 复验：validateFetchURL
+				// 只看 Host 字面量，而域名可经 DNS 重绑定解析到云 metadata。
+				// 建连时按解析后的实际 IP 再拦一次，彻底封死这条 SSRF 通道。
+				DialContext: guardedDialContext(dialTimeout),
 			},
 		},
 		// 默认 UA 用 ClashMeta/2.0 而非自定义 UA：V2Board 类机场按 UA 决定

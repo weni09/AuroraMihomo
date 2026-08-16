@@ -84,8 +84,9 @@ func (s *AdGuardService) ApplyEntryDNSPreset(ctx context.Context) error {
 			"确保 mihomo dns.enable=true、dns.listen=0.0.0.0:1053",
 			"AdGuard 上游/后备 → 127.0.0.1:1053；Bootstrap → 国内纯 IP",
 		},
-		AGHDNSPort:           53,
-		OriginalDNSPort:      cur.MihomoDNSPort,
+		AGHDNSPort: 53,
+		// 保存进入入口模式前 AGH 的端口，退出时据此恢复。
+		OriginalDNSPort:      cur.AGHDNSPort,
 		OriginalMihomoListen: cur.MihomoDNSListen,
 		OriginalUpstream:     append([]string(nil), cur.OriginalUpstream...),
 		MihomoDNSListen:      entryPresetMihomoListen,

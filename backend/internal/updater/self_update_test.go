@@ -647,25 +647,26 @@ func TestSelfVersionNumeric(t *testing.T) {
 	}
 }
 
-// 官方 github.com 拉不到 .sha256 / SHA256SUMS 时，必须按「下载源」回落。
-// 国内直连 GitHub 失败、包却已从 ghproxy 下到，是主程序升级最常见的卡点。
-func TestFetchSelfChecksumFallsBackToCDN(t *testing.T) {
+// 官方源拉不到校验和时必须硬失败，绝不回落 CDN 镜像——
+// 否则恶意镜像可同时篡改二进制与校验和，让 sha256 校验形同虚设。
+func TestFetchSelfChecksumOfficialOnly(t *testing.T) {
 	const name = "auroramihomo_v1.0.0_linux_amd64.tar.gz"
 	wantSum := strings.Repeat("ab", 32)
 	shaBody := wantSum + "  " + name + "\n"
 
 	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, name+".sha256") {
+			_, _ = w.Write([]byte(shaBody))
+			return
+		}
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(official.Close)
 
+	// 配置了一个「镜像」，但它绝不应被请求
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// buildCDNURLs 前缀源拼成 "<cdn>/<officialURL>"
-		if !strings.Contains(r.URL.Path, name+".sha256") && !strings.HasSuffix(r.URL.Path, name+".sha256") {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = w.Write([]byte(shaBody))
+		t.Error("校验和绝不走 CDN 镜像")
+		http.NotFound(w, r)
 	}))
 	t.Cleanup(cdn.Close)
 
@@ -680,15 +681,15 @@ func TestFetchSelfChecksumFallsBackToCDN(t *testing.T) {
 	archiveURL := m.selfDownloadURL("v1.0.0", name)
 	got, err := m.fetchSelfChecksum(context.Background(), "owner/AuroraMihomo", "v1.0.0", archiveURL, name)
 	if err != nil {
-		t.Fatalf("官方校验和 404 时应回落下载源: %v", err)
+		t.Fatalf("官方源可取到校验和时不应失败: %v", err)
 	}
 	if got != wantSum {
 		t.Fatalf("校验和 %q，期望 %q", got, wantSum)
 	}
 }
 
-// SHA256SUMS.txt 同样必须走下载源：历史 release 只有汇总文件。
-func TestFetchSelfChecksumSumsFileFallsBackToCDN(t *testing.T) {
+// 官方源不可达时必须失败，即使 CDN 镜像「可返回正确校验和」也不采信。
+func TestFetchSelfChecksumRejectsCDNOnly(t *testing.T) {
 	const name = "auroramihomo_v1.0.0_linux_amd64.tar.gz"
 	wantSum := strings.Repeat("cd", 32)
 
@@ -698,10 +699,6 @@ func TestFetchSelfChecksumSumsFileFallsBackToCDN(t *testing.T) {
 	t.Cleanup(official.Close)
 
 	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "SHA256SUMS.txt") {
-			http.NotFound(w, r)
-			return
-		}
 		_, _ = fmt.Fprintf(w, "%s  %s\n", wantSum, name)
 	}))
 	t.Cleanup(cdn.Close)
@@ -715,12 +712,8 @@ func TestFetchSelfChecksumSumsFileFallsBackToCDN(t *testing.T) {
 	})
 
 	archiveURL := m.selfDownloadURL("v1.0.0", name)
-	got, err := m.fetchSelfChecksum(context.Background(), "owner/AuroraMihomo", "v1.0.0", archiveURL, name)
-	if err != nil {
-		t.Fatalf("SHA256SUMS 官方 404 时应回落下载源: %v", err)
-	}
-	if got != wantSum {
-		t.Fatalf("校验和 %q，期望 %q", got, wantSum)
+	if _, err := m.fetchSelfChecksum(context.Background(), "owner/AuroraMihomo", "v1.0.0", archiveURL, name); err == nil {
+		t.Fatal("官方源不可达时校验和必须失败，不得采信 CDN 镜像")
 	}
 }
 

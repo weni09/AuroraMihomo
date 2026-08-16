@@ -78,15 +78,16 @@ func TestIsLocalDialableHost(t *testing.T) {
 
 // IsAllowedKernelUpstream：mihomo 反代上游白名单。在 IsLocalDialableHost 基础上
 // 额外放行私网地址（分机部署的内核常配置成其它机器 IP），公网与域名仍拒绝。
+// IPv4 link-local（169.254/16）必须拒绝：其中包含云 metadata 端点 169.254.169.254。
 func TestIsAllowedKernelUpstream(t *testing.T) {
-	for _, h := range []string{"127.0.0.1", "::1", "localhost", "192.168.1.252", "10.0.0.5", "172.16.0.1", "169.254.1.1", "fe80::1"} {
+	for _, h := range []string{"127.0.0.1", "::1", "localhost", "192.168.1.252", "10.0.0.5", "172.16.0.1", "fe80::1"} {
 		if !IsAllowedKernelUpstream(h) {
 			t.Errorf("私网/回环 %q 应放行", h)
 		}
 	}
-	for _, h := range []string{"8.8.8.8", "1.1.1.1", "114.114.114.114", "example.com", "", "0.0.0.0"} {
+	for _, h := range []string{"8.8.8.8", "1.1.1.1", "114.114.114.114", "example.com", "", "0.0.0.0", "169.254.1.1", "169.254.169.254"} {
 		if IsAllowedKernelUpstream(h) {
-			t.Errorf("公网/域名 %q 应拒绝", h)
+			t.Errorf("公网/域名/云 metadata %q 应拒绝", h)
 		}
 	}
 }

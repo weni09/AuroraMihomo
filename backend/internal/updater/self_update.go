@@ -477,10 +477,12 @@ func (m *Manager) verifySelfChecksum(ctx context.Context, repo, tag, archiveURL,
 }
 
 // fetchSelfChecksum 依次尝试独立 .sha256 资产与 SHA256SUMS.txt，返回期望的
-// 十六进制校验和。两条路径都按 downloadWithCDN 的出网顺序：代理 → 全局下载源。
+// 十六进制校验和。两条路径都只走官方源（mihomo 代理或直连 github.com），
+// 绝不回落第三方 CDN 镜像——否则恶意镜像可同时篡改二进制与校验和，让
+// sha256 校验形同虚设。
 func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, archiveName string) (string, error) {
 	// 路径一：独立 .sha256 资产。
-	if body, err := m.fetchBytesWithCDN(ctx, archiveURL+".sha256"); err == nil {
+	if body, err := m.fetchBytesOfficialOnly(ctx, archiveURL+".sha256"); err == nil {
 		if sum, err := parseChecksumFile(body, archiveName); err == nil {
 			return sum, nil
 		}
@@ -488,7 +490,7 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 
 	// 路径二：汇总文件 SHA256SUMS.txt。
 	sumsURL := m.selfDownloadURL(tag, "SHA256SUMS.txt")
-	body, err := m.fetchBytesWithCDN(ctx, sumsURL)
+	body, err := m.fetchBytesOfficialOnly(ctx, sumsURL)
 	if err != nil {
 		return "", fmt.Errorf("%w: 无法获取主程序校验和（独立 .sha256 与 SHA256SUMS.txt 均不可用）: %w", errSelfDownloadFailed, err)
 	}
@@ -497,6 +499,26 @@ func (m *Manager) fetchSelfChecksum(ctx context.Context, repo, tag, archiveURL, 
 		return "", fmt.Errorf("%w: SHA256SUMS.txt 中未找到 %s 的校验和: %w", errSelfChecksumMismatch, archiveName, err)
 	}
 	return sum, nil
+}
+
+// fetchBytesOfficialOnly 只从官方地址取小文件：先经 mihomo 代理（内核在跑
+// 时通常可用），失败再直连官方 github.com。绝不使用 CDN 镜像。
+//
+// 专门给校验和这类「必须与下载产物来自不同信任域」的场景用：
+// 二进制可以经镜像下载（体积比对 + sha256 兜底），但校验和本身若也从
+// 镜像取，恶意镜像就能同时篡改两者，完整性校验就失去意义。
+func (m *Manager) fetchBytesOfficialOnly(ctx context.Context, officialURL string) ([]byte, error) {
+	// httpClient() 返回代理客户端（代理可用）或直连官方客户端（不可用），
+	// 两者都不经过 CDN 镜像。
+	client, proxy := m.httpClient()
+	body, err := m.fetchBytesOr(ctx, client, officialURL)
+	if err == nil {
+		return body, nil
+	}
+	if proxy != "" {
+		return nil, fmt.Errorf("经 mihomo 代理(%s) 与官方直连均失败: %w", proxy, err)
+	}
+	return nil, fmt.Errorf("官方直连失败: %w", err)
 }
 
 // fetchBytesWithCDN 按与 downloadWithCDN 相同的出网顺序取小文件：

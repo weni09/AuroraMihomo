@@ -136,5 +136,16 @@ func IsAllowedKernelUpstream(host string) bool {
 	if ip == nil {
 		return false
 	}
-	return ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	// RFC1918 与 IPv6 ULA 放行（分机部署的私网内核服务）。
+	if ip.IsPrivate() {
+		return true
+	}
+	// IPv4 link-local（169.254/16）必须拒绝：其中包含云 metadata 端点
+	// 169.254.169.254，放行会让 /mihomo-api 反代变成 SSRF 读取 IAM 凭据的
+	// 跳板。与 fetcher.isBlockedMetadataIP 的 169.254/16 拦截保持一致。
+	if ip.To4() != nil {
+		return false
+	}
+	// IPv6 link-local（fe80::/10）放行：不包含云 metadata 端点。
+	return ip.IsLinkLocalUnicast()
 }
