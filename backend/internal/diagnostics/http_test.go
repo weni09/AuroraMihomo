@@ -110,6 +110,20 @@ func TestHTTPProbeTimeout(t *testing.T) {
 	}
 }
 
+func TestHTTPProbeDefaultClientBlocksMetadata(t *testing.T) {
+	// 默认 client 必须带 SSRF 防线：目标为云 metadata IP 字面量时，
+	// guardedDialContext 在拨号前即拦截，结果应为 fail 且错误含 metadata，
+	// 而不是真实发起请求。
+	probe := &HTTPProbe{}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeHTTP, Target: "http://169.254.169.254/latest/meta-data/"}, PathDirect, nil)
+	if res.Status != StatusFail {
+		t.Fatalf("metadata 地址应被拦截为 fail, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "metadata") {
+		t.Fatalf("错误应说明被拦截的 metadata 地址, got %q", res.Error)
+	}
+}
+
 func TestHTTPProbeConcurrentSafe(t *testing.T) {
 	// 同一实例并发执行：Run 内不写回结构体字段，配合 -race 验证并发安全
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

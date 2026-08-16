@@ -225,6 +225,21 @@ func guardedDialContext(timeout time.Duration) func(context.Context, string, str
 	}
 }
 
+// GuardedDialContext 导出 guardedDialContext 供 diagnostics 等外部包复用：
+// 返回在 MarkedDialContext 外再包一层 DNS 复验的 DialContext（建连前对解析
+// 出的每个 IP 执行 isBlockedMetadataIP），封死 DNS 重绑定绕过 SSRF 防护的通道。
+// 网络诊断的直连/代理 client 与订阅拉取共用这一份实现，避免两套防线漂移。
+func GuardedDialContext(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	return guardedDialContext(timeout)
+}
+
+// CheckRedirect 导出 checkRedirect 供 diagnostics 等外部包复用：
+// 对每一跳目标复用 validateFetchURL 做协议与云 metadata 黑名单校验并限制跳数，
+// 防止恶意上游 302 指向 169.254.169.254 等地址绕过初始 URL 校验。
+func CheckRedirect(req *http.Request, via []*http.Request) error {
+	return checkRedirect(req, via)
+}
+
 // ValidateFetchURLExternal 导出校验函数供 diagnostics 等外部包复用。
 // 返回 error 表示该 URL 不允许被服务端代发请求（SSRF 黑名单）。
 func ValidateFetchURLExternal(rawURL string) error {

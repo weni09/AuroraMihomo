@@ -24,7 +24,10 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 	}
 	client := p.Client
 	if client == nil {
-		client = &http.Client{Timeout: timeout}
+		// 默认直连 client 带 fetcher 同款 SSRF 防线（DNS 复验 + 逐跳校验），
+		// 与订阅拉取一致：探测目标虽经 ValidateTarget 预检，但重定向目标与
+		// DNS 重绑定仍需在 client 层兜底。
+		client = directHTTPClient(timeout)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Target, nil)
 	if err != nil {
