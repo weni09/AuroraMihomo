@@ -99,7 +99,8 @@ type Run struct {
 }
 
 // RunSnapshot 是一次诊断执行的只读快照：Execute 进行中或结束后均可安全读取。
-// 由 Snapshot() 返回，Results 为内部结果的深拷贝，修改不影响 Run 内部状态。
+// 由 Snapshot() 返回，Results 为内部结果的深拷贝（含 Detail 深拷贝），
+// 修改不影响 Run 内部状态。
 type RunSnapshot struct {
 	Results []ProbeResult
 	Done    bool
@@ -168,14 +169,49 @@ func (r *Run) Execute(ctx context.Context, onProgress ProgressFunc) {
 
 // Snapshot 返回当前结果的深拷贝，可安全并发读取。
 //
-// Results 复制底层切片；探测器回填的 Detail 都是各自新构造的 map/值，
-// 快照与内部状态不共享可变数据，外部可任意读写返回的切片。
+// Results 复制底层切片；Detail 经 cloneDetail 深拷贝，探测器回填的
+// map 会复制为独立 map，快照与内部状态不共享可变数据，外部可任意读写
+// 返回的切片与 Detail。
 func (r *Run) Snapshot() RunSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := make([]ProbeResult, len(r.results))
 	copy(cp, r.results)
+	for i := range cp {
+		cp[i].Detail = cloneDetail(r.results[i].Detail)
+	}
 	return RunSnapshot{Results: cp, Done: r.done}
+}
+
+// cloneDetail 深拷贝探测器回填的 Detail 值。
+//
+// 当前探测器回填的 Detail 都是 map：map[string]interface{} 与
+// map[string]string 分别复制为独立的新 map，切断与内部状态的引用；
+// 其它类型（string/int 等值类型）原样返回，天然不共享可变数据。
+// 若未来探测器回填 slice 或嵌套 map，需在此扩展对应分支。
+func cloneDetail(d any) any {
+	switch v := d.(type) {
+	case map[string]interface{}:
+		if v == nil {
+			return nil
+		}
+		m := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			m[k] = val
+		}
+		return m
+	case map[string]string:
+		if v == nil {
+			return nil
+		}
+		m := make(map[string]string, len(v))
+		for k, val := range v {
+			m[k] = val
+		}
+		return m
+	default:
+		return d
+	}
 }
 
 // Probes 返回已注册的探测器集合，key 为探测类型（TypePing 等）。

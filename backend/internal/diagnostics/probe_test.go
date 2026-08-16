@@ -111,7 +111,13 @@ func TestSnapshotConcurrencySafe(t *testing.T) {
 	// 修改快照内容不影响后续快照。
 	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
 		time.Sleep(1 * time.Millisecond)
-		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+		return ProbeResult{
+			Target: target.Target,
+			Type:   target.Type,
+			Path:   path,
+			Status: StatusSuccess,
+			Detail: map[string]interface{}{"seq": 1, "msg": "original"},
+		}
 	})
 	const n = 50
 	targets := make([]DiagnosticTarget, n)
@@ -137,6 +143,11 @@ func TestSnapshotConcurrencySafe(t *testing.T) {
 			t.Fatalf("结果数不应超过目标数, got %d", len(snap.Results))
 		}
 		if len(snap.Results) > 0 {
+			// 修改拷贝的 Detail map，不得影响内部状态
+			if d, ok := snap.Results[0].Detail.(map[string]interface{}); ok {
+				d["seq"] = 999
+				d["msg"] = "mutated"
+			}
 			snap.Results[0] = ProbeResult{} // 修改拷贝，不得影响内部状态
 		}
 	}
@@ -149,5 +160,63 @@ finished:
 		if res.Status != StatusSuccess {
 			t.Fatalf("结果 %d 被并发快照污染: %+v", i, res)
 		}
+		// Detail 也必须是深拷贝：并发期间被改过的 map 不得残留
+		d, ok := res.Detail.(map[string]interface{})
+		if !ok {
+			t.Fatalf("结果 %d Detail 应为 map[string]interface{}, got %T", i, res.Detail)
+		}
+		if d["seq"] != 1 || d["msg"] != "original" {
+			t.Fatalf("结果 %d 的 Detail 被并发快照污染: %+v", i, d)
+		}
+	}
+}
+
+func TestSnapshotDetailIsolation(t *testing.T) {
+	// 验证 Detail 深拷贝契约：快照返回的 Detail map 与内部状态不共享引用，
+	// 修改快照的 Detail 后再次 Snapshot 应看到原始值。覆盖 map[string]interface{}、
+	// map[string]string 与标量（原样保留）三种形态。
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		var detail any
+		switch target.Type {
+		case TypeTCP:
+			detail = map[string]interface{}{"code": 0, "msg": "ok"}
+		case TypeDNS:
+			detail = map[string]string{"server": "1.1.1.1", "rcode": "NOERROR"}
+		default:
+			detail = "plain-value"
+		}
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess, Detail: detail}
+	})
+	targets := []DiagnosticTarget{
+		{Type: TypeTCP, Target: "t1"},
+		{Type: TypeDNS, Target: "d1"},
+		{Type: TypePing, Target: "p1"},
+	}
+	run := NewRun("req-1", targets, PathDirect, 5*time.Second, map[string]Probe{TypeTCP: probe, TypeDNS: probe, TypePing: probe})
+	run.Execute(context.Background(), func(ProbeResult) {})
+
+	// 修改返回快照的 Detail map，再取快照应恢复为原始值
+	first := run.Snapshot()
+	m, ok := first.Results[0].Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Detail 应为 map[string]interface{}, got %T", first.Results[0].Detail)
+	}
+	m["code"] = 999
+	m["msg"] = "mutated"
+	if s, ok := first.Results[1].Detail.(map[string]string); ok {
+		s["rcode"] = "SERVFAIL"
+	} else {
+		t.Fatalf("Detail 应为 map[string]string, got %T", first.Results[1].Detail)
+	}
+
+	second := run.Snapshot()
+	if got := second.Results[0].Detail.(map[string]interface{})["code"]; got != 0 {
+		t.Fatalf("快照间共享 Detail 引用: 期望 code=0, got %v", got)
+	}
+	if got := second.Results[1].Detail.(map[string]string)["rcode"]; got != "NOERROR" {
+		t.Fatalf("快照间共享 Detail 引用: 期望 rcode=NOERROR, got %v", got)
+	}
+	if got := second.Results[2].Detail; got != "plain-value" {
+		t.Fatalf("非 map Detail 应原样保留, got %v", got)
 	}
 }
