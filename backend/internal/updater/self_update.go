@@ -521,34 +521,6 @@ func (m *Manager) fetchBytesOfficialOnly(ctx context.Context, officialURL string
 	return nil, fmt.Errorf("官方直连失败: %w", err)
 }
 
-// fetchBytesWithCDN 按与 downloadWithCDN 相同的出网顺序取小文件：
-// 先经 mihomo 代理拉官方地址，再按全局下载源（含官方兜底）直连。
-// 不走 AdGuard 专用模板——那些是完整 AdGuard 下载 URL，不能当 GitHub 前缀。
-func (m *Manager) fetchBytesWithCDN(ctx context.Context, officialURL string) ([]byte, error) {
-	var errs []string
-	if client, proxy := m.httpClient(); proxy != "" {
-		body, err := m.fetchBytesOr(ctx, client, officialURL)
-		if err == nil {
-			return body, nil
-		}
-		errs = append(errs, fmt.Sprintf("mihomo 代理(%s) => %v", proxy, err))
-		m.logger.Errorf("经 mihomo 代理拉取失败，改用 CDN 镜像: %v", err)
-	}
-	for _, p := range m.prioritizedCDNProviders() {
-		u := cdnURLForProvider(officialURL, p)
-		if u == "" {
-			continue
-		}
-		body, err := m.fetchBytesOr(ctx, m.client, u)
-		if err == nil {
-			m.rememberLastCDN(p)
-			return body, nil
-		}
-		errs = append(errs, fmt.Sprintf("%s => %v", u, err))
-	}
-	return nil, fmt.Errorf("all download sources failed: %s", strings.Join(errs, " | "))
-}
-
 // fetchBytesOr 下载并读取 url，失败返回错误。
 func (m *Manager) fetchBytesOr(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
