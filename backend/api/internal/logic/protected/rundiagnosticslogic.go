@@ -43,7 +43,7 @@ func (l *RunDiagnosticsLogic) RunDiagnostics(req *types.DiagnosticRunReq) (resp 
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("未提供诊断目标")
 	}
-	id, err := l.svcCtx.Diag.Run(l.ctx, diagnostics.DiagnosticRequest{Targets: targets, Path: req.Path})
+	id, err := l.svcCtx.Diag.Run(context.Background(), diagnostics.DiagnosticRequest{Targets: targets, Path: req.Path})
 	if err != nil {
 		return nil, err
 	}
