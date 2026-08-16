@@ -151,6 +151,25 @@ func TestDNSProbeNXDomain(t *testing.T) {
 	}
 }
 
+func TestDNSProbeProxyPathNotesSameAsDirect(t *testing.T) {
+	// DNS 查询不经 HTTP 代理：proxy 路径结果应与 direct 一致，并在成功
+	// Detail 中如实标注，避免前端把直出结果误读为代理路径数据。
+	s := startMockDNSServer(t)
+	probe := &DNSProbe{Resolver: mockResolver(t, s)}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeDNS, Target: "a.test"}, PathProxy, nil)
+	if res.Status != StatusSuccess {
+		t.Fatalf("应成功, got %+v", res)
+	}
+	detail, ok := res.Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Detail 应为 map, got %T", res.Detail)
+	}
+	note, ok := detail["note"].(string)
+	if !ok || !strings.Contains(note, "不经") {
+		t.Fatalf("proxy 路径应标注 DNS 不经代理, got %+v", detail)
+	}
+}
+
 func TestDNSProbeTimeout(t *testing.T) {
 	// Dial 挂起直到 ctx 截止：LookupIPAddr 必然在极短超时后失败
 	probe := &DNSProbe{

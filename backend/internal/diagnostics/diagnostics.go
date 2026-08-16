@@ -54,8 +54,13 @@ type Config struct {
 	Probes map[string]Probe
 	// Publish 进度事件发布回调（对接 realtime.Hub.Publish）；为 nil 时跳过发布。
 	Publish func(eventType string, data interface{})
-	// ProxyURL 返回当前代理地址，供后续探测器（proxy 路径）使用；本阶段仅存储。
+	// ProxyURL 返回当前代理地址，供 defaultClientSelector 构造 proxy 路径客户端；
+	// 代理不可用（nil/空串）时 proxy 路径回落直连。与 updater 同一来源。
 	ProxyURL func() string
+	// ClientSelector 按出网路径返回 http.Client；nil 时 New 用 defaultClientSelector
+	// （基于 ProxyURL）构造。HTTP/TCP/Ping 探测器的 proxy 路径据此走代理而非直连，
+	// 直连/代理对比输出真实路径的结果。
+	ClientSelector ClientSelector
 }
 
 // DiagnosticRequest 是一次诊断请求。
@@ -110,6 +115,9 @@ func New(cfg Config) *Service {
 	if len(cfg.Probes) == 0 {
 		cfg.Probes = Probes()
 	}
+	if cfg.ClientSelector == nil {
+		cfg.ClientSelector = defaultClientSelector(cfg.ProxyURL)
+	}
 	return &Service{
 		cfg:  cfg,
 		sem:  make(chan struct{}, cfg.MaxConcurrent),
@@ -147,7 +155,13 @@ func (s *Service) Run(ctx context.Context, req DiagnosticRequest) (string, error
 		return "", ErrBusy
 	}
 	rctx, cancel := context.WithCancel(ctx)
-	run := NewRun(requestID, req.Targets, path, s.cfg.ProbeTimeout, s.cfg.Probes)
+	// 每轮注入出网选择器：探测器的 proxy 路径需要它取代理地址/客户端。
+	// 克隆探测实例（见 withSelector），不污染 cfg.Probes 上的共享实例。
+	probes := s.cfg.Probes
+	if s.cfg.ClientSelector != nil {
+		probes = withSelector(s.cfg.Probes, s.cfg.ClientSelector)
+	}
+	run := NewRun(requestID, req.Targets, path, s.cfg.ProbeTimeout, probes)
 	s.runs[requestID] = runEntry{run: run, cancel: cancel, done: make(chan struct{})}
 	s.mu.Unlock()
 

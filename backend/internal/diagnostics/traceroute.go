@@ -62,16 +62,22 @@ func (p *TracerouteProbe) Run(ctx context.Context, target DiagnosticTarget, path
 		}
 		return ProbeResult{Target: target.Target, Type: TypeTraceroute, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Error: err.Error()}
 	}
+	detail := map[string]interface{}{
+		"hops": parseTraceroute(string(out)),
+		"raw":  string(out),
+	}
+	if path == PathProxy {
+		// 系统 traceroute/tracert 不经 HTTP 代理：结果与 direct 路径一致，
+		// 如实标注，避免把直出路径误读为代理路径数据。
+		detail["note"] = "traceroute 不经 HTTP 代理，结果与 direct 路径一致"
+	}
 	return ProbeResult{
 		Target:    target.Target,
 		Type:      TypeTraceroute,
 		Path:      path,
 		Status:    StatusSuccess,
 		LatencyMs: latency.Milliseconds(),
-		Detail: map[string]interface{}{
-			"hops": parseTraceroute(string(out)),
-			"raw":  string(out),
-		},
+		Detail:    detail,
 	}
 }
 

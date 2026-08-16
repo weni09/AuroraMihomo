@@ -3,6 +3,9 @@ package diagnostics
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +77,51 @@ func TestTCPProbePortRequired(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Fatal("缺少端口结果应包含错误信息")
+	}
+}
+
+func TestTCPProbeProxyPathViaConnect(t *testing.T) {
+	// 本地「代理」收到 CONNECT 请求即视为 proxy 路径连通；目标用
+	// target.invalid（永不解析）——若探测直连目标必然解析失败，成功且
+	// CONNECT 目标正确即证明流量真实经代理。
+	addr, gotConnect := startCONNECTProxy(t)
+
+	probe := &TCPProbe{
+		Selector: func(path string) *http.Client {
+			return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: addr})}}
+		},
+	}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeTCP, Target: "target.invalid", Port: 443}, PathProxy, nil)
+	if res.Status != StatusSuccess {
+		t.Fatalf("经代理 CONNECT 应成功, got %+v", res)
+	}
+	if res.Error != "" {
+		t.Fatalf("成功结果不应有 Error, got %q", res.Error)
+	}
+	select {
+	case line := <-gotConnect:
+		if !strings.Contains(line, "target.invalid:443") {
+			t.Fatalf("CONNECT 目标应含 target.invalid:443, got %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("代理未收到 CONNECT 请求")
+	}
+}
+
+func TestTCPProbeProxyPathFallbackToDirect(t *testing.T) {
+	// 选择器回落直连（client 无 Proxy）：proxy 路径应直连目标并标注回落，
+	// 而不是报错或谎称走了代理。
+	probe := &TCPProbe{Selector: func(path string) *http.Client { return directHTTPClient(0) }}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeTCP, Target: "127.0.0.1", Port: 1}, PathProxy, nil)
+	if res.Status != StatusFail {
+		t.Fatalf("127.0.0.1:1 直连应失败, got %+v", res)
+	}
+	detail, ok := res.Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("回落结果 Detail 应为 map, got %T", res.Detail)
+	}
+	if fb, _ := detail["proxyFallback"].(bool); !fb {
+		t.Fatalf("回落结果应标注 proxyFallback, got %+v", detail)
 	}
 }
 

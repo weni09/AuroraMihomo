@@ -10,11 +10,14 @@ import (
 
 // HTTPProbe GET 目标，报状态码/耗时/重定向链。
 //
-// 无全局可变状态：Timeout/Client 在 Run 内按值读取并解析默认值，
+// 无全局可变状态：Timeout/Client/Selector 在 Run 内按值读取并解析默认值，
 // 不写回结构体字段，同一实例可安全并发执行。
 type HTTPProbe struct {
 	Timeout time.Duration
 	Client  *http.Client // 可注入（代理/直连）；nil 用默认
+	// Selector 按出网路径返回 http.Client：proxy 路径经 mihomo 代理、
+	// direct 路径直连（两条路径都带 SSRF 防线）。非 nil 时优先于 Client。
+	Selector ClientSelector
 }
 
 func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
@@ -23,6 +26,11 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 		timeout = 10 * time.Second
 	}
 	client := p.Client
+	if p.Selector != nil {
+		// proxy 路径用出网选择器提供的 client（经 mihomo 代理），direct 路径
+		// 也用它的直连 client——两条路径的 SSRF 防线由此保持一致。
+		client = p.Selector(path)
+	}
 	if client == nil {
 		// 默认直连 client 带 fetcher 同款 SSRF 防线（DNS 复验 + 逐跳校验），
 		// 与订阅拉取一致：探测目标虽经 ValidateTarget 预检，但重定向目标与

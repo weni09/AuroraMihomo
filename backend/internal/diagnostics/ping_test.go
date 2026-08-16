@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,6 +96,62 @@ func TestPingProbeFallbackToTCP(t *testing.T) {
 	}
 	if !degradedTrue(t, res) {
 		t.Fatalf("降级失败结果也应标记 degraded, got %+v", res.Detail)
+	}
+}
+
+func TestPingProbeProxyPathUsesConnect(t *testing.T) {
+	// proxy 路径即使注入的 PingCmd 可用也不调用（ICMP 无法经 HTTP 代理），
+	// 改为经代理 CONNECT target 测隧道建立延迟。
+	addr, gotConnect := startCONNECTProxy(t)
+	pingCalls := 0
+	probe := &PingProbe{
+		PingCmd: func(ctx context.Context, host string) ([]byte, error) {
+			pingCalls++
+			return []byte("reply from " + host), nil
+		},
+		Selector: func(path string) *http.Client {
+			return &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: addr})}}
+		},
+	}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypePing, Target: "target.invalid", Port: 443}, PathProxy, nil)
+	if res.Status != StatusSuccess {
+		t.Fatalf("经代理 CONNECT 应成功, got %+v", res)
+	}
+	if pingCalls != 0 {
+		t.Fatalf("proxy 路径不应调用 PingCmd, got %d 次", pingCalls)
+	}
+	select {
+	case line := <-gotConnect:
+		if !strings.Contains(line, "target.invalid:443") {
+			t.Fatalf("CONNECT 目标应含 target.invalid:443, got %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("代理未收到 CONNECT 请求")
+	}
+}
+
+func TestPingProbeProxyPathFallbackToDirect(t *testing.T) {
+	// 未注入选择器：proxy 路径回落直连 TCP 建连并标注回落，不调用 PingCmd。
+	pingCalls := 0
+	probe := &PingProbe{
+		PingCmd: func(ctx context.Context, host string) ([]byte, error) {
+			pingCalls++
+			return []byte("ok"), nil
+		},
+	}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypePing, Target: "127.0.0.1", Port: 1}, PathProxy, nil)
+	if res.Status != StatusFail {
+		t.Fatalf("127.0.0.1:1 直连回落应失败, got %+v", res)
+	}
+	if pingCalls != 0 {
+		t.Fatalf("proxy 路径不应调用 PingCmd, got %d 次", pingCalls)
+	}
+	detail, ok := res.Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("回落结果 Detail 应为 map, got %T", res.Detail)
+	}
+	if fb, _ := detail["proxyFallback"].(bool); !fb {
+		t.Fatalf("回落结果应标注 proxyFallback, got %+v", detail)
 	}
 }
 

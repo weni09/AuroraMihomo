@@ -7,20 +7,26 @@ import (
 )
 
 // DNSProbe 查 A/AAAA 记录与耗时。
+//
+// DNS 查询（UDP/53 直出）不经 HTTP 代理：proxy 路径执行与 direct 相同的查询，
+// 并在成功结果中如实标注「结果与 direct 路径一致」，不伪造代理路径数据。
+// 无全局可变状态：Timeout/Resolver 在 Run 内按值读取并解析默认值，
+// 不写回结构体字段，同一实例可安全并发执行。
 type DNSProbe struct {
 	Timeout  time.Duration
 	Resolver *net.Resolver // 可注入 mock；nil 用系统默认
 }
 
 func (p *DNSProbe) Run(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
-	if p.Timeout <= 0 {
-		p.Timeout = 5 * time.Second
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
 	}
 	resolver := p.Resolver
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
-	pctx, cancel := context.WithTimeout(ctx, p.Timeout)
+	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	start := time.Now()
@@ -40,12 +46,18 @@ func (p *DNSProbe) Run(ctx context.Context, target DiagnosticTarget, path string
 	for _, ip := range ips {
 		addrs = append(addrs, ip.IP.String())
 	}
+	detail := map[string]interface{}{"records": addrs}
+	if path == PathProxy {
+		// DNS 查询不经 HTTP 代理（UDP/53 直出），结果与 direct 路径一致——
+		// 如实标注，避免前端把直出结果误读为代理路径数据。
+		detail["note"] = "DNS 查询不经 HTTP 代理，结果与 direct 路径一致"
+	}
 	return ProbeResult{
 		Target:    target.Target,
 		Type:      TypeDNS,
 		Path:      path,
 		Status:    StatusSuccess,
 		LatencyMs: latency.Milliseconds(),
-		Detail:    map[string]interface{}{"records": addrs},
+		Detail:    detail,
 	}
 }
