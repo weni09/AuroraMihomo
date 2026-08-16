@@ -133,6 +133,7 @@ func TestServiceBothPathExpands(t *testing.T) {
 	seenPaths := map[string]int{}
 	var eventMu sync.Mutex
 	events := []DiagnosticEvent{}
+	eventCh := make(chan struct{}, 2)
 
 	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
 		probeMu.Lock()
@@ -152,6 +153,7 @@ func TestServiceBothPathExpands(t *testing.T) {
 		eventMu.Lock()
 		events = append(events, ev)
 		eventMu.Unlock()
+		eventCh <- struct{}{}
 	}
 	svc := New(Config{
 		MaxConcurrent: 3,
@@ -168,17 +170,14 @@ func TestServiceBothPathExpands(t *testing.T) {
 		t.Fatalf("Run 应成功, got %v", err)
 	}
 
-	// 轮询直到两个阶段（direct+proxy）的结果都出现
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		s, ok := svc.GetResult(id)
-		if ok && len(s.Results) == 2 {
-			break
+	// 等两个阶段的进度事件都发布（事件在结果 append 之后发布，等事件而非
+	// 等结果，避免结果已就绪但第 2 条事件尚未发布的竞态）
+	for i := range 2 {
+		select {
+		case <-eventCh:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("等待进度事件超时, 收到 %d/2", i)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("等待 both 路径结果超时, ok=%v", ok)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 
 	probeMu.Lock()
@@ -251,6 +250,99 @@ func TestServiceCancel(t *testing.T) {
 			t.Fatalf("Cancel 后等待 Done 超时, ok=%v", ok)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestServiceCancelSkipsRemainingStages(t *testing.T) {
+	// Path=both：direct 阶段慢探测，Cancel 后 direct 返回 timeout，
+	// 剩余 proxy 阶段必须被跳过——结果只含 direct 一条，无 proxy 结果/事件
+	started := make(chan struct{})
+	var stageMu sync.Mutex
+	stageCalls := []string{}
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		stageMu.Lock()
+		stageCalls = append(stageCalls, path)
+		stageMu.Unlock()
+		if path == PathDirect {
+			close(started)
+			<-ctx.Done()
+		}
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusTimeout}
+	})
+	var eventMu sync.Mutex
+	events := []DiagnosticEvent{}
+	publish := func(eventType string, data interface{}) {
+		if eventType != EventTypeProgress {
+			t.Errorf("事件类型应为 %q, got %q", EventTypeProgress, eventType)
+		}
+		ev, ok := data.(DiagnosticEvent)
+		if !ok {
+			t.Errorf("事件数据应为 DiagnosticEvent, got %T", data)
+			return
+		}
+		eventMu.Lock()
+		events = append(events, ev)
+		eventMu.Unlock()
+	}
+	svc := New(Config{
+		MaxConcurrent: 3,
+		ProbeTimeout:  time.Hour,
+		Publish:       publish,
+		Probes:        map[string]Probe{TypeTCP: probe},
+	})
+	defer svc.Close()
+
+	id, err := svc.Run(context.Background(), DiagnosticRequest{
+		Targets: []DiagnosticTarget{{Type: TypeTCP, Target: "x"}},
+		Path:    "both",
+	})
+	if err != nil {
+		t.Fatalf("Run 应成功, got %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("direct 阶段探测未开始执行")
+	}
+
+	svc.Cancel(id)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s, ok := svc.GetResult(id)
+		if ok && s.Done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Cancel 后等待 Done 超时, ok=%v", ok)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	stageMu.Lock()
+	if len(stageCalls) != 1 || stageCalls[0] != PathDirect {
+		t.Fatalf("Cancel 后应只执行 direct 一个阶段, got %v", stageCalls)
+	}
+	stageMu.Unlock()
+
+	s, ok := svc.GetResult(id)
+	if !ok {
+		t.Fatalf("GetResult 应能找到请求 %q", id)
+	}
+	if len(s.Results) != 1 {
+		t.Fatalf("结果应只含 1 条（direct timeout）, got %+v", s.Results)
+	}
+	if s.Results[0].Path != PathDirect || s.Results[0].Status != StatusTimeout {
+		t.Fatalf("唯一结果应为 direct/timeout, got %+v", s.Results[0])
+	}
+
+	eventMu.Lock()
+	defer eventMu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("应只有 1 条进度事件（direct）, got %d", len(events))
+	}
+	if events[0].Path != PathDirect {
+		t.Fatalf("事件路径应为 direct, got %+v", events[0])
 	}
 }
 

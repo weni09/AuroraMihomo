@@ -156,6 +156,11 @@ func (s *Service) Run(ctx context.Context, req DiagnosticRequest) (string, error
 // execute 在后台执行一次诊断：按路径展开逐阶段执行 Execute，完成后收尾。
 func (s *Service) execute(requestID string, run *Run, ctx context.Context, path string) {
 	for _, p := range expandPaths(path) {
+		// 阶段间检查取消：Cancel/Close/父 context 取消后跳过剩余阶段，
+		// 避免已取消的 context 再产生 spurious timeout 结果与事件。
+		if ctx.Err() != nil {
+			break
+		}
 		// 两个阶段复用同一个 Run：Execute 会把 r.Path 传给探测器并写进结果。
 		// 在两次 Execute 之间（而非期间）改 Path，让 direct/proxy 阶段产出
 		// 各自路径的结果；Snapshot 不读 Path，无并发风险。
