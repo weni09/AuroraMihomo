@@ -185,10 +185,18 @@ func (s *Service) Run(ctx context.Context, req DiagnosticRequest) (string, error
 
 // execute 在后台执行一次诊断：按路径展开逐阶段执行 Execute，完成后收尾。
 func (s *Service) execute(requestID string, run *Run, ctx context.Context, path string) {
-	for _, p := range expandPaths(path) {
+	paths := expandPaths(path)
+	for i, p := range paths {
 		// 阶段间检查取消：Cancel/Close/父 context 取消后跳过剩余阶段，
 		// 避免已取消的 context 再产生 spurious timeout 结果与事件。
+		// 总时限（totalRunTimeout）到达同样在此跳过——但会补发 synthetic
+		// error 结果，保证 both 运行每个阶段都有结果，前端能看到被跳过
+		// 路径的对比占位；主动取消则静默跳过（Cancel 语义：用户中断不再
+		// 产出剩余阶段结果）。
 		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				s.emitSkippedStages(requestID, run, paths[i:])
+			}
 			break
 		}
 		// 两个阶段复用同一个 Run：Execute 会把 r.Path 传给探测器并写进结果。
@@ -200,6 +208,25 @@ func (s *Service) execute(requestID string, run *Run, ctx context.Context, path 
 		})
 	}
 	s.finish(requestID)
+}
+
+// emitSkippedStages 为被总时限跳过（未执行）的阶段补发 synthetic error 结果：
+// 每个目标一条（Path=被跳过路径，Status=error，Error 说明总时限），并发布
+// 对应进度事件。让 both 运行的每个阶段都有结果，前端直连/代理对比不丢一侧。
+func (s *Service) emitSkippedStages(requestID string, run *Run, skipped []string) {
+	for _, p := range skipped {
+		for _, t := range run.Targets {
+			res := ProbeResult{
+				Target: t.Target,
+				Type:   t.Type,
+				Path:   p,
+				Status: StatusError,
+				Error:  "总时限已到，跳过该路径阶段",
+			}
+			run.appendResult(res)
+			s.publishProgress(requestID, res)
+		}
+	}
 }
 
 // finish 标记整个请求完成（含被取消的情况）、释放信号量，并安排 TTL 淘汰缓存。

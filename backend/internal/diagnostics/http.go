@@ -46,6 +46,13 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 		// DNS 重绑定仍需在 client 层兜底。
 		client = directHTTPClient(timeout)
 	}
+	// proxy 路径回落直连检测：选择器在代理不可用时返回直连 client（无 Proxy，
+	// 与 TCP/Ping 的 proxyAddrOf 检测一致）。如实标注，避免 both 模式下把
+	// 直连成功冒充代理路径。
+	var fallbackNote string
+	if path == PathProxy && proxyAddrOf(client) == "" {
+		fallbackNote = "代理不可用，已直连"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Target, nil)
 	if err != nil {
 		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: StatusError, Error: err.Error()}
@@ -60,11 +67,12 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 		if ctx.Err() != nil {
 			status = StatusTimeout
 		}
-		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Error: err.Error()}
+		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Detail: withProxyFallback(nil, fallbackNote), Error: err.Error()}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 
+	detail := withProxyFallback(map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()}, fallbackNote)
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		return ProbeResult{
 			Target:    target.Target,
@@ -72,7 +80,7 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 			Path:      path,
 			Status:    StatusSuccess,
 			LatencyMs: latency.Milliseconds(),
-			Detail:    map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+			Detail:    detail,
 		}
 	}
 	return ProbeResult{
@@ -81,7 +89,22 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 		Path:      path,
 		Status:    StatusFail,
 		LatencyMs: latency.Milliseconds(),
-		Detail:    map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+		Detail:    detail,
 		Error:     fmt.Sprintf("HTTP %d", resp.StatusCode),
 	}
+}
+
+// withProxyFallback 把 proxy 路径回落直连的标注并入 Detail；note 为空时原样
+// 返回（不标注）。与 TCP/Ping 的 proxyFallback 标注同语义：直连/代理对比
+// 输出真实路径的结果。
+func withProxyFallback(detail map[string]interface{}, note string) map[string]interface{} {
+	if note == "" {
+		return detail
+	}
+	if detail == nil {
+		detail = map[string]interface{}{}
+	}
+	detail["proxyFallback"] = true
+	detail["note"] = note
+	return detail
 }

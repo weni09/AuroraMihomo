@@ -196,6 +196,14 @@ func (r *Run) Snapshot() RunSnapshot {
 	return RunSnapshot{Results: cp, Done: r.done}
 }
 
+// appendResult 追加一条结果（供 execute 在总时限跳过阶段时补发 synthetic
+// 结果；与 Execute 内部追加走同一把锁，Snapshot 并发安全）。
+func (r *Run) appendResult(res ProbeResult) {
+	r.mu.Lock()
+	r.results = append(r.results, res)
+	r.mu.Unlock()
+}
+
 // cloneDetail 深拷贝探测器回填的 Detail 值。
 //
 // 当前探测器回填的 Detail 都是 map：map[string]interface{} 与

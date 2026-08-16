@@ -395,6 +395,74 @@ func TestServiceCancelSkipsRemainingStages(t *testing.T) {
 	}
 }
 
+func TestServiceTotalTimeoutEmitsSyntheticForSkippedStage(t *testing.T) {
+	// 总时限（父 ctx 短截止早于 totalRunTimeout 生效）+ 慢 direct：
+	// direct 耗尽预算后 proxy 阶段被跳过，必须补发 synthetic error 结果，
+	// 保证 both 运行每个阶段都有结果（前端能看到代理侧对比占位）。
+	started := make(chan struct{})
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		if path == PathDirect {
+			close(started)
+			<-ctx.Done() // 慢 direct：挂到总时限耗尽
+		}
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusTimeout}
+	})
+	svc := New(Config{
+		MaxConcurrent: 3,
+		ProbeTimeout:  time.Hour, // 不因单探测超时结束 direct，让总时限收口
+		Probes:        map[string]Probe{TypeTCP: probe},
+	})
+	defer svc.Close()
+
+	// 父 ctx 短截止：rctx 取更早截止（totalRunTimeout 为兜底上限），
+	// 200ms 后总时限生效——direct 返回 timeout、proxy 阶段被跳过。
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	id, err := svc.Run(ctx, DiagnosticRequest{
+		Targets: []DiagnosticTarget{{Type: TypeTCP, Target: "x"}},
+		Path:    "both",
+	})
+	if err != nil {
+		t.Fatalf("Run 应成功, got %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("direct 阶段探测未开始执行")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s, ok := svc.GetResult(id)
+		if ok && s.Done {
+			// direct timeout + proxy synthetic error 各一条
+			if len(s.Results) != 2 {
+				t.Fatalf("结果应含 direct + proxy 两条, got %+v", s.Results)
+			}
+			var proxyRes *ProbeResult
+			for i := range s.Results {
+				if s.Results[i].Path == PathProxy {
+					proxyRes = &s.Results[i]
+				}
+			}
+			if proxyRes == nil {
+				t.Fatalf("缺少 proxy 阶段结果, got %+v", s.Results)
+			}
+			if proxyRes.Status != StatusError {
+				t.Fatalf("proxy 结果应为 synthetic error, got %+v", *proxyRes)
+			}
+			if proxyRes.Error != "总时限已到，跳过该路径阶段" {
+				t.Fatalf("synthetic error 应说明总时限跳过, got %q", proxyRes.Error)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待 Done 超时, ok=%v snap=%+v", ok, s)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestValidateTargetBasic(t *testing.T) {
 	// http/https 允许，ftp 及畸形输入拒绝
 	allowed := []string{

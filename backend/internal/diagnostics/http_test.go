@@ -125,6 +125,31 @@ func TestHTTPProbeDefaultClientBlocksMetadata(t *testing.T) {
 	}
 }
 
+func TestHTTPProbeProxyPathFallbackToDirect(t *testing.T) {
+	// 代理地址不可用（空串）：选择器回落直连 client，proxy 路径应标注回落，
+	// 而不是把直连成功冒充代理路径（both 模式对比才真实）。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	probe := &HTTPProbe{Selector: defaultClientSelector(func() string { return "" })}
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeHTTP, Target: srv.URL}, PathProxy, nil)
+	if res.Status != StatusSuccess {
+		t.Fatalf("回落直连应成功, got %+v", res)
+	}
+	detail, ok := res.Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("回落结果 Detail 应为 map, got %T", res.Detail)
+	}
+	if fb, _ := detail["proxyFallback"].(bool); !fb {
+		t.Fatalf("回落结果应标注 proxyFallback, got %+v", detail)
+	}
+	if note, _ := detail["note"].(string); note != "代理不可用，已直连" {
+		t.Fatalf("回落标注 note 应为「代理不可用，已直连」, got %q", note)
+	}
+}
+
 func TestHTTPProbeConcurrentSafe(t *testing.T) {
 	// 同一实例并发执行：Run 内不写回结构体字段，配合 -race 验证并发安全
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
