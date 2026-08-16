@@ -219,8 +219,10 @@ func cloneDetail(d any) any {
 // 未注册的探测类型由 Execute 回填 StatusError。
 func Probes() map[string]Probe {
 	return map[string]Probe{
-		TypeTCP:  &TCPProbe{},
-		TypeHTTP: &HTTPProbe{},
-		TypeDNS:  &DNSProbe{},
+		TypePing:       &PingProbe{},
+		TypeDNS:        &DNSProbe{},
+		TypeTCP:        &TCPProbe{},
+		TypeHTTP:       &HTTPProbe{},
+		TypeTraceroute: &TracerouteProbe{},
 	}
 }

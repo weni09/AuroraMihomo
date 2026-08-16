@@ -52,7 +52,7 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 			Path:      path,
 			Status:    StatusSuccess,
 			LatencyMs: latency.Milliseconds(),
-			Detail: map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+			Detail:    map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
 		}
 	}
 	return ProbeResult{
@@ -61,7 +61,7 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 		Path:      path,
 		Status:    StatusFail,
 		LatencyMs: latency.Milliseconds(),
-		Detail: map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
-		Error: fmt.Sprintf("HTTP %d", resp.StatusCode),
+		Detail:    map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+		Error:     fmt.Sprintf("HTTP %d", resp.StatusCode),
 	}
 }
