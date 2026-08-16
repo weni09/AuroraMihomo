@@ -25,8 +25,9 @@ func TestHTTPProbeSuccess(t *testing.T) {
 	if res.Error != "" {
 		t.Fatalf("成功结果不应有 Error, got %q", res.Error)
 	}
-	if res.LatencyMs <= 0 {
-		t.Fatalf("延迟应 > 0, got %d", res.LatencyMs)
+	// 本机回环响应常在 1ms 内，LatencyMs 可能为 0——只断言非负（毫秒级延迟合法）
+	if res.LatencyMs < 0 {
+		t.Fatalf("延迟不应为负, got %d", res.LatencyMs)
 	}
 	detail, ok := res.Detail.(map[string]interface{})
 	if !ok {

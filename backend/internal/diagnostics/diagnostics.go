@@ -34,6 +34,11 @@ func newRequestID() string {
 // EventTypeProgress 是单步进度事件的发布类型，订阅方（前端 WebSocket）据此过滤。
 const EventTypeProgress = "diagnostic.progress"
 
+// totalRunTimeout 单次诊断请求的总时限：单探测各有超时（服务级或
+// TimeoutProbe 覆盖），但整个请求（both 路径 × 多目标）仍可能累积很久，
+// 以 60s 上限统一收口，超时后已完成的探测结果照常保留（finish 置 Done）。
+const totalRunTimeout = 60 * time.Second
+
 // 服务级错误。
 var (
 	// ErrBusy 表示并发上限已满，本次诊断请求被拒绝。
@@ -154,7 +159,8 @@ func (s *Service) Run(ctx context.Context, req DiagnosticRequest) (string, error
 		s.mu.Unlock()
 		return "", ErrBusy
 	}
-	rctx, cancel := context.WithCancel(ctx)
+	// 总时限收口（见 totalRunTimeout）：与调用方 ctx 组合，取更早截止。
+	rctx, cancel := context.WithTimeout(ctx, totalRunTimeout)
 	// 每轮注入出网选择器：探测器的 proxy 路径需要它取代理地址/客户端。
 	// 克隆探测实例（见 withSelector），不污染 cfg.Probes 上的共享实例。
 	probes := s.cfg.Probes

@@ -81,6 +81,13 @@ func (f ProbeFunc) Run(ctx context.Context, target DiagnosticTarget, path string
 	return f(ctx, target, path, cb)
 }
 
+// TimeoutProbe 是可选接口：实现方返回该探测期望的独立超时，覆盖服务级
+// ProbeTimeout。长耗时探测（HTTP=10s、Traceroute=30s）用它避免被统一
+// 5s 超时过早掐断；TCP/DNS/Ping 不实现，沿用服务级超时。
+type TimeoutProbe interface {
+	ProbeTimeout() time.Duration
+}
+
 // Run 是一次诊断执行：一组目标按类型分派到对应探测器，顺序执行。
 //
 // RequestID/Targets/Path/Timeout/Probes 是执行配置，Execute 期间不应修改。
@@ -150,8 +157,14 @@ func (r *Run) Execute(ctx context.Context, onProgress ProgressFunc) {
 			}
 			continue
 		}
-		// 每个探测独立超时：目标无效等由探测内部处理，这里只保护单步总时长
-		pctx, cancel := context.WithTimeout(ctx, r.Timeout)
+		// 每个探测独立超时：默认服务级 Timeout；实现 TimeoutProbe 的探测
+		// （如 Traceroute 30s、HTTP 10s）用其覆盖值，避免统一 5s 压垮长耗时
+		// 探测。目标无效等由探测内部处理，这里只保护单步总时长。
+		timeout := r.Timeout
+		if tp, ok := probe.(TimeoutProbe); ok {
+			timeout = tp.ProbeTimeout()
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
 		// 当前无分步探测器，cb 传 nil；最终结果统一由下方 onProgress 回调
 		res := probe.Run(pctx, target, r.Path, nil)
 		cancel()

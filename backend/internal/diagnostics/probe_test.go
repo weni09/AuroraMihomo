@@ -2,9 +2,19 @@ package diagnostics
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
+
+// roundTripFunc 把普通函数适配为 http.RoundTripper，便于测试注入自定义传输。
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestRunProbeFramework(t *testing.T) {
 	// 验证探测框架：探测执行一次、结果回填、完成后置 Done
@@ -102,6 +112,70 @@ func TestExecuteDispatchesByType(t *testing.T) {
 	}
 	if snap.Results[3].Status != StatusError || snap.Results[3].Error == "" {
 		t.Fatalf("未注册类型应回填 StatusError, got %+v", snap.Results[3])
+	}
+}
+
+func TestRunProbeTimeoutOverride(t *testing.T) {
+	// TracerouteProbe 实现 TimeoutProbe：Execute 应使用其 30s 覆盖值而非
+	// 服务级 5s——注入 RunCmd 断言 ctx 截止时间在 30s 量级。
+	probe := &TracerouteProbe{
+		RunCmd: func(ctx context.Context, host string) ([]byte, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("ctx 应有截止时间")
+			}
+			if remaining := time.Until(deadline); remaining < 25*time.Second {
+				t.Fatalf("Traceroute 探测超时应为 30s 覆盖值, 剩余 %v", remaining)
+			}
+			return []byte(tracerouteSample), nil
+		},
+	}
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypeTraceroute, Target: "8.8.8.8"}}, PathDirect, 5*time.Second, map[string]Probe{TypeTraceroute: probe})
+	run.Execute(context.Background(), nil)
+	snap := run.Snapshot()
+	if len(snap.Results) != 1 || snap.Results[0].Status != StatusSuccess {
+		t.Fatalf("应成功完成, got %+v", snap.Results)
+	}
+}
+
+func TestRunHTTPProbeTimeoutOverride(t *testing.T) {
+	// HTTPProbe 实现 TimeoutProbe：Execute 应使用其 10s 覆盖值而非服务级
+	// 5s——注入自定义 RoundTripper 断言请求 ctx 截止时间在 10s 量级。
+	var got time.Duration
+	probe := &HTTPProbe{
+		Client: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if dl, ok := req.Context().Deadline(); ok {
+					got = time.Until(dl)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    req,
+				}, nil
+			}),
+		},
+	}
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypeHTTP, Target: "http://target.invalid/"}}, PathDirect, 5*time.Second, map[string]Probe{TypeHTTP: probe})
+	run.Execute(context.Background(), nil)
+	if got < 9*time.Second {
+		t.Fatalf("HTTP 探测超时应为 10s 覆盖值, got 剩余 %v", got)
+	}
+}
+
+func TestProbeTimeoutDefaults(t *testing.T) {
+	// HTTP/Traceroute 实现 TimeoutProbe：默认值与显式覆盖都正确。
+	if got := (&HTTPProbe{}).ProbeTimeout(); got != 10*time.Second {
+		t.Fatalf("HTTPProbe 默认应为 10s, got %v", got)
+	}
+	if got := (&HTTPProbe{Timeout: 3 * time.Second}).ProbeTimeout(); got != 3*time.Second {
+		t.Fatalf("HTTPProbe 显式 Timeout 应生效, got %v", got)
+	}
+	if got := (&TracerouteProbe{}).ProbeTimeout(); got != 30*time.Second {
+		t.Fatalf("TracerouteProbe 默认应为 30s, got %v", got)
+	}
+	if got := (&TracerouteProbe{Timeout: 7 * time.Second}).ProbeTimeout(); got != 7*time.Second {
+		t.Fatalf("TracerouteProbe 显式 Timeout 应生效, got %v", got)
 	}
 }
 

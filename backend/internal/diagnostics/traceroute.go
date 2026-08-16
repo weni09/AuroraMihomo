@@ -28,6 +28,16 @@ type TracerouteProbe struct {
 	RunCmd  func(ctx context.Context, host string) ([]byte, error)
 }
 
+// ProbeTimeout 返回该探测期望的独立超时：显式设置时用显式值，否则 30s。
+// 实现 TimeoutProbe——traceroute 常需逐跳等待多个超时，服务级 5s 会过早
+// 掐断整条链路探测。
+func (p *TracerouteProbe) ProbeTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+	return 30 * time.Second
+}
+
 // Run 执行一次 traceroute 探测。
 //
 // 生命周期与状态语义：

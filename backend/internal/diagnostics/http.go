@@ -20,6 +20,15 @@ type HTTPProbe struct {
 	Selector ClientSelector
 }
 
+// ProbeTimeout 返回该探测期望的独立超时：显式设置时用显式值，否则 10s。
+// 实现 TimeoutProbe，避免被服务级 5s 超时压垮（下载慢速目标常需更久）。
+func (p *HTTPProbe) ProbeTimeout() time.Duration {
+	if p.Timeout > 0 {
+		return p.Timeout
+	}
+	return 10 * time.Second
+}
+
 func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
 	timeout := p.Timeout
 	if timeout <= 0 {
