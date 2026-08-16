@@ -46,6 +46,77 @@ Trace complete.`
 	}
 }
 
+func TestTracerouteParseWindowsTimeout(t *testing.T) {
+	// Windows tracert -d 超时跳：RTT 槽位为 *、末尾 "Request timed out."。
+	// 修复前 "out." 被误判为地址（Addr='out.'）；修复后 Addr 应为 '*'。
+	out := `Tracing route to 8.8.8.8 over a maximum of 30 hops
+
+  1     1 ms     1 ms     1 ms  192.168.1.1
+  2     *        *        *     Request timed out.
+  3     *        *        *     Request timed out.
+  4     2 ms     2 ms     2 ms  8.8.8.8
+
+Trace complete.`
+	hops := parseTraceroute(out)
+	if len(hops) != 4 {
+		t.Fatalf("应解析出 4 跳, got %d: %+v", len(hops), hops)
+	}
+	// 正常跳地址保持 IP 字面量
+	if hops[0].Addr != "192.168.1.1" || hops[3].Addr != "8.8.8.8" {
+		t.Fatalf("正常跳地址应保持 IP 字面量, got %+v", hops)
+	}
+	// 超时跳：Addr 为 '*'，绝不带 "out."，RTT 为空
+	for _, i := range []int{1, 2} {
+		if hops[i].Addr == "out." {
+			t.Fatalf("第 %d 跳 Addr 不应是 \"out.\", got %+v", i+1, hops[i])
+		}
+		if hops[i].Addr != "*" {
+			t.Fatalf("第 %d 跳 Addr 应为 \"*\", got %q", i+1, hops[i].Addr)
+		}
+		if hops[i].RTT != "" {
+			t.Fatalf("第 %d 跳超时不应有 RTT, got %q", i+1, hops[i].RTT)
+		}
+	}
+}
+
+func TestTracerouteParseWindowsUnreachable(t *testing.T) {
+	// "Destination host unreachable." 的 "unreachable." 同样不是地址。
+	out := `Tracing route to 10.255.255.1 over a maximum of 30 hops
+
+  1     *        *        *     Destination host unreachable.
+
+Trace complete.`
+	hops := parseTraceroute(out)
+	if len(hops) != 1 {
+		t.Fatalf("应解析出 1 跳, got %d: %+v", len(hops), hops)
+	}
+	if hops[0].Addr == "unreachable." {
+		t.Fatalf("Addr 不应是 \"unreachable.\", got %+v", hops[0])
+	}
+	if hops[0].Addr != "*" {
+		t.Fatalf("Addr 应为 \"*\", got %q", hops[0].Addr)
+	}
+}
+
+func TestTracerouteParseStarHop(t *testing.T) {
+	// 纯 * 无响应行（无 "Request timed out." 尾巴）→ Addr='*'
+	out := `Tracing route to 1.1.1.1 over a maximum of 30 hops
+
+  1     *        *        *
+
+Trace complete.`
+	hops := parseTraceroute(out)
+	if len(hops) != 1 {
+		t.Fatalf("应解析出 1 跳, got %d: %+v", len(hops), hops)
+	}
+	if hops[0].Addr != "*" {
+		t.Fatalf("Addr 应为 \"*\", got %q", hops[0].Addr)
+	}
+	if hops[0].RTT != "" {
+		t.Fatalf("无响应跳不应有 RTT, got %q", hops[0].RTT)
+	}
+}
+
 func TestTracerouteProbeSuccess(t *testing.T) {
 	probe := &TracerouteProbe{
 		RunCmd: func(ctx context.Context, host string) ([]byte, error) {

@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"errors"
+	"net"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -126,11 +127,20 @@ func parseTraceroute(out string) []Hop {
 }
 
 // traceAddr 从跳行字段中找地址：Unix traceroute 的地址在第二列，
-// Windows tracert 的地址在末列，统一取首个 IP 形字段。
+// Windows tracert 的地址在末列，统一取首个 IP 字面量字段；无 IP 字面量时
+// 若存在 *（无响应标记）返回 "*"，否则返回空串——把 "Request timed out."
+// 的 "out."、"Destination host unreachable." 的 "unreachable." 等英文词
+// 排除在地址之外。
 func traceAddr(fields []string) string {
 	for _, f := range fields {
 		if isIPField(f) {
 			return f
+		}
+	}
+	// 超时/不可达跳：RTT 槽位为 *（无响应），地址列留空；用 "*" 标记该跳无响应
+	for _, f := range fields {
+		if f == "*" {
+			return "*"
 		}
 	}
 	return ""
@@ -147,13 +157,11 @@ func traceRTT(fields []string) string {
 	return ""
 }
 
-// isIPField 判断字段是否为 IP 地址：含 . 或 : 且本身不是 RTT 数值。
-// 借此把 "192.168.1.1" 判为地址，把 "1.2" 判为 RTT 数值。
+// isIPField 判断字段是否为 IP 字面量地址：用 net.ParseIP 严格校验。
+// 借此把 "192.168.1.1"、IPv6 判为地址，把 "1.2"（RTT 数值）、
+// "out."、"unreachable." 等英文词判为非法地址。
 func isIPField(f string) bool {
-	if isRTTField(f) {
-		return false
-	}
-	return strings.Contains(f, ".") || strings.Contains(f, ":")
+	return net.ParseIP(f) != nil
 }
 
 // isRTTField 判断字段是否为 RTT 数值；tracert 的 "<1" 也视为合法。
