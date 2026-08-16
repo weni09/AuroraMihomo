@@ -50,6 +50,8 @@ export const useDiagnosticsStore = defineStore('diagnostics', {
       } catch (e) {
         this.error = '诊断启动失败'
         this.running = false
+        // 清空 requestId：否则 handleProgress 会继续收上一轮的进度事件混入本轮
+        this.requestId = ''
         throw e
       }
     },
