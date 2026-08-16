@@ -175,10 +175,18 @@ func (s *Service) execute(requestID string, run *Run, ctx context.Context, path 
 // finish 标记整个请求完成（含被取消的情况）、释放信号量，并安排 TTL 淘汰缓存。
 func (s *Service) finish(requestID string) {
 	s.mu.Lock()
+	var cancel context.CancelFunc
 	if entry, ok := s.runs[requestID]; ok {
 		close(entry.done)
+		cancel = entry.cancel
 	}
 	s.mu.Unlock()
+
+	// 锁外释放派生 context：父 ctx 为 cancelCtx 时子 context 滞留父 children map，
+	// 长父 ctx 下会线性累积；Cancel/Close 也会调 cancel，CancelFunc 幂等且并发安全。
+	if cancel != nil {
+		cancel()
+	}
 
 	<-s.sem // 释放并发信号量
 
@@ -200,15 +208,18 @@ func (s *Service) GetResult(id string) (RunSnapshot, bool) {
 	if !ok {
 		return RunSnapshot{}, false
 	}
-	snap := entry.run.Snapshot()
-	// Done 表示整个请求（含 both 的两个阶段）全部完成，而非单个 Execute 阶段。
+	// 先观察 done 再取快照：finish 在所有结果 append 完成后才 close(done)，
+	// close 与其后的快照建立 happens-before，保证 Done=true 的快照必含
+	// both 路径的全部阶段结果。旧顺序（先快照后观察）可能快照缺最后阶段
+	// 却返回 Done=true，轮询方停止轮询丢结果。
 	select {
 	case <-entry.done:
+		snap := entry.run.Snapshot()
 		snap.Done = true
+		return snap, true
 	default:
-		snap.Done = false
+		return entry.run.Snapshot(), true
 	}
-	return snap, true
 }
 
 // Cancel 中断一次正在执行的诊断：取消执行 context，探测尽快返回后置 Done。
@@ -288,7 +299,9 @@ func ValidateTarget(raw string) error {
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("诊断目标协议 %q 不受支持，仅支持 http/https", u.Scheme)
 	}
-	if u.Host == "" {
+	// 不能只查 u.Host：http://:80 的 u.Host==":80" 非空但 Hostname() 为空，
+	// 必须按 Hostname() 校验，拒绝仅带端口的主机。
+	if u.Hostname() == "" {
 		return fmt.Errorf("诊断目标缺少主机名")
 	}
 	return nil

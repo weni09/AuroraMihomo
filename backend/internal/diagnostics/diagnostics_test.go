@@ -207,6 +207,55 @@ func TestServiceBothPathExpands(t *testing.T) {
 	}
 }
 
+func TestGetResultDoneIncludesAllResults(t *testing.T) {
+	// both 路径：等 GetResult.Done=true 后，快照必须已含 direct+proxy 两个阶段
+	// 的全部结果。旧实现先快照后观察 done，可能快照缺最后阶段（proxy）却返回
+	// Done=true，轮询方停止轮询丢结果；-race -count 多次跑可稳定暴露该竞态。
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		return ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+	})
+	svc := New(Config{
+		MaxConcurrent: 3,
+		Probes:        map[string]Probe{TypeTCP: probe},
+	})
+	defer svc.Close()
+
+	id, err := svc.Run(context.Background(), DiagnosticRequest{
+		Targets: []DiagnosticTarget{{Type: TypeTCP, Target: "example.com"}},
+		Path:    "both",
+	})
+	if err != nil {
+		t.Fatalf("Run 应成功, got %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s, ok := svc.GetResult(id)
+		if !ok {
+			t.Fatalf("GetResult 应能找到请求 %q", id)
+		}
+		if !s.Done {
+			if time.Now().After(deadline) {
+				t.Fatalf("等待 Done 超时, snap=%+v", s)
+			}
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		// Done=true 的快照必须含 both 两阶段结果，缺任一阶段即为丢结果
+		if len(s.Results) != 2 {
+			t.Fatalf("Done=true 时结果应含 direct+proxy 两条, got %d: %+v", len(s.Results), s.Results)
+		}
+		paths := map[string]bool{}
+		for _, r := range s.Results {
+			paths[r.Path] = true
+		}
+		if !paths[PathDirect] || !paths[PathProxy] {
+			t.Fatalf("Done=true 时结果应含 direct 与 proxy, got %+v", s.Results)
+		}
+		break
+	}
+}
+
 func TestServiceCancel(t *testing.T) {
 	// 慢探测：Cancel 后执行中断，Done 置位且结果标记 timeout
 	started := make(chan struct{})
@@ -369,6 +418,30 @@ func TestValidateTargetBasic(t *testing.T) {
 	for _, raw := range rejected {
 		if err := ValidateTarget(raw); err == nil {
 			t.Errorf("ValidateTarget(%q) 应拒绝", raw)
+		}
+	}
+}
+
+func TestValidateTargetRejectsEmptyHost(t *testing.T) {
+	// http://:80 的 u.Host==":80" 非空但 Hostname() 为空，旧校验只查 u.Host 漏检
+	rejected := []string{
+		"http://:80",
+		"https://:443",
+		"http://:80/path",
+	}
+	for _, raw := range rejected {
+		if err := ValidateTarget(raw); err == nil {
+			t.Errorf("ValidateTarget(%q) 应拒绝空主机名", raw)
+		}
+	}
+	// 带端口的主机名仍应通过，避免误伤
+	allowed := []string{
+		"http://example.com:8080",
+		"http://127.0.0.1:80",
+	}
+	for _, raw := range allowed {
+		if err := ValidateTarget(raw); err != nil {
+			t.Errorf("ValidateTarget(%q) 应通过, got %v", raw, err)
 		}
 	}
 }
