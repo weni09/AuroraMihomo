@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"auroramihomo/backend/internal/fetcher"
 )
 
 // diagSeq 是进程内单调递增序列，用于保证 requestId 唯一。
@@ -283,9 +285,8 @@ func expandPaths(path string) []string {
 
 // ValidateTarget 校验诊断目标 URL。
 //
-// TODO(Task 3): fetcher.ValidateFetchURLExternal 落地后改为调用该导出函数，
-// 复用订阅源已有的协议/SSRF 校验；当前实现仅做纯 URL 净校验：
-// scheme 必须为 http/https、host 非空。
+// 复用 fetcher 的协议/SSRF 校验（订阅源同款防线）：拒绝非 http/https 协议、
+// 云 metadata / 链路本地地址。DNS 重绑定由探测时的 guardedDialContext 兜底。
 func ValidateTarget(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -295,14 +296,8 @@ func ValidateTarget(raw string) error {
 	if err != nil {
 		return fmt.Errorf("诊断目标不是合法 URL: %w", err)
 	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("诊断目标协议 %q 不受支持，仅支持 http/https", u.Scheme)
-	}
-	// 不能只查 u.Host：http://:80 的 u.Host==":80" 非空但 Hostname() 为空，
-	// 必须按 Hostname() 校验，拒绝仅带端口的主机。
 	if u.Hostname() == "" {
 		return fmt.Errorf("诊断目标缺少主机名")
 	}
-	return nil
+	return fetcher.ValidateFetchURLExternal(raw)
 }
