@@ -53,7 +53,8 @@ type ProbeResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// ProgressFunc 在单步探测完成时回调，用于发布进度事件。
+// ProgressFunc 是进度回调：框架在单个探测完成后统一回调一次，
+// 携带该探测的最终结果。
 type ProgressFunc func(ProbeResult)
 
 // Probe 是单个探测器的抽象。
@@ -62,8 +63,10 @@ type ProgressFunc func(ProbeResult)
 //   - 用 ctx 控制生命周期：ctx 超时/取消后应尽快返回，把超时表现为
 //     StatusTimeout——框架只负责把带超时的 context 交给探测，不替探测
 //     判断结果状态（目标无效等错误由探测内部处理并回填 StatusError）。
-//   - 有阶段性进展（如 traceroute 逐跳）时通过 cb 上报，完成时也应
-//     调用一次 cb，让进度流不缺最后一步。
+//   - cb 是「可选」的分步进度回调（如 traceroute 逐跳），仅用于上报中间
+//     步骤；当前框架不会传入（为 nil），使用前必须先判空。探测完成时
+//     不得调用 cb 上报最终结果——最终结果由框架在 Run 返回后统一回调
+//     一次，避免同一结果触发两次进度事件。
 type Probe interface {
 	Run(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult
 }
@@ -110,15 +113,17 @@ func NewRun(requestID string, targets []DiagnosticTarget, path string, timeout t
 //   - 每个探测拿到独立 context：继承外部 ctx 并叠加 Timeout 超时，
 //     单个探测卡死不会拖垮整轮；
 //   - 单探测失败/超时不中断整体，结果照常回填；
-//   - 每步完成后回调 onProgress（与传给探测的 cb 是同一个），
-//     onProgress 为 nil 时跳过；
+//   - 进度回调单一所有者：每个探测返回后框架统一调用一次 onProgress(res)
+//     （onProgress 为 nil 时跳过）；传给探测的 cb 当前为 nil，仅保留给
+//     未来的分步探测，探测不得用它上报最终结果；
 //   - 全部完成后置 Done。
 func (r *Run) Execute(ctx context.Context, onProgress ProgressFunc) {
 	for _, target := range r.Targets {
 		for _, probe := range r.Probes {
 			// 每个探测独立超时：目标无效等由探测内部处理，这里只保护单步总时长
 			pctx, cancel := context.WithTimeout(ctx, r.Timeout)
-			res := probe.Run(pctx, target, r.Path, onProgress)
+			// 当前无分步探测器，cb 传 nil；最终结果统一由下方 onProgress 回调
+			res := probe.Run(pctx, target, r.Path, nil)
 			cancel()
 			r.mu.Lock()
 			r.Results = append(r.Results, res)

@@ -44,3 +44,25 @@ func TestRunProbeTimeout(t *testing.T) {
 		t.Fatal("超时探测结束后应置 Done")
 	}
 }
+
+func TestRunProbeProgressSingleOwner(t *testing.T) {
+	// 验证进度回调单一所有者：即使探测按旧文档「完成时也调一次 cb」，
+	// onProgress 也只收到一次最终事件——最终结果由框架在 Run 返回后统一回调，
+	// 不会因探测自身再调 cb 而重复触发。
+	events := 0
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		res := ProbeResult{Target: target.Target, Type: target.Type, Path: path, Status: StatusSuccess}
+		if cb != nil {
+			cb(res) // 旧文档行为：完成时上报一次；当前 cb 为 nil，须判空
+		}
+		return res
+	})
+	run := NewRun("req-1", []DiagnosticTarget{{Type: TypePing, Target: "x"}}, PathDirect, 5*time.Second, []Probe{probe})
+	run.Execute(context.Background(), func(ProbeResult) { events++ })
+	if events != 1 {
+		t.Fatalf("onProgress 应只收到一次最终事件, got %d", events)
+	}
+	if len(run.Results) != 1 || run.Results[0].Status != StatusSuccess {
+		t.Fatalf("结果应回填, got %+v", run.Results)
+	}
+}
