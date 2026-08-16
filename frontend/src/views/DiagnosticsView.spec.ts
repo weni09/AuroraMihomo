@@ -169,4 +169,65 @@ describe('DiagnosticsView 网络诊断页', () => {
     expect(text).toContain('8ms')
     wrapper.unmount()
   })
+
+  it('非法端口（80.5 / 70000）点击「诊断」不调用 store.run', async () => {
+    const { wrapper } = mountView()
+    await wrapper.find('input#diag-target').setValue('example.com')
+
+    for (const invalidPort of ['80.5', '70000']) {
+      await wrapper.find('input#diag-port').setValue(invalidPort)
+      const runBtn = wrapper.findAll('button').find((b) => b.text() === '诊断')
+      expect(runBtn).toBeDefined()
+      await runBtn!.trigger('click')
+      await flushPromises()
+      expect(mockedApi.post).not.toHaveBeenCalled()
+    }
+    wrapper.unmount()
+  })
+
+  it('合法端口点击「诊断」以手动目标调用 store.run', async () => {
+    const { wrapper } = mountView()
+    await wrapper.find('input#diag-target').setValue('example.com')
+    await wrapper.find('input#diag-port').setValue('8443')
+    const runBtn = wrapper.findAll('button').find((b) => b.text() === '诊断')
+    expect(runBtn).toBeDefined()
+
+    await runBtn!.trigger('click')
+    await flushPromises()
+
+    expect(mockedApi.post).toHaveBeenCalledTimes(1)
+    const [, payload] = mockedApi.post.mock.calls[0] as unknown as [
+      string,
+      { targets: Array<{ type: string; target: string; port?: number }> },
+    ]
+    expect(payload.targets).toEqual([{ type: 'tcp', target: 'example.com', port: 8443 }])
+    wrapper.unmount()
+  })
+
+  it('点击清空停止轮询，不再触发 fetchResult', async () => {
+    vi.useFakeTimers()
+    try {
+      const { wrapper } = mountView()
+      const presetBtn = wrapper.findAll('button').find((b) => b.text() === '开始诊断')
+      expect(presetBtn).toBeDefined()
+
+      await presetBtn!.trigger('click')
+      // flush 微任务让 store.run 完成并注册 2s 轮询，再推进一个周期触发首次 fetchResult
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(2000)
+      const callsAfterTick = mockedApi.get.mock.calls.length
+      expect(callsAfterTick).toBeGreaterThan(0)
+
+      const clearBtn = wrapper.findAll('button').find((b) => b.text() === '清空')
+      expect(clearBtn).toBeDefined()
+      await clearBtn!.trigger('click')
+
+      // 清空后推进 3 个轮询周期：interval 已被清除，fetchResult 不应再被调用
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(mockedApi.get.mock.calls.length).toBe(callsAfterTick)
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

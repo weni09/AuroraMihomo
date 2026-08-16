@@ -75,7 +75,12 @@ function startPolling() {
 }
 
 async function runPreset() {
-  await store.run(presetTargets, path.value)
+  try {
+    await store.run(presetTargets, path.value)
+  } catch (e) {
+    console.error(e)
+    return
+  }
   startPolling()
 }
 
@@ -85,10 +90,22 @@ async function runManual() {
   const targets: DiagnosticTarget[] = [{ type: manualType.value, target }]
   if (manualType.value === 'tcp') {
     const port = Number(manualPort.value)
-    if (Number.isFinite(port) && port > 0) targets[0].port = port
+    // 端口必须是 1-65535 的整数；非法时直接返回，保留输入供修正
+    if (!(Number.isInteger(port) && port >= 1 && port <= 65535)) return
+    targets[0].port = port
   }
-  await store.run(targets, path.value)
+  try {
+    await store.run(targets, path.value)
+  } catch (e) {
+    console.error(e)
+    return
+  }
   startPolling()
+}
+
+function handleClear() {
+  stopPolling()
+  store.reset()
 }
 
 onUnmounted(stopPolling)
@@ -121,7 +138,7 @@ function statusVariant(status: ProbeResult['status']): BadgeVariants['variant'] 
       <h2 class="text-sm font-semibold mb-3">出网路径</h2>
       <div class="flex flex-wrap items-center gap-3">
         <Select v-model="path">
-          <SelectTrigger class="w-52"><SelectValue /></SelectTrigger>
+          <SelectTrigger class="w-52" aria-label="出网路径"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="both">直连 + 代理对比</SelectItem>
             <SelectItem value="direct">仅直连</SelectItem>
@@ -187,7 +204,7 @@ function statusVariant(status: ProbeResult['status']): BadgeVariants['variant'] 
         <h2 class="text-sm font-semibold">诊断结果</h2>
         <div class="flex items-center gap-2">
           <span v-if="store.running" class="text-xs text-fg-subtle">进行中…</span>
-          <Button variant="ghost" size="sm" @click="store.reset()">清空</Button>
+          <Button variant="ghost" size="sm" @click="handleClear">清空</Button>
         </div>
       </div>
       <div class="space-y-2">
