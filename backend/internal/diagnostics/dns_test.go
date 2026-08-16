@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,17 @@ import (
 type mockDNSServer struct {
 	conn *net.UDPConn
 	addr string
+
+	mu       sync.Mutex
+	lastName string // 最近一次收到的查询名（供诊断/断言，见 lastQueryName）
+}
+
+// lastQueryName 返回 mock 最近收到的查询名，供测试日志输出或断言，
+// 便于排查 CI 与本地环境对解析器查询名格式的差异。
+func (s *mockDNSServer) lastQueryName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastName
 }
 
 // startMockDNSServer 启动 mock DNS 服务器，测试结束时自动关闭。
@@ -36,7 +48,7 @@ func (s *mockDNSServer) serve() {
 		if err != nil {
 			return // 连接关闭
 		}
-		if resp := buildDNSResponse(buf[:n]); resp != nil {
+		if resp := s.buildDNSResponse(buf[:n]); resp != nil {
 			s.conn.WriteToUDP(resp, from)
 		}
 	}
@@ -44,7 +56,7 @@ func (s *mockDNSServer) serve() {
 
 // buildDNSResponse 构造最小 DNS 响应：回显查询的 ID 与问题段，
 // 按查询类型回填固定记录（A=192.0.2.10，AAAA=2001:db8::10）。
-func buildDNSResponse(query []byte) []byte {
+func (s *mockDNSServer) buildDNSResponse(query []byte) []byte {
 	if len(query) < 17 { // 12 字节头 + 问题段（根名 1 + qtype 2 + qclass 2）
 		return nil
 	}
@@ -52,16 +64,25 @@ func buildDNSResponse(query []byte) []byte {
 	if !ok || len(query) < 12+end+4 {
 		return nil
 	}
+	// 记录实际收到的查询名：Go 解析器在 Linux 上会追加 resolv.conf 的
+	// search 域（如 nx.test.<search>），也可能保留尾点——记下来供断言/日志。
+	s.mu.Lock()
+	s.lastName = name
+	s.mu.Unlock()
+
 	qtype := binary.BigEndian.Uint16(query[12+end:])
 	question := query[12 : 12+end+4]
 
 	rcode := uint16(0)
 	anCount := uint16(1)
 	var answer []byte
+	clean := strings.TrimSuffix(name, ".")
 	switch {
-	case strings.HasSuffix(name, "nx.test"):
-		// Go 解析器可能追加 resolv.conf 的 search 域（如 nx.test.local），
-		// 用后缀匹配保证 CI 与本地行为一致
+	case strings.Contains(name, "nx") || clean == "nx.test":
+		// 主匹配：去尾点后精确等于 nx.test。测试目标已改为带尾点的 FQDN
+		// 「nx.test.」——Go 视根化名为绝对名，只查询该名，天然绕过 search 域。
+		// 兜底匹配：任何含 "nx" 的查询名一律判 NXDOMAIN。本套件成功用例
+		// 只查 a.test/slow.test，不含 "nx"，绝无歧义。
 		rcode = 3 // NXDOMAIN
 		anCount = 0
 	case qtype == 28: // AAAA
@@ -144,7 +165,11 @@ func TestDNSProbeSuccess(t *testing.T) {
 func TestDNSProbeNXDomain(t *testing.T) {
 	s := startMockDNSServer(t)
 	probe := &DNSProbe{Resolver: mockResolver(t, s)}
-	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeDNS, Target: "nx.test"}, PathDirect, nil)
+	// 带尾点的 FQDN：Go 解析器视其为根化名（rooted），只查询该名本身，
+	// 不追加 resolv.conf 的 search 域，CI 与本地行为一致。
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeDNS, Target: "nx.test."}, PathDirect, nil)
+	// 记录 mock 实际收到的查询名，便于未来排查 CI 环境差异。
+	t.Logf("mock 收到查询名: %q", s.lastQueryName())
 	if res.Status != StatusFail {
 		t.Fatalf("NXDOMAIN 应标记 fail, got %+v", res)
 	}
