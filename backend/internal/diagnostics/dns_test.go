@@ -160,6 +160,33 @@ func TestDNSProbeSuccess(t *testing.T) {
 	if !have["192.0.2.10"] || !have["2001:db8::10"] {
 		t.Fatalf("records 应包含 mock 返回的 A/AAAA 记录, got %v", records)
 	}
+	// 注入自定义 resolver 时应标注 resolver=custom
+	if rv, _ := detail["resolver"].(string); rv != "custom" {
+		t.Fatalf("注入 resolver 应标注 custom, got %v", detail["resolver"])
+	}
+}
+
+func TestDNSProbeSystemResolverDetail(t *testing.T) {
+	// p.Resolver 为 nil 时使用系统默认 resolver：Detail 应标注 resolver=system。
+	// 临时替换 net.DefaultResolver 为本地 mock，避免测试依赖真实 DNS
+	// （包内测试无 t.Parallel，顺序执行，替换安全）。
+	s := startMockDNSServer(t)
+	old := net.DefaultResolver
+	net.DefaultResolver = mockResolver(t, s)
+	defer func() { net.DefaultResolver = old }()
+
+	probe := &DNSProbe{} // Resolver 为 nil → 系统默认
+	res := probe.Run(context.Background(), DiagnosticTarget{Type: TypeDNS, Target: "a.test"}, PathDirect, nil)
+	if res.Status != StatusSuccess {
+		t.Fatalf("应成功, got %+v", res)
+	}
+	detail, ok := res.Detail.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Detail 应为 map, got %T", res.Detail)
+	}
+	if rv, _ := detail["resolver"].(string); rv != "system" {
+		t.Fatalf("系统默认解析器应标注 system, got %v", detail["resolver"])
+	}
 }
 
 func TestDNSProbeNXDomain(t *testing.T) {

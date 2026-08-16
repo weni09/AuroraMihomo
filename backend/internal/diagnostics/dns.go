@@ -47,6 +47,14 @@ func (p *DNSProbe) Run(ctx context.Context, target DiagnosticTarget, path string
 		addrs = append(addrs, ip.IP.String())
 	}
 	detail := map[string]interface{}{"records": addrs}
+	// 标注本次查询使用的解析器：net.DefaultResolver 无法直接取服务器列表，
+	// 简化标注——用系统默认 resolver 记 "system"，注入的自定义 resolver
+	// （测试/调用方）记 "custom"。前端据此展示「DNS 服务器: 系统默认 / 自定义」。
+	if p.Resolver == nil {
+		detail["resolver"] = "system"
+	} else {
+		detail["resolver"] = "custom"
+	}
 	if path == PathProxy {
 		// DNS 查询不经 HTTP 代理（UDP/53 直出），结果与 direct 路径一致——
 		// 如实标注，避免前端把直出结果误读为代理路径数据。

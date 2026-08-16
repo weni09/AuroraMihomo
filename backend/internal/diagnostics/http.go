@@ -53,6 +53,11 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 	if path == PathProxy && proxyAddrOf(client) == "" {
 		fallbackNote = "代理不可用，已直连"
 	}
+	// 克隆 client 并在 CheckRedirect 外层包装记录重定向跳转：不污染共享
+	// client（defaultClientSelector 的 direct client 由所有探测共用），
+	// Transport/Timeout 只读共享，探测内临时 client 用完即弃。
+	rec := &redirectRecorder{}
+	client = cloneHTTPClient(client, rec.wrap(client.CheckRedirect))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Target, nil)
 	if err != nil {
 		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: StatusError, Error: err.Error()}
@@ -73,6 +78,11 @@ func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path strin
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 
 	detail := withProxyFallback(map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()}, fallbackNote)
+	// 重定向链（不含初始 URL）：每次 CheckRedirect 记录的跳转目标，
+	// 最终 URL 已由 finalURL 体现，链上最后一项与 finalURL 一致。
+	if len(rec.urls) > 0 {
+		detail["redirects"] = rec.urls
+	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		return ProbeResult{
 			Target:    target.Target,
@@ -107,4 +117,42 @@ func withProxyFallback(detail map[string]interface{}, note string) map[string]in
 	detail["proxyFallback"] = true
 	detail["note"] = note
 	return detail
+}
+
+// redirectRecorder 收集一次 HTTP 探测经历的重定向跳转：每次 CheckRedirect
+// 收到待跟随的跳转请求时记录其目标 URL。在 Run 内按次新建，用完即弃，
+// 不跨探测共享，同一 HTTPProbe 实例可安全并发执行。
+type redirectRecorder struct {
+	urls []string
+}
+
+// wrap 返回记录跳转 URL 的 CheckRedirect 包装：先记录再委托 base（原 SSRF
+// 逐跳校验），base 为 nil 时仅记录（跟随上限由 http.Client 默认 10 跳保证）。
+func (r *redirectRecorder) wrap(base func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if req != nil && req.URL != nil {
+			r.urls = append(r.urls, req.URL.String())
+		}
+		if base != nil {
+			return base(req, via)
+		}
+		return nil
+	}
+}
+
+// cloneHTTPClient 浅拷贝 http.Client 供探测内临时使用：复制字段但不复制
+// Transport（*http.Transport 并发安全，与共享 client 共用底层连接池），
+// CheckRedirect 替换为传入的包装版。返回的新 client 与原实例互不影响，
+// 探测结束后即弃，不污染共享 client（defaultClientSelector 的 direct client
+// 由所有探测共用，修改其 CheckRedirect 会影响其它探测）。
+func cloneHTTPClient(c *http.Client, checkRedirect func(*http.Request, []*http.Request) error) *http.Client {
+	if c == nil {
+		return nil
+	}
+	return &http.Client{
+		Transport:     c.Transport,
+		CheckRedirect: checkRedirect,
+		Jar:           c.Jar,
+		Timeout:       c.Timeout,
+	}
 }
