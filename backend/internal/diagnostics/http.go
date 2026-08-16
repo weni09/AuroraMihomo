@@ -1,0 +1,67 @@
+package diagnostics
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+// HTTPProbe GET 目标，报状态码/耗时/重定向链。
+//
+// 无全局可变状态：Timeout/Client 在 Run 内按值读取并解析默认值，
+// 不写回结构体字段，同一实例可安全并发执行。
+type HTTPProbe struct {
+	Timeout time.Duration
+	Client  *http.Client // 可注入（代理/直连）；nil 用默认
+}
+
+func (p *HTTPProbe) Run(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: timeout}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.Target, nil)
+	if err != nil {
+		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: StatusError, Error: err.Error()}
+	}
+	req.Header.Set("User-Agent", "AuroraMihomo-Diagnostics/0.1")
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	latency := time.Since(start)
+	if err != nil {
+		status := StatusFail
+		if ctx.Err() != nil {
+			status = StatusTimeout
+		}
+		return ProbeResult{Target: target.Target, Type: TypeHTTP, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		return ProbeResult{
+			Target:    target.Target,
+			Type:      TypeHTTP,
+			Path:      path,
+			Status:    StatusSuccess,
+			LatencyMs: latency.Milliseconds(),
+			Detail: map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+		}
+	}
+	return ProbeResult{
+		Target:    target.Target,
+		Type:      TypeHTTP,
+		Path:      path,
+		Status:    StatusFail,
+		LatencyMs: latency.Milliseconds(),
+		Detail: map[string]interface{}{"statusCode": resp.StatusCode, "finalURL": resp.Request.URL.String()},
+		Error: fmt.Sprintf("HTTP %d", resp.StatusCode),
+	}
+}
