@@ -59,7 +59,9 @@ func buildDNSResponse(query []byte) []byte {
 	anCount := uint16(1)
 	var answer []byte
 	switch {
-	case name == "nx.test":
+	case strings.HasSuffix(name, "nx.test"):
+		// Go 解析器可能追加 resolv.conf 的 search 域（如 nx.test.local），
+		// 用后缀匹配保证 CI 与本地行为一致
 		rcode = 3 // NXDOMAIN
 		anCount = 0
 	case qtype == 28: // AAAA
