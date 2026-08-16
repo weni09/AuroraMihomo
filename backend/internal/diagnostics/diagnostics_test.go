@@ -513,3 +513,139 @@ func TestValidateTargetRejectsEmptyHost(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceTransparentNote(t *testing.T) {
+	// 无 CAP_NET_ADMIN 时 direct 路径结果/进度事件标注透明代理接管提示；
+	// proxy 路径不标；持有 CAP_NET_ADMIN（true）或未知（nil）时不标。
+	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
+		return ProbeResult{
+			Target: target.Target,
+			Type:   target.Type,
+			Path:   path,
+			Status: StatusSuccess,
+			Detail: map[string]interface{}{"seq": 1},
+		}
+	})
+
+	// runBoth 跑一次 both 诊断，返回完成快照与进度事件。
+	runBoth := func(capFn func() bool) (RunSnapshot, []DiagnosticEvent, error) {
+		var eventMu sync.Mutex
+		events := []DiagnosticEvent{}
+		svc := New(Config{
+			MaxConcurrent: 3,
+			CapNetAdminFn: capFn,
+			Publish: func(eventType string, data interface{}) {
+				ev, ok := data.(DiagnosticEvent)
+				if !ok {
+					return
+				}
+				eventMu.Lock()
+				events = append(events, ev)
+				eventMu.Unlock()
+			},
+			Probes: map[string]Probe{TypeTCP: probe},
+		})
+		defer svc.Close()
+		id, err := svc.Run(context.Background(), DiagnosticRequest{
+			Targets: []DiagnosticTarget{{Type: TypeTCP, Target: "example.com"}},
+			Path:    "both",
+		})
+		if err != nil {
+			return RunSnapshot{}, nil, err
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			s, ok := svc.GetResult(id)
+			if !ok {
+				return RunSnapshot{}, nil, errors.New("GetResult 找不到请求")
+			}
+			if s.Done {
+				eventMu.Lock()
+				defer eventMu.Unlock()
+				return s, events, nil
+			}
+			if time.Now().After(deadline) {
+				return RunSnapshot{}, nil, errors.New("等待 Done 超时")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// noteOf 返回指定路径首条结果的 transparentNote 标注（无标注返回空串）。
+	noteOf := func(snap RunSnapshot, path string) string {
+		for _, r := range snap.Results {
+			if r.Path != path {
+				continue
+			}
+			if m, ok := r.Detail.(map[string]interface{}); ok {
+				if n, ok := m["transparentNote"].(string); ok {
+					return n
+				}
+			}
+		}
+		return ""
+	}
+	// eventNoteOf 返回指定路径首条进度事件 Detail 的 transparentNote 标注。
+	eventNoteOf := func(events []DiagnosticEvent, path string) string {
+		for _, ev := range events {
+			if ev.Path != path {
+				continue
+			}
+			if m, ok := ev.Detail.(map[string]interface{}); ok {
+				if n, ok := m["transparentNote"].(string); ok {
+					return n
+				}
+			}
+		}
+		return ""
+	}
+
+	t.Run("无 CAP_NET_ADMIN：direct 标注、proxy 不标", func(t *testing.T) {
+		snap, events, err := runBoth(func() bool { return false })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		if got := noteOf(snap, PathDirect); got != transparentNoteText {
+			t.Fatalf("direct 结果应标注 transparentNote, got %q", got)
+		}
+		if got := noteOf(snap, PathProxy); got != "" {
+			t.Fatalf("proxy 结果不应标注 transparentNote, got %q", got)
+		}
+		// 进度事件同样带标注（WS 实时通道与轮询回填一致）
+		if got := eventNoteOf(events, PathDirect); got != transparentNoteText {
+			t.Fatalf("direct 进度事件应标注 transparentNote, got %q", got)
+		}
+		if got := eventNoteOf(events, PathProxy); got != "" {
+			t.Fatalf("proxy 进度事件不应标注 transparentNote, got %q", got)
+		}
+		// 原有 Detail 字段保留（合并而非替换）
+		for _, r := range snap.Results {
+			if r.Path != PathDirect {
+				continue
+			}
+			if m, ok := r.Detail.(map[string]interface{}); ok && m["seq"] != 1 {
+				t.Errorf("direct 结果原有 Detail 字段应保留, got %+v", m)
+			}
+		}
+	})
+
+	t.Run("持有 CAP_NET_ADMIN：不标注", func(t *testing.T) {
+		snap, _, err := runBoth(func() bool { return true })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		if got := noteOf(snap, PathDirect); got != "" {
+			t.Fatalf("CapNetAdmin=true 时不应标注, got %q", got)
+		}
+	})
+
+	t.Run("未知（nil）：不标注", func(t *testing.T) {
+		snap, _, err := runBoth(nil)
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		if got := noteOf(snap, PathDirect); got != "" {
+			t.Fatalf("CapNetAdminFn=nil 时不应标注, got %q", got)
+		}
+	})
+}

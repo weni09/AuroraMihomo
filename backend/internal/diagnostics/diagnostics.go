@@ -66,6 +66,12 @@ type Config struct {
 	// （基于 ProxyURL）构造。HTTP/TCP/Ping 探测器的 proxy 路径据此走代理而非直连，
 	// 直连/代理对比输出真实路径的结果。
 	ClientSelector ClientSelector
+	// CapNetAdminFn 返回当前进程是否持有 CAP_NET_ADMIN；nil 表示未知。
+	// TProxy 下缺 CAP_NET_ADMIN 时面板无法给直连流量打 PanelMark 绕开自身规则
+	// （netcheck/sockmark.go：打标失败不阻断拨号），直连探测实际被 TPROXY 接管、
+	// 与代理结果趋同且无提示。仅在明确无权限（非 nil 且返回 false）时对 direct
+	// 路径结果标注 transparentNote；nil/未知不标，避免误报。
+	CapNetAdminFn func() bool
 }
 
 // DiagnosticRequest 是一次诊断请求。
@@ -99,6 +105,9 @@ type runEntry struct {
 // Service 管理诊断生命周期：并发信号量、结果缓存、取消与关停。
 type Service struct {
 	cfg Config
+	// capNetAdminFn 取 Config.CapNetAdminFn：直连探测完成后决定是否追加
+	// 透明代理接管标注（见 Config.CapNetAdminFn 注释）。
+	capNetAdminFn func() bool
 
 	mu     sync.Mutex
 	sem    chan struct{}
@@ -124,9 +133,10 @@ func New(cfg Config) *Service {
 		cfg.ClientSelector = defaultClientSelector(cfg.ProxyURL)
 	}
 	return &Service{
-		cfg:  cfg,
-		sem:  make(chan struct{}, cfg.MaxConcurrent),
-		runs: map[string]runEntry{},
+		cfg:           cfg,
+		capNetAdminFn: cfg.CapNetAdminFn,
+		sem:           make(chan struct{}, cfg.MaxConcurrent),
+		runs:          map[string]runEntry{},
 	}
 }
 
@@ -203,9 +213,22 @@ func (s *Service) execute(requestID string, run *Run, ctx context.Context, path 
 		// 在两次 Execute 之间（而非期间）改 Path，让 direct/proxy 阶段产出
 		// 各自路径的结果；Snapshot 不读 Path，无并发风险。
 		run.Path = p
+		// TProxy 下无 CAP_NET_ADMIN 时面板无法给直连流量打 PanelMark 绕开
+		// 自身规则（netcheck/sockmark.go：打标失败不阻断拨号），直连探测实际
+		// 被 TPROXY 接管、与代理结果趋同。对 direct 路径结果统一标注透明代理
+		// 接管提示：进度事件（withTransparentNote 复制后标注）与最终结果
+		// （AnnotateTransparentNote 锁内替换）都带上。仅明确无权限（fn 非 nil
+		// 且返回 false）时标注；未知不标，避免误报。
+		annotate := p == PathDirect && s.capNetAdminFn != nil && !s.capNetAdminFn()
 		run.Execute(ctx, func(res ProbeResult) {
+			if annotate {
+				res.Detail = withTransparentNote(res.Detail)
+			}
 			s.publishProgress(requestID, res)
 		})
+		if annotate {
+			run.AnnotateTransparentNote(p)
+		}
 	}
 	s.finish(requestID)
 }
@@ -355,4 +378,30 @@ func ValidateTarget(raw string) error {
 		return fmt.Errorf("诊断目标缺少主机名")
 	}
 	return fetcher.ValidateFetchURLExternal(raw)
+}
+
+// transparentNoteText 是 direct 路径在无 CAP_NET_ADMIN 时追加的 Detail 标注。
+//
+// 透明代理（TProxy）下，缺 CAP_NET_ADMIN 无法给直连流量打 PanelMark 绕开
+// 自身规则（netcheck/sockmark.go 明确「失败不阻断拨号」），直连探测实际被
+// TPROXY 接管——直连/代理结果趋同且无提示。标注提醒用户当前直连结果可能
+// 并非真实直连。仅明确无权限时标注，未知（CapNetAdminFn 为 nil）不标。
+const transparentNoteText = "直连可能被透明代理接管（无 CAP_NET_ADMIN）"
+
+// withTransparentNote 把透明代理接管标注并入 Detail：复制探测器回填的 map
+// 再加键（Detail 为 nil 或非 map 时新建），返回新 map，不修改原 map——
+// 进度事件与并发 Snapshot 读到的都是完整、不可变的数据。
+func withTransparentNote(detail any) any {
+	m, ok := detail.(map[string]interface{})
+	if !ok || m == nil {
+		m = map[string]interface{}{}
+	} else {
+		cp := make(map[string]interface{}, len(m)+1)
+		for k, v := range m {
+			cp[k] = v
+		}
+		m = cp
+	}
+	m["transparentNote"] = transparentNoteText
+	return m
 }

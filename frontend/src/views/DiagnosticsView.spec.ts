@@ -218,6 +218,53 @@ describe('DiagnosticsView 网络诊断页', () => {
     wrapper.unmount()
   })
 
+  it('渲染 transparentNote：direct 结果置顶展示透明代理接管提示', async () => {
+    const results: ProbeResult[] = [
+      {
+        target: 'example.com',
+        type: 'tcp',
+        path: 'direct',
+        status: 'success',
+        latencyMs: 12,
+        detail: {
+          transparentNote: '直连可能被透明代理接管（无 CAP_NET_ADMIN）',
+          note: '代理不可用，已直连',
+        },
+      },
+      {
+        target: 'api.github.com',
+        type: 'dns',
+        path: 'direct',
+        status: 'success',
+        latencyMs: 12,
+        detail: {
+          transparentNote: '直连可能被透明代理接管（无 CAP_NET_ADMIN）',
+          records: ['192.0.2.1'],
+          resolver: 'system',
+        },
+      },
+      {
+        target: 'example.com',
+        type: 'tcp',
+        path: 'proxy',
+        status: 'success',
+        latencyMs: 30,
+        detail: { seq: 1 },
+      },
+    ]
+    const { wrapper, store } = mountView()
+    store.results = results
+    await flushPromises()
+
+    const text = wrapper.text()
+    // direct 结果（tcp 与 dns 类型）都展示透明代理接管提示，恰好 2 次；
+    // proxy 结果无标注，不增加提示出现次数
+    expect(text).toContain('直连可能被透明代理接管（无 CAP_NET_ADMIN）')
+    const count = (text.match(/直连可能被透明代理接管（无 CAP_NET_ADMIN）/g) || []).length
+    expect(count).toBe(2)
+    wrapper.unmount()
+  })
+
   it('无结果且未运行时隐藏结果区', () => {
     const { wrapper } = mountView()
     const text = wrapper.text()

@@ -141,39 +141,41 @@ function tracerouteHops(r: ProbeResult): TracerouteHop[] {
 function detailText(r: ProbeResult): string {
   const d = r.detail
   if (!d) return ''
+  const parts: string[] = []
+  // 透明代理接管提示（direct 路径无 CAP_NET_ADMIN 时后端标注）：所有类型
+  // 统一置顶展示——缺 CAP_NET_ADMIN 时直连探测实际被 TPROXY 接管，结果与
+  // 代理趋同，需提醒用户当前直连结果可能并非真实直连
+  if (typeof d.transparentNote === 'string') parts.push(d.transparentNote)
   switch (r.type) {
     case 'dns': {
-      const parts: string[] = []
       const records = stringList(d.records)
       if (records.length) parts.push(`记录: ${records.join(', ')}`)
       if (typeof d.resolver === 'string') {
         parts.push(`DNS 服务器: ${d.resolver === 'system' ? '系统默认' : '自定义'}`)
       }
-      return parts.join(' · ')
+      break
     }
     case 'http': {
-      const parts: string[] = []
       if (typeof d.statusCode === 'number') parts.push(`HTTP ${d.statusCode}`)
       if (typeof d.finalURL === 'string') parts.push(`最终: ${d.finalURL}`)
       // redirects 只含中间跳转（最终 URL 已由 finalURL 体现），补上初始
       // 目标才是完整链路
       const redirects = stringList(d.redirects)
       if (redirects.length) parts.push(`重定向: ${[r.target, ...redirects].join(' → ')}`)
-      return parts.join(' · ')
+      break
     }
     case 'traceroute': {
       const hops = tracerouteHops(r)
-      if (hops.length) return `跳数: ${hops.length}`
-      return ''
+      if (hops.length) parts.push(`跳数: ${hops.length}`)
+      break
     }
     default: {
       // ping / tcp：proxyFallback/note/degraded 提示（若有）
-      const parts: string[] = []
       if (typeof d.note === 'string') parts.push(d.note)
       if (d.degraded === true && typeof d.reason === 'string') parts.push(d.reason)
-      return parts.join(' · ')
     }
   }
+  return parts.join(' · ')
 }
 </script>
 

@@ -200,6 +200,9 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 网络诊断服务：并发上限 3、结果保留 10 分钟、单探测超时 5 秒。
 	// Publish 对接实时通道推单步进度（EventTypeProgress）；ProxyURL 供
 	// proxy 路径探测取本地代理地址，与 updater 同一来源（cfgSvc.LocalProxyURL）。
+	// CapNetAdminFn 供直连路径标注透明代理接管提示：TProxy 下缺 CAP_NET_ADMIN
+	// 无法打 PanelMark 绕开自身规则，直连探测实际被 TPROXY 接管。Detect() 带
+	// 3s 缓存 + 单飞，高频调用无开销。
 	diagSvc := diagnostics.New(diagnostics.Config{
 		MaxConcurrent: 3,
 		ResultTTL:     10 * time.Minute,
@@ -207,6 +210,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		Probes:        diagnostics.Probes(),
 		Publish:       hub.Publish,
 		ProxyURL:      cfgSvc.LocalProxyURL,
+		CapNetAdminFn: func() bool { return netcheck.Detect().CapNetAdmin },
 	})
 
 	// RenderService 依赖 cfgSvc 的 substore 引擎，只能在其后构造；
