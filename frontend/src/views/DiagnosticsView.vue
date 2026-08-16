@@ -82,7 +82,8 @@ async function runManual() {
     const port = Number(manualPort.value)
     // 端口必须是 1-65535 的整数；非法时直接返回，保留输入供修正
     if (!(Number.isInteger(port) && port >= 1 && port <= 65535)) return
-    targets[0].port = port
+    const t = targets[0]
+    if (t) t.port = port
   }
   try {
     await store.run(targets, path.value)

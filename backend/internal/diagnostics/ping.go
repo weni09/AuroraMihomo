@@ -123,6 +123,6 @@ func (p *PingProbe) tcpDial(ctx context.Context, target DiagnosticTarget, path s
 		}
 		return ProbeResult{Target: target.Target, Type: TypePing, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Detail: detail, Error: err.Error()}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return ProbeResult{Target: target.Target, Type: TypePing, Path: path, Status: StatusSuccess, LatencyMs: latency.Milliseconds(), Detail: detail}
 }

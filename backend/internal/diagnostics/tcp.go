@@ -59,7 +59,7 @@ func (p *TCPProbe) dial(ctx context.Context, target DiagnosticTarget, path, addr
 		}
 		return ProbeResult{Target: target.Target, Type: TypeTCP, Path: path, Status: status, LatencyMs: latency.Milliseconds(), Detail: detail, Error: err.Error()}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return ProbeResult{Target: target.Target, Type: TypeTCP, Path: path, Status: StatusSuccess, LatencyMs: latency.Milliseconds(), Detail: detail}
 }
 

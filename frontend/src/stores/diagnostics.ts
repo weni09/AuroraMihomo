@@ -98,8 +98,8 @@ export const useDiagnosticsStore = defineStore('diagnostics', {
     handleProgress(type: string, data: Record<string, unknown>) {
       if (type !== 'diagnostic.progress' || !this.running || data.requestId !== this.requestId) return
       // 剥离事件包装的 requestId 字段，与 fetchResult 回填的服务端 ProbeResult 形状一致
-      const result = { ...data } as unknown as ProbeResult
-      delete (result as Record<string, unknown>).requestId
+      const result = { ...data } as unknown as ProbeResult & { requestId?: unknown }
+      delete result.requestId
       this.results.push(result)
     },
     // 轮询兜底：进度事件可能丢（WS 断连/重连窗口），结束时用全量结果回填

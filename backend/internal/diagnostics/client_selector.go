@@ -128,7 +128,7 @@ func proxyConnect(ctx context.Context, client *http.Client, host string, port in
 	if err != nil {
 		return 0, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.SetDeadline(deadline); err != nil {
 		return 0, err
 	}
