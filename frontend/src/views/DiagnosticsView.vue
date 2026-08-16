@@ -113,6 +113,68 @@ function statusVariant(status: ProbeResult['status']): BadgeVariants['variant'] 
       return 'neutral'
   }
 }
+
+// ---- Detail 渲染 ----
+
+// stringList 类型守卫：把 detail 里可能是 string[] 的字段过滤成 string[]。
+// detail 是 Record<string, unknown>，取值必须经守卫收窄，不做 any 断言。
+function stringList(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  return v.filter((x): x is string => typeof x === 'string')
+}
+
+interface TracerouteHop {
+  hop?: number
+  addr?: string
+  rtt?: string
+}
+
+// tracerouteHops 收窄 detail.hops 为 TracerouteHop[]；非数组/元素非对象时返回空。
+function tracerouteHops(r: ProbeResult): TracerouteHop[] {
+  const hops = r.detail?.hops
+  if (!Array.isArray(hops)) return []
+  return hops.filter((h): h is TracerouteHop => typeof h === 'object' && h !== null)
+}
+
+// detailText 把探测 Detail 转成一行可读摘要；Detail 为空（或无可读内容）时
+// 返回空串，页面不渲染。各类型取值都带类型守卫（typeof/Array.isArray）。
+function detailText(r: ProbeResult): string {
+  const d = r.detail
+  if (!d) return ''
+  switch (r.type) {
+    case 'dns': {
+      const parts: string[] = []
+      const records = stringList(d.records)
+      if (records.length) parts.push(`记录: ${records.join(', ')}`)
+      if (typeof d.resolver === 'string') {
+        parts.push(`DNS 服务器: ${d.resolver === 'system' ? '系统默认' : '自定义'}`)
+      }
+      return parts.join(' · ')
+    }
+    case 'http': {
+      const parts: string[] = []
+      if (typeof d.statusCode === 'number') parts.push(`HTTP ${d.statusCode}`)
+      if (typeof d.finalURL === 'string') parts.push(`最终: ${d.finalURL}`)
+      // redirects 只含中间跳转（最终 URL 已由 finalURL 体现），补上初始
+      // 目标才是完整链路
+      const redirects = stringList(d.redirects)
+      if (redirects.length) parts.push(`重定向: ${[r.target, ...redirects].join(' → ')}`)
+      return parts.join(' · ')
+    }
+    case 'traceroute': {
+      const hops = tracerouteHops(r)
+      if (hops.length) return `跳数: ${hops.length}`
+      return ''
+    }
+    default: {
+      // ping / tcp：proxyFallback/note/degraded 提示（若有）
+      const parts: string[] = []
+      if (typeof d.note === 'string') parts.push(d.note)
+      if (d.degraded === true && typeof d.reason === 'string') parts.push(d.reason)
+      return parts.join(' · ')
+    }
+  }
+}
 </script>
 
 <template>
@@ -203,19 +265,54 @@ function statusVariant(status: ProbeResult['status']): BadgeVariants['variant'] 
         <div
           v-for="(r, i) in store.results"
           :key="i"
-          class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-elevated/50 px-3 py-2 text-sm"
+          class="rounded-md border border-line bg-elevated/50 px-3 py-2 text-sm"
         >
-          <Badge :variant="statusVariant(r.status)">{{ r.status }}</Badge>
-          <span class="font-mono text-xs text-fg-muted">{{ r.path }}</span>
-          <span class="min-w-0 flex-1 truncate">
-            {{ r.target }}<span class="text-fg-subtle"> ({{ r.type }})</span>
-          </span>
-          <span v-if="r.latencyMs !== undefined" class="shrink-0 text-xs text-fg-subtle">
-            {{ r.latencyMs }}ms
-          </span>
-          <span v-if="r.error" class="max-w-64 shrink-0 truncate text-xs text-destructive">
-            {{ r.error }}
-          </span>
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Badge :variant="statusVariant(r.status)">{{ r.status }}</Badge>
+            <span class="font-mono text-xs text-fg-muted">{{ r.path }}</span>
+            <span class="min-w-0 flex-1 truncate">
+              {{ r.target }}<span class="text-fg-subtle"> ({{ r.type }})</span>
+            </span>
+            <span v-if="r.latencyMs !== undefined" class="shrink-0 text-xs text-fg-subtle">
+              {{ r.latencyMs }}ms
+            </span>
+            <span v-if="r.error" class="max-w-64 shrink-0 truncate text-xs text-destructive">
+              {{ r.error }}
+            </span>
+          </div>
+          <!-- Detail：非空时行内显示摘要；traceroute 可展开逐跳列表或原始输出 -->
+          <div v-if="detailText(r)" class="mt-1.5">
+            <details
+              v-if="tracerouteHops(r).length || typeof r.detail?.raw === 'string'"
+              class="group"
+            >
+              <summary
+                class="cursor-pointer select-none text-xs text-fg-subtle hover:text-fg"
+              >
+                {{ detailText(r) }}
+              </summary>
+              <div
+                class="mt-1.5 space-y-1 rounded-md bg-elevated/60 p-2 font-mono text-xs text-fg-subtle"
+              >
+                <template v-if="tracerouteHops(r).length">
+                  <div
+                    v-for="h in tracerouteHops(r)"
+                    :key="h.hop"
+                    class="flex items-center gap-2"
+                  >
+                    <span class="w-6 shrink-0 text-right">{{ h.hop }}</span>
+                    <span class="min-w-0 flex-1">{{ h.addr || '*' }}</span>
+                    <span v-if="h.rtt" class="shrink-0">{{ h.rtt }}</span>
+                  </div>
+                </template>
+                <pre
+                  v-else-if="typeof r.detail?.raw === 'string'"
+                  class="whitespace-pre-wrap break-all"
+                >{{ r.detail.raw }}</pre>
+              </div>
+            </details>
+            <p v-else class="text-xs text-fg-subtle">{{ detailText(r) }}</p>
+          </div>
         </div>
       </div>
     </section>

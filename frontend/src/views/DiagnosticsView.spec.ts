@@ -159,6 +159,65 @@ describe('DiagnosticsView 网络诊断页', () => {
     wrapper.unmount()
   })
 
+  it('渲染 Detail 摘要与展开：DNS records/resolver、HTTP statusCode、traceroute 跳数', async () => {
+    const results: ProbeResult[] = [
+      {
+        target: 'api.github.com',
+        type: 'dns',
+        path: 'direct',
+        status: 'success',
+        latencyMs: 12,
+        detail: { records: ['192.0.2.1', '2001:db8::1'], resolver: 'system' },
+      },
+      {
+        target: 'https://example.com/',
+        type: 'http',
+        path: 'direct',
+        status: 'success',
+        latencyMs: 30,
+        detail: {
+          statusCode: 200,
+          finalURL: 'https://example.com/final',
+          redirects: ['https://example.com/final'],
+        },
+      },
+      {
+        target: 'example.com',
+        type: 'traceroute',
+        path: 'direct',
+        status: 'success',
+        detail: {
+          hops: [
+            { hop: 1, addr: '192.168.1.1', rtt: '1.2 ms' },
+            { hop: 2, addr: '10.0.0.1', rtt: '2.0 ms' },
+          ],
+          raw: '1  192.168.1.1  1.2 ms\n2  10.0.0.1  2.0 ms',
+        },
+      },
+    ]
+    const { wrapper, store } = mountView()
+    store.results = results
+    await flushPromises()
+
+    const text = wrapper.text()
+    // DNS：records 摘要 + resolver 标注
+    expect(text).toContain('记录: 192.0.2.1, 2001:db8::1')
+    expect(text).toContain('DNS 服务器: 系统默认')
+    // HTTP：statusCode + finalURL + 重定向链
+    expect(text).toContain('HTTP 200')
+    expect(text).toContain('最终: https://example.com/final')
+    expect(text).toContain('重定向: https://example.com/ → https://example.com/final')
+    // Traceroute：展开摘要显示跳数，逐跳列表可展开
+    const details = wrapper.findAll('details')
+    expect(details.length).toBe(1)
+    expect(details[0]!.find('summary').text()).toContain('跳数: 2')
+    // 逐跳内容（happy-dom textContent 含未展开内容，直接断言渲染即可）
+    expect(text).toContain('192.168.1.1')
+    expect(text).toContain('10.0.0.1')
+
+    wrapper.unmount()
+  })
+
   it('无结果且未运行时隐藏结果区', () => {
     const { wrapper } = mountView()
     const text = wrapper.text()
