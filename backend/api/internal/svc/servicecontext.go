@@ -14,6 +14,7 @@ import (
 	"auroramihomo/backend/internal/adguard"
 	"auroramihomo/backend/internal/applog"
 	"auroramihomo/backend/internal/auth"
+	"auroramihomo/backend/internal/diagnostics"
 	"auroramihomo/backend/internal/engine"
 	"auroramihomo/backend/internal/mihomo"
 	"auroramihomo/backend/internal/netcheck"
@@ -63,6 +64,9 @@ type ServiceContext struct {
 	// 反代）被拒绝，实现无状态 JWT 的改密吊销。
 	PasswordVer *auth.PasswordVer
 	Hub         *realtime.Hub
+	// Diag 网络诊断服务：接收 run/result 请求，后台执行探测并缓存结果，
+	// 进度事件经 Hub 实时推送。
+	Diag *diagnostics.Service
 	// AppLog 缓存本项目自身的运行日志（logx 的输出），供界面查看。
 	// 与 MihomoManager 的内核日志分开：一个是"本程序说的"、
 	// 一个是"内核说的"，混成一条流反而更难排查。
@@ -192,6 +196,18 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 更新器出网优先走本地内核的代理。端口取决于当前生效的 config.yaml，
 	// 由 ConfigService 解析，这里只做注入，避免 updater 反向依赖配置层。
 	upd.SetProxyURLFunc(cfgSvc.LocalProxyURL)
+
+	// 网络诊断服务：并发上限 3、结果保留 10 分钟、单探测超时 5 秒。
+	// Publish 对接实时通道推单步进度（EventTypeProgress）；ProxyURL 供
+	// proxy 路径探测取本地代理地址，与 updater 同一来源（cfgSvc.LocalProxyURL）。
+	diagSvc := diagnostics.New(diagnostics.Config{
+		MaxConcurrent: 3,
+		ResultTTL:     10 * time.Minute,
+		ProbeTimeout:  5 * time.Second,
+		Probes:        diagnostics.Probes(),
+		Publish:       hub.Publish,
+		ProxyURL:      cfgSvc.LocalProxyURL,
+	})
 
 	// RenderService 依赖 cfgSvc 的 substore 引擎，只能在其后构造；
 	// 而 cfgSvc 又需要它来渲染组合/文件模板来源，故用 setter 回注，
@@ -462,6 +478,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		// 从 settings 恢复（见 initPasswordVer），进程内并发安全。
 		PasswordVer: initPasswordVer(db),
 		Hub:         hub,
+		Diag:        diagSvc,
 		AppLog:      appLogBuf,
 		AppLogPath:  appLogPath,
 	}
