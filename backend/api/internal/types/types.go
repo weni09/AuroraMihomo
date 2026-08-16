@@ -189,13 +189,18 @@ type DiagnosticRunReq struct {
 }
 
 type DiagnosticRunResp struct {
-	RequestId string `json:"requestId"`
+	RequestId string          `json:"requestId"`
+	Invalid   []InvalidTarget `json:"invalid,optional"` // 校验未通过被跳过的目标
 }
 
 type DiagnosticTarget struct {
 	Type   string `json:"type"`          // ping|dns|tcp|http|traceroute
 	Target string `json:"target"`        // 主机/域名/URL
 	Port   int    `json:"port,optional"` // tcp 用
+}
+
+type DiagnosticsTargetsResp struct {
+	Targets []DiagnosticTarget `json:"targets"`
 }
 
 type DiffItem struct {
@@ -235,6 +240,11 @@ type GetSystemLogsReq struct {
 
 type IdPathReq struct {
 	Id int64 `path:"id"`
+}
+
+type InvalidTarget struct {
+	Target string `json:"target"`
+	Reason string `json:"reason"`
 }
 
 type LogLine struct {

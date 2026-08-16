@@ -17,11 +17,20 @@ export interface ProbeResult {
   error?: string
 }
 
+// InvalidTarget 是后端校验拒绝的目标（SSRF/空目标等），不阻塞其余合法目标。
+export interface InvalidTarget {
+  target: string
+  reason: string
+}
+
 export const useDiagnosticsStore = defineStore('diagnostics', {
   state: () => ({
     running: false,
     requestId: '' as string,
     results: [] as ProbeResult[],
+    // invalidResults 是后端校验拒绝的目标，预置为 error 结果：
+    // 与 results 分离保存，轮询回填（fetchResult）时不丢失
+    invalidResults: [] as ProbeResult[],
     error: '' as string,
   }),
   getters: {
@@ -37,16 +46,45 @@ export const useDiagnosticsStore = defineStore('diagnostics', {
     },
   },
   actions: {
+    // 预设目标清单来自后端（含代理端口 TCP 探测目标，前端无法自行推导代理地址）
+    async fetchPresetTargets(): Promise<DiagnosticTarget[]> {
+      const res = await api.get<{ targets: DiagnosticTarget[] }>('/diagnostics/targets')
+      return res.data.targets || []
+    },
     async run(targets: DiagnosticTarget[], path: string) {
       this.running = true
       this.error = ''
       this.results = []
+      this.invalidResults = []
       try {
-        const res = await api.post<{ requestId: string }>('/diagnostics/run', {
-          targets,
-          path,
-        })
-        this.requestId = res.data.requestId
+        const res = await api.post<{ requestId: string; invalid?: InvalidTarget[] }>(
+          '/diagnostics/run',
+          {
+            targets,
+            path,
+          },
+        )
+        this.requestId = res.data.requestId || ''
+        // 后端校验跳过的非法目标：渲染为已完成的 error 结果
+        // （InvalidTarget 不含 type，按本次请求的目标回查）
+        const typeByTarget: Record<string, DiagnosticTarget['type']> = {}
+        for (const t of targets) {
+          if (!(t.target in typeByTarget)) typeByTarget[t.target] = t.type
+        }
+        for (const inv of res.data.invalid || []) {
+          this.invalidResults.push({
+            target: inv.target,
+            type: typeByTarget[inv.target] ?? 'http',
+            path,
+            status: 'error',
+            error: inv.reason,
+          })
+        }
+        this.results = [...this.invalidResults]
+        if (!this.requestId) {
+          // 全部目标非法：没有可运行的请求，直接结束
+          this.running = false
+        }
       } catch (e) {
         this.error = '诊断启动失败'
         this.running = false
@@ -70,7 +108,8 @@ export const useDiagnosticsStore = defineStore('diagnostics', {
         `/diagnostics/result/${requestId}`,
       )
       if (res.data.done) {
-        this.results = res.data.results || []
+        // 非法目标预置结果保留在列表头部，与后端全量结果合并
+        this.results = [...this.invalidResults, ...(res.data.results || [])]
         this.running = false
       }
       return res.data.done
@@ -79,6 +118,7 @@ export const useDiagnosticsStore = defineStore('diagnostics', {
       this.running = false
       this.requestId = ''
       this.results = []
+      this.invalidResults = []
       this.error = ''
     },
   },

@@ -146,24 +146,100 @@ describe('useDiagnosticsStore 网络诊断', () => {
     expect(store.results).toHaveLength(1)
   })
 
-  it('reset 清空运行状态与结果', () => {
+  it('run 把后端 invalid 目标渲染为 error 结果（不阻塞合法目标）', async () => {
+    mockedApi.post.mockResolvedValue({
+      data: {
+        requestId: 'req-123',
+        invalid: [{ target: 'http://169.254.169.254/', reason: 'SSRF 已拒绝' }],
+      },
+    })
+    const store = useDiagnosticsStore()
+    await store.run([{ type: 'http', target: 'http://169.254.169.254/' }], 'both')
+
+    expect(store.requestId).toBe('req-123')
+    expect(store.running).toBe(true)
+    expect(store.results).toEqual([
+      {
+        target: 'http://169.254.169.254/',
+        type: 'http',
+        path: 'both',
+        status: 'error',
+        error: 'SSRF 已拒绝',
+      },
+    ])
+  })
+
+  it('run 全部目标非法：requestId 为空、running=false、invalid 仍渲染', async () => {
+    mockedApi.post.mockResolvedValue({
+      data: { invalid: [{ target: 'ftp://example.com', reason: '协议不支持' }] },
+    })
+    const store = useDiagnosticsStore()
+    await store.run([{ type: 'http', target: 'ftp://example.com' }], 'both')
+
+    expect(store.requestId).toBe('')
+    expect(store.running).toBe(false)
+    expect(store.results).toHaveLength(1)
+    expect(store.results[0]).toMatchObject({
+      target: 'ftp://example.com',
+      status: 'error',
+      error: '协议不支持',
+    })
+  })
+
+  it('fetchResult 完成时 invalid 预置结果与后端全量结果合并，不丢失', async () => {
+    mockedApi.post.mockResolvedValue({
+      data: {
+        requestId: 'req-123',
+        invalid: [{ target: 'http://169.254.169.254/', reason: 'SSRF 已拒绝' }],
+      },
+    })
+    const store = useDiagnosticsStore()
+    await store.run([{ type: 'http', target: 'http://169.254.169.254/' }], 'both')
+
+    mockedApi.get.mockResolvedValue({
+      data: {
+        done: true,
+        results: [
+          {
+            target: 'api.github.com',
+            type: 'tcp',
+            path: 'direct',
+            status: 'success',
+            latencyMs: 12,
+          },
+        ],
+      },
+    })
+    await store.fetchResult('req-123')
+
+    expect(store.results).toHaveLength(2)
+    // invalid 预置 error 结果在头部
+    expect(store.results[0]).toMatchObject({ status: 'error', error: 'SSRF 已拒绝' })
+    // 后端合法结果紧随其后
+    expect(store.results[1]).toMatchObject({ target: 'api.github.com', status: 'success' })
+    expect(store.running).toBe(false)
+  })
+
+  it('reset 同时清空 invalid 预置结果', () => {
     const store = useDiagnosticsStore()
     store.running = true
     store.requestId = 'req-123'
-    store.error = '诊断启动失败'
-    store.results = [
+    store.invalidResults = [
       {
-        target: '1.1.1.1',
-        type: 'ping',
-        path: '/home/aurora',
-        status: 'success',
+        target: 'http://169.254.169.254/',
+        type: 'http',
+        path: 'both',
+        status: 'error',
+        error: 'SSRF 已拒绝',
       },
     ]
+    store.results = [...store.invalidResults]
 
     store.reset()
     expect(store.running).toBe(false)
     expect(store.requestId).toBe('')
     expect(store.results).toEqual([])
+    expect(store.invalidResults).toEqual([])
     expect(store.error).toBe('')
   })
 })

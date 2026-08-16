@@ -830,7 +830,20 @@ type DiagnosticRunReq {
 }
 
 type DiagnosticRunResp {
-	RequestId string `json:"requestId"`
+	RequestId string         `json:"requestId"`
+	Invalid   []InvalidTarget `json:"invalid,optional"` // 校验未通过被跳过的目标
+}
+
+// InvalidTarget 描述一个被校验拒绝的诊断目标（SSRF/空目标等），
+// 不阻塞其余合法目标的执行。
+type InvalidTarget {
+	Target string `json:"target"`
+	Reason string `json:"reason"`
+}
+
+// DiagnosticsTargetsResp 是预设诊断目标清单（含代理端口 TCP 探测目标）的响应。
+type DiagnosticsTargetsResp {
+	Targets []DiagnosticTarget `json:"targets"`
 }
 
 // DiagnosticResultReq result 轮询的路径参数。requestId 是字符串
@@ -1286,6 +1299,10 @@ service aurora-api {
 
 	@handler listTasks
 	get /api/v1/tasks returns ([]TaskItem)
+
+	// 网络诊断：预设目标清单（含代理端口 TCP 探测目标），供「预设一键全测」
+	@handler getDiagnosticsTargets
+	get /api/v1/diagnostics/targets returns (DiagnosticsTargetsResp)
 
 	// 网络诊断：发起异步诊断，立即返回 requestId；进度经 /ws 推 diagnostic.progress
 	@handler runDiagnostics

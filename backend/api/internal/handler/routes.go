@@ -217,6 +217,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: protected.GetDiagnosticsResultHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodGet,
+				Path:    "/api/v1/diagnostics/targets",
+				Handler: protected.GetDiagnosticsTargetsHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodPost,
 				Path:    "/api/v1/diagnostics/run",
 				Handler: protected.RunDiagnosticsHandler(serverCtx),

@@ -15,25 +15,6 @@ const store = useDiagnosticsStore()
 // 预设目标的直连探测会走 /etc/resolv.conf 的本地 DNS，代理探测走内核代理端口
 const path = ref<'direct' | 'proxy' | 'both'>('both')
 
-/**
- * 预设目标一键全测：覆盖面板日常最容易出问题的三类出网——
- * GitHub API、raw 内容域名、公共 DNS（IPv4 + Do53 端口）。
- * DNS 目标不带端口（后端默认 53），TCP 显式带端口。
- */
-const presetTargets: DiagnosticTarget[] = [
-  { type: 'dns', target: 'api.github.com' },
-  { type: 'tcp', target: 'api.github.com', port: 443 },
-  { type: 'http', target: 'https://api.github.com/' },
-  { type: 'tcp', target: 'raw.githubusercontent.com', port: 443 },
-  { type: 'http', target: 'https://raw.githubusercontent.com/' },
-  { type: 'dns', target: '1.1.1.1' },
-  { type: 'tcp', target: '1.1.1.1', port: 53 },
-  { type: 'dns', target: '8.8.8.8' },
-  { type: 'tcp', target: '8.8.8.8', port: 53 },
-  { type: 'dns', target: '223.5.5.5' },
-  { type: 'tcp', target: '223.5.5.5', port: 53 },
-]
-
 // 手动输入
 const manualTarget = ref('')
 const manualType = ref<DiagnosticTarget['type']>('tcp')
@@ -74,9 +55,18 @@ function startPolling() {
   }, 2000)
 }
 
+// 预设目标一键全测：目标清单来自后端 /diagnostics/targets——
+// 除 GitHub API / raw / 公共 DNS 外，还含代理端口 TCP 连通性探测目标
+// （依赖当前生效的本地代理地址，前端无法自行推导）。
 async function runPreset() {
   try {
-    await store.run(presetTargets, path.value)
+    const targets = await store.fetchPresetTargets()
+    if (!targets.length) {
+      // 后端未返回预设目标（异常情况）：不发起空跑
+      console.error('预设目标清单为空')
+      return
+    }
+    await store.run(targets, path.value)
   } catch (e) {
     console.error(e)
     return

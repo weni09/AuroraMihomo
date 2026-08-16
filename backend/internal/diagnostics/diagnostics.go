@@ -130,6 +130,14 @@ func New(cfg Config) *Service {
 	}
 }
 
+// ProxyURLFunc 返回当前代理地址获取函数（与 proxy 路径探测同一来源，
+// 即注入 Config.ProxyURL 的回调）。预设目标端点用它解析代理主机+端口，
+// 追加代理连通性探测目标；回调本身可能返回空串（代理未配置/未运行），
+// 由调用方（DefaultTargets）负责兜底跳过。
+func (s *Service) ProxyURLFunc() func() string {
+	return s.cfg.ProxyURL
+}
+
 // Run 提交一次诊断请求，立即返回 requestId。
 //
 //   - 并发信号量已满时返回 ErrBusy（不排队、不阻塞）；

@@ -24,6 +24,23 @@ import { useDiagnosticsStore, type ProbeResult } from '../stores/diagnostics'
 
 const mockedApi = vi.mocked(api, true)
 
+// 后端 /diagnostics/targets 下发的预设清单：除基础目标外含代理端口
+// TCP 连通性探测目标（依赖当前生效的本地代理地址，前端无法自行推导）
+const presetTargetsMock: Array<{ type: string; target: string; port?: number }> = [
+  { type: 'dns', target: 'api.github.com' },
+  { type: 'tcp', target: 'api.github.com', port: 443 },
+  { type: 'http', target: 'https://api.github.com/' },
+  { type: 'tcp', target: 'raw.githubusercontent.com', port: 443 },
+  { type: 'http', target: 'https://raw.githubusercontent.com/' },
+  { type: 'dns', target: '1.1.1.1' },
+  { type: 'tcp', target: '1.1.1.1', port: 53 },
+  { type: 'dns', target: '8.8.8.8' },
+  { type: 'tcp', target: '8.8.8.8', port: 53 },
+  { type: 'dns', target: '223.5.5.5' },
+  { type: 'tcp', target: '223.5.5.5', port: 53 },
+  { type: 'tcp', target: '127.0.0.1', port: 7890 },
+]
+
 function mountView() {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -37,7 +54,12 @@ describe('DiagnosticsView 网络诊断页', () => {
     vi.clearAllMocks()
     emitRealtime = undefined
     mockedApi.post.mockResolvedValue({ data: { requestId: 'req-1' } })
-    mockedApi.get.mockResolvedValue({ data: { done: false } })
+    mockedApi.get.mockImplementation((url: string) => {
+      if (url === '/diagnostics/targets') {
+        return Promise.resolve({ data: { targets: presetTargetsMock } })
+      }
+      return Promise.resolve({ data: { done: false } })
+    })
   })
 
   it('渲染页头、预设一键全测按钮与手动输入区', () => {
@@ -57,7 +79,7 @@ describe('DiagnosticsView 网络诊断页', () => {
     wrapper.unmount()
   })
 
-  it('点击「开始诊断」以预设目标调用 store.run，进入进行中状态', async () => {
+  it('点击「开始诊断」先取后端预设目标再调用 store.run（含代理端口目标）', async () => {
     const { wrapper } = mountView()
     const presetBtn = wrapper.findAll('button').find((b) => b.text() === '开始诊断')
     expect(presetBtn).toBeDefined()
@@ -65,6 +87,8 @@ describe('DiagnosticsView 网络诊断页', () => {
     await presetBtn!.trigger('click')
     await flushPromises()
 
+    // 预设目标清单来自后端端点，而非前端硬编码
+    expect(mockedApi.get).toHaveBeenCalledWith('/diagnostics/targets')
     expect(mockedApi.post).toHaveBeenCalledTimes(1)
     const [, payload] = mockedApi.post.mock.calls[0] as unknown as [
       string,
@@ -84,6 +108,8 @@ describe('DiagnosticsView 网络诊断页', () => {
     expect(targets).toContainEqual({ type: 'tcp', target: '8.8.8.8', port: 53 })
     expect(targets).toContainEqual({ type: 'dns', target: '223.5.5.5' })
     expect(targets).toContainEqual({ type: 'tcp', target: '223.5.5.5', port: 53 })
+    // 代理端口 TCP 目标：由后端按当前代理地址下发，前端预设不再硬编码
+    expect(targets).toContainEqual({ type: 'tcp', target: '127.0.0.1', port: 7890 })
 
     // running=true：结果区出现「进行中…」与清空按钮
     expect(wrapper.text()).toContain('进行中…')
