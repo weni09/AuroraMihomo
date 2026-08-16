@@ -224,3 +224,9 @@ func guardedDialContext(timeout time.Duration) func(context.Context, string, str
 		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 	}
 }
+
+// ValidateFetchURLExternal 导出校验函数供 diagnostics 等外部包复用。
+// 返回 error 表示该 URL 不允许被服务端代发请求（SSRF 黑名单）。
+func ValidateFetchURLExternal(rawURL string) error {
+	return validateFetchURL(rawURL)
+}

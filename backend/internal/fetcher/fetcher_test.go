@@ -262,3 +262,15 @@ func TestFetchStopsAfterMaxRedirects(t *testing.T) {
 		t.Fatal("超过 maxRedirects 的跳转链应被拒绝")
 	}
 }
+
+func TestValidateFetchURLExternal(t *testing.T) {
+	if err := ValidateFetchURLExternal("https://example.com/sub"); err != nil {
+		t.Errorf("公网地址应允许: %v", err)
+	}
+	if err := ValidateFetchURLExternal("http://169.254.169.254/latest/meta-data/"); err == nil {
+		t.Error("云 metadata 应被拒绝")
+	}
+	if err := ValidateFetchURLExternal("file:///etc/passwd"); err == nil {
+		t.Error("非 http 协议应被拒绝")
+	}
+}
