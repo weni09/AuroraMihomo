@@ -3,8 +3,8 @@
 // 本文件实现探测框架：Probe 接口、统一结果结构 ProbeResult、
 // Run 执行器（按目标类型分派探测器、每探测独立超时、进度回调、
 // 并发安全快照）。
-// 具体探测器（ping/dns/tcp/http/traceroute）在后续任务中实现，
-// 并注册进 Probes()；本阶段注册表为空。
+// 具体探测器（ping/dns/tcp/http/traceroute）在后续任务中逐一实现，
+// 并注册进 Probes()；已注册：tcp。
 package diagnostics
 
 import (
@@ -215,9 +215,10 @@ func cloneDetail(d any) any {
 }
 
 // Probes 返回已注册的探测器集合，key 为探测类型（TypePing 等）。
-// 具体探测器在后续任务中实现并注册；本阶段返回空集合，
+// 具体探测器（ping/dns/tcp/http/traceroute）在后续任务中逐一实现并注册；
 // 未注册的探测类型由 Execute 回填 StatusError。
 func Probes() map[string]Probe {
-	// 后续任务（ping/dns/tcp/http/traceroute）落地后在此填充
-	return map[string]Probe{}
+	return map[string]Probe{
+		TypeTCP: &TCPProbe{},
+	}
 }
