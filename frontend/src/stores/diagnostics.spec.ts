@@ -44,6 +44,7 @@ describe('useDiagnosticsStore 网络诊断', () => {
 
   it('handleProgress 只收匹配 requestId 的事件，忽略其它', () => {
     const store = useDiagnosticsStore()
+    store.running = true
     store.requestId = 'req-123'
 
     store.handleProgress('diagnostic.progress', {
@@ -55,6 +56,15 @@ describe('useDiagnosticsStore 网络诊断', () => {
       latencyMs: 12,
     })
     expect(store.results).toHaveLength(1)
+    // push 的结果已剥离 WS 包装的 requestId 字段，与 fetchResult 回填形状一致
+    expect(store.results[0]).toMatchObject({
+      target: '1.1.1.1',
+      type: 'ping',
+      path: '/home/aurora',
+      status: 'success',
+      latencyMs: 12,
+    })
+    expect(Object.keys(store.results[0]!)).not.toContain('requestId')
 
     // 其它请求的事件不混入
     store.handleProgress('diagnostic.progress', {
@@ -74,6 +84,21 @@ describe('useDiagnosticsStore 网络诊断', () => {
       status: 'success',
     })
     expect(store.results).toHaveLength(1)
+  })
+
+  it('handleProgress 在 running=false 时不追加（完成回填后迟到事件被忽略）', () => {
+    const store = useDiagnosticsStore()
+    store.running = false
+    store.requestId = 'req-123'
+
+    store.handleProgress('diagnostic.progress', {
+      requestId: 'req-123',
+      target: '1.1.1.1',
+      type: 'ping',
+      path: '/home/aurora',
+      status: 'success',
+    })
+    expect(store.results).toHaveLength(0)
   })
 
   it('fetchResult done=true 时回填 results、running=false', async () => {
