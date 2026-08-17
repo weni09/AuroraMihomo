@@ -515,8 +515,9 @@ func TestValidateTargetRejectsEmptyHost(t *testing.T) {
 }
 
 func TestServiceTransparentNote(t *testing.T) {
-	// 无 CAP_NET_ADMIN 时 direct 路径结果/进度事件标注透明代理接管提示；
-	// proxy 路径不标；持有 CAP_NET_ADMIN（true）或未知（nil）时不标。
+	// 透明代理开启（任一模式）时 direct 路径结果/进度事件标注透明代理接管提示，
+	// 按模式区分文案；proxy 路径不标。未开启（enabled=false）/未注入
+	// （TransparentStatusFn=nil）不标。
 	probe := ProbeFunc(func(ctx context.Context, target DiagnosticTarget, path string, cb ProgressFunc) ProbeResult {
 		return ProbeResult{
 			Target: target.Target,
@@ -528,12 +529,13 @@ func TestServiceTransparentNote(t *testing.T) {
 	})
 
 	// runBoth 跑一次 both 诊断，返回完成快照与进度事件。
-	runBoth := func(capFn func() bool) (RunSnapshot, []DiagnosticEvent, error) {
+	runBoth := func(statusFn func() (bool, string), capFn func() bool) (RunSnapshot, []DiagnosticEvent, error) {
 		var eventMu sync.Mutex
 		events := []DiagnosticEvent{}
 		svc := New(Config{
-			MaxConcurrent: 3,
-			CapNetAdminFn: capFn,
+			MaxConcurrent:      3,
+			TransparentStatusFn: statusFn,
+			CapNetAdminFn:       capFn,
 			Publish: func(eventType string, data interface{}) {
 				ev, ok := data.(DiagnosticEvent)
 				if !ok {
@@ -599,21 +601,18 @@ func TestServiceTransparentNote(t *testing.T) {
 		}
 		return ""
 	}
-
-	t.Run("无 CAP_NET_ADMIN：direct 标注、proxy 不标", func(t *testing.T) {
-		snap, events, err := runBoth(func() bool { return false })
-		if err != nil {
-			t.Fatalf("Run 失败: %v", err)
-		}
-		if got := noteOf(snap, PathDirect); got != transparentNoteText {
-			t.Fatalf("direct 结果应标注 transparentNote, got %q", got)
+	// assertBothAnnotated 断言 direct 路径结果与进度事件都带指定标注、proxy 均不带。
+	assertBothAnnotated := func(t *testing.T, snap RunSnapshot, events []DiagnosticEvent, want string) {
+		t.Helper()
+		if got := noteOf(snap, PathDirect); got != want {
+			t.Fatalf("direct 结果应标注 transparentNote=%q, got %q", want, got)
 		}
 		if got := noteOf(snap, PathProxy); got != "" {
 			t.Fatalf("proxy 结果不应标注 transparentNote, got %q", got)
 		}
 		// 进度事件同样带标注（WS 实时通道与轮询回填一致）
-		if got := eventNoteOf(events, PathDirect); got != transparentNoteText {
-			t.Fatalf("direct 进度事件应标注 transparentNote, got %q", got)
+		if got := eventNoteOf(events, PathDirect); got != want {
+			t.Fatalf("direct 进度事件应标注 transparentNote=%q, got %q", want, got)
 		}
 		if got := eventNoteOf(events, PathProxy); got != "" {
 			t.Fatalf("proxy 进度事件不应标注 transparentNote, got %q", got)
@@ -627,25 +626,88 @@ func TestServiceTransparentNote(t *testing.T) {
 				t.Errorf("direct 结果原有 Detail 字段应保留, got %+v", m)
 			}
 		}
-	})
+	}
+	// assertNoNote 断言 direct 路径结果与事件均无标注。
+	assertNoNote := func(t *testing.T, snap RunSnapshot, events []DiagnosticEvent) {
+		t.Helper()
+		if got := noteOf(snap, PathDirect); got != "" {
+			t.Fatalf("不应标注 transparentNote, got %q", got)
+		}
+		if got := eventNoteOf(events, PathDirect); got != "" {
+			t.Fatalf("进度事件不应标注 transparentNote, got %q", got)
+		}
+	}
 
-	t.Run("持有 CAP_NET_ADMIN：不标注", func(t *testing.T) {
-		snap, _, err := runBoth(func() bool { return true })
+	t.Run("TUN enabled：direct 标注 TUN 接管文案", func(t *testing.T) {
+		statusFn := func() (bool, string) { return true, "tun" }
+		snap, events, err := runBoth(statusFn, nil)
 		if err != nil {
 			t.Fatalf("Run 失败: %v", err)
 		}
-		if got := noteOf(snap, PathDirect); got != "" {
-			t.Fatalf("CapNetAdmin=true 时不应标注, got %q", got)
-		}
+		assertBothAnnotated(t, snap, events, transparentNoteTUN)
 	})
 
-	t.Run("未知（nil）：不标注", func(t *testing.T) {
-		snap, _, err := runBoth(nil)
+	t.Run("TUN enabled 且持有 CAP_NET_ADMIN：仍标注 TUN 接管文案", func(t *testing.T) {
+		// 原判据只看 CapNetAdminFn，TUN 环境通常有 CAP_NET_ADMIN 故不触发；
+		// 修复后 TUN 必被 mihomo 接管，不受 CAP_NET_ADMIN 影响。
+		statusFn := func() (bool, string) { return true, "tun" }
+		snap, events, err := runBoth(statusFn, func() bool { return true })
 		if err != nil {
 			t.Fatalf("Run 失败: %v", err)
 		}
-		if got := noteOf(snap, PathDirect); got != "" {
-			t.Fatalf("CapNetAdminFn=nil 时不应标注, got %q", got)
+		assertBothAnnotated(t, snap, events, transparentNoteTUN)
+	})
+
+	t.Run("TPROXY enabled + 无 CAP_NET_ADMIN：标注接管提示", func(t *testing.T) {
+		statusFn := func() (bool, string) { return true, "tproxy" }
+		snap, events, err := runBoth(statusFn, func() bool { return false })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
 		}
+		assertBothAnnotated(t, snap, events, transparentNoteTProxyNoCap)
+	})
+
+	t.Run("TPROXY enabled + 有 CAP_NET_ADMIN：标注已绕开", func(t *testing.T) {
+		statusFn := func() (bool, string) { return true, "tproxy" }
+		snap, events, err := runBoth(statusFn, func() bool { return true })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		assertBothAnnotated(t, snap, events, transparentNoteTProxyOK)
+	})
+
+	t.Run("TPROXY enabled + 权限未知：标注已绕开（默认信任 fwmark）", func(t *testing.T) {
+		statusFn := func() (bool, string) { return true, "tproxy" }
+		snap, events, err := runBoth(statusFn, nil)
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		assertBothAnnotated(t, snap, events, transparentNoteTProxyOK)
+	})
+
+	t.Run("未知 mode：兜底标注", func(t *testing.T) {
+		statusFn := func() (bool, string) { return true, "redirect" }
+		snap, events, err := runBoth(statusFn, nil)
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		assertBothAnnotated(t, snap, events, transparentNoteGeneric)
+	})
+
+	t.Run("未开启（enabled=false）：不标注", func(t *testing.T) {
+		statusFn := func() (bool, string) { return false, "tun" }
+		snap, events, err := runBoth(statusFn, func() bool { return false })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		assertNoNote(t, snap, events)
+	})
+
+	t.Run("TransparentStatusFn=nil：不标注", func(t *testing.T) {
+		snap, events, err := runBoth(nil, func() bool { return false })
+		if err != nil {
+			t.Fatalf("Run 失败: %v", err)
+		}
+		assertNoNote(t, snap, events)
 	})
 }

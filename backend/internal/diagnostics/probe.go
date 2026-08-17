@@ -206,17 +206,17 @@ func (r *Run) appendResult(res ProbeResult) {
 
 // AnnotateTransparentNote 为指定路径的所有结果 Detail 合并透明代理接管标注。
 //
-// 供 Service 在 direct 路径且无 CAP_NET_ADMIN 时调用（见 Service.execute）：
+// 供 Service 在 direct 路径且处于透明代理环境时调用（见 Service.execute）：
 // 与 Execute 内部追加走同一把锁，Snapshot 并发安全；仅替换 Detail（新 map），
 // 不修改探测器回填的原始 map，避免并发快照读到半写状态。
-func (r *Run) AnnotateTransparentNote(path string) {
+func (r *Run) AnnotateTransparentNote(path string, note string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.results {
 		if r.results[i].Path != path {
 			continue
 		}
-		r.results[i].Detail = withTransparentNote(r.results[i].Detail)
+		r.results[i].Detail = withTransparentNote(r.results[i].Detail, note)
 	}
 }
 

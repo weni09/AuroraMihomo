@@ -197,12 +197,22 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	// 由 ConfigService 解析，这里只做注入，避免 updater 反向依赖配置层。
 	upd.SetProxyURLFunc(cfgSvc.LocalProxyURL)
 
+	// 透明代理服务在下方构造，但诊断服务的标注回调需要引用它。先声明变量
+	// 再于下方赋值：闭包延迟到标注时求值，透明代理开关在运行期变化也会即时
+	// 反映；声明在诊断服务之前以满足 Go 的文本顺序要求。
+	var transparentSvc *service.TransparentService
+
 	// 网络诊断服务：并发上限 3、结果保留 10 分钟、单探测超时 5 秒。
 	// Publish 对接实时通道推单步进度（EventTypeProgress）；ProxyURL 供
 	// proxy 路径探测取本地代理地址，与 updater 同一来源（cfgSvc.LocalProxyURL）。
-	// CapNetAdminFn 供直连路径标注透明代理接管提示：TProxy 下缺 CAP_NET_ADMIN
+	// CapNetAdminFn 供直连路径标注透明代理接管提示：TPROXY 下缺 CAP_NET_ADMIN
 	// 无法打 PanelMark 绕开自身规则，直连探测实际被 TPROXY 接管。Detect() 带
 	// 3s 缓存 + 单飞，高频调用无开销。
+	// TransparentStatusFn 以透明代理开启状态为标注总开关：TUN 下 mihomo 自管
+	// 路由、无 PanelMark 豁免，direct 直连流量必被接管（即使持有 CAP_NET_ADMIN
+	// 原判据也不触发）；TPROXY 下按 CapNetAdminFn 区分可能接管/已绕开。
+	// transparentSvc 构造在前（见下方），此处直接引用其 Status()——闭包延迟
+	// 到标注时求值，透明代理开关在运行期变化也会即时反映。
 	diagSvc := diagnostics.New(diagnostics.Config{
 		MaxConcurrent: 3,
 		ResultTTL:     10 * time.Minute,
@@ -211,6 +221,10 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		Publish:       hub.Publish,
 		ProxyURL:      cfgSvc.LocalProxyURL,
 		CapNetAdminFn: func() bool { return netcheck.Detect().CapNetAdmin },
+		TransparentStatusFn: func() (bool, string) {
+			st, _ := transparentSvc.Status()
+			return st.Enabled, st.Mode
+		},
 	})
 
 	// RenderService 依赖 cfgSvc 的 substore 引擎，只能在其后构造；
@@ -261,7 +275,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		}
 		tpApplier = dnsRedirApplier
 	}
-	transparentSvc := service.NewTransparentService(
+	transparentSvc = service.NewTransparentService(
 		db,
 		tpApplier,
 		logx.WithContext(context.Background()),

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"auroramihomo/backend/internal/fetcher"
+	"auroramihomo/backend/internal/netcheck"
 )
 
 // diagSeq 是进程内单调递增序列，用于保证 requestId 唯一。
@@ -72,6 +73,13 @@ type Config struct {
 	// 与代理结果趋同且无提示。仅在明确无权限（非 nil 且返回 false）时对 direct
 	// 路径结果标注 transparentNote；nil/未知不标，避免误报。
 	CapNetAdminFn func() bool
+	// TransparentStatusFn 返回透明代理是否开启及模式（"tun"/"tproxy"/""）。
+	// TUN 模式下 mihomo 自管路由、无 PanelMark 豁免（netcheck/inject.go 明确
+	// 「TUN 不需要 routing-mark，mihomo 自管防火墙规则」），面板直连流量必被
+	// mihomo 接管；TPROXY 下靠 fwmark 豁免（需 CAP_NET_ADMIN 打标成功）。
+	// nil 视为未开启。direct 路径的 transparentNote 标注以此为总开关：
+	// 透明代理开启（任一模式）即标注，按模式区分文案。
+	TransparentStatusFn func() (enabled bool, mode string)
 }
 
 // DiagnosticRequest 是一次诊断请求。
@@ -105,9 +113,12 @@ type runEntry struct {
 // Service 管理诊断生命周期：并发信号量、结果缓存、取消与关停。
 type Service struct {
 	cfg Config
-	// capNetAdminFn 取 Config.CapNetAdminFn：直连探测完成后决定是否追加
-	// 透明代理接管标注（见 Config.CapNetAdminFn 注释）。
+	// capNetAdminFn 取 Config.CapNetAdminFn：TPROXY 下决定 fwmark 豁免是否
+	// 生效（见 Config.CapNetAdminFn 注释）。
 	capNetAdminFn func() bool
+	// transparentStatusFn 取 Config.TransparentStatusFn：透明代理开启状态供
+	// transparentNote 决定 direct 路径是否标注接管提示（见 Config.TransparentStatusFn）。
+	transparentStatusFn func() (enabled bool, mode string)
 
 	mu     sync.Mutex
 	sem    chan struct{}
@@ -133,10 +144,11 @@ func New(cfg Config) *Service {
 		cfg.ClientSelector = defaultClientSelector(cfg.ProxyURL)
 	}
 	return &Service{
-		cfg:           cfg,
-		capNetAdminFn: cfg.CapNetAdminFn,
-		sem:           make(chan struct{}, cfg.MaxConcurrent),
-		runs:          map[string]runEntry{},
+		cfg:                 cfg,
+		capNetAdminFn:       cfg.CapNetAdminFn,
+		transparentStatusFn: cfg.TransparentStatusFn,
+		sem:                 make(chan struct{}, cfg.MaxConcurrent),
+		runs:                map[string]runEntry{},
 	}
 }
 
@@ -213,21 +225,26 @@ func (s *Service) execute(requestID string, run *Run, ctx context.Context, path 
 		// 在两次 Execute 之间（而非期间）改 Path，让 direct/proxy 阶段产出
 		// 各自路径的结果；Snapshot 不读 Path，无并发风险。
 		run.Path = p
-		// TProxy 下无 CAP_NET_ADMIN 时面板无法给直连流量打 PanelMark 绕开
-		// 自身规则（netcheck/sockmark.go：打标失败不阻断拨号），直连探测实际
-		// 被 TPROXY 接管、与代理结果趋同。对 direct 路径结果统一标注透明代理
-		// 接管提示：进度事件（withTransparentNote 复制后标注）与最终结果
-		// （AnnotateTransparentNote 锁内替换）都带上。仅明确无权限（fn 非 nil
-		// 且返回 false）时标注；未知不标，避免误报。
-		annotate := p == PathDirect && s.capNetAdminFn != nil && !s.capNetAdminFn()
+		// 透明代理开启（任一模式）时，direct 路径直连流量可能/必被内核接管：
+		// TUN 下 mihomo 自管路由、无 PanelMark 豁免（netcheck/inject.go 明确
+		// 「TUN 不需要 routing-mark」），面板直连流量必被接管；TPROXY 下靠
+		// fwmark 豁免（需 CAP_NET_ADMIN 打标成功，netcheck/sockmark.go：打标
+		// 失败不阻断拨号）。对 direct 路径结果统一标注透明代理接管提示：
+		// 进度事件（withTransparentNote 复制后标注）与最终结果
+		// （AnnotateTransparentNote 锁内替换）都带上；proxy 路径不标。
+		transparentNote := ""
+		if p == PathDirect {
+			transparentNote = s.transparentNote()
+		}
+		annotate := transparentNote != ""
 		run.Execute(ctx, func(res ProbeResult) {
 			if annotate {
-				res.Detail = withTransparentNote(res.Detail)
+				res.Detail = withTransparentNote(res.Detail, transparentNote)
 			}
 			s.publishProgress(requestID, res)
 		})
 		if annotate {
-			run.AnnotateTransparentNote(p)
+			run.AnnotateTransparentNote(p, transparentNote)
 		}
 	}
 	s.finish(requestID)
@@ -380,18 +397,59 @@ func ValidateTarget(raw string) error {
 	return fetcher.ValidateFetchURLExternal(raw)
 }
 
-// transparentNoteText 是 direct 路径在无 CAP_NET_ADMIN 时追加的 Detail 标注。
+// 透明代理接管标注文案（按模式区分）。
+const (
+	// transparentNoteTUN 是 TUN 模式下的标注：mihomo 自管路由、无 PanelMark
+	// 豁免（netcheck/inject.go 明确「TUN 不需要 routing-mark，mihomo 自管防火墙
+	// 规则」），面板直连流量必被 mihomo 接管，direct 探测结果不是真实直连。
+	transparentNoteTUN = "当前处于透明代理环境（TUN 模式），直连流量由 mihomo 接管，结果可能经代理"
+	// transparentNoteTProxyNoCap 是 TPROXY 且无 CAP_NET_ADMIN 时的标注：
+	// 无法给直连流量打 PanelMark 绕开自身规则（netcheck/sockmark.go 明确
+	// 「失败不阻断拨号」），直连探测实际被 TPROXY 接管、与代理结果趋同。
+	transparentNoteTProxyNoCap = "直连可能被透明代理接管（无 CAP_NET_ADMIN）"
+	// transparentNoteTProxyOK 是 TPROXY 且有 CAP_NET_ADMIN 时的标注（提示而非
+	// 风险）：fwmark 豁免生效，direct 探测是真实直连。
+	transparentNoteTProxyOK = "已通过 fwmark 绕开透明代理，直连为真实直连"
+	// transparentNoteGeneric 是未知模式（mode 非 tun/tproxy）时的兜底标注。
+	transparentNoteGeneric = "当前处于透明代理环境，直连可能被接管"
+)
+
+// transparentNote 返回 direct 路径应追加的透明代理接管标注；无需标注时返回空串。
 //
-// 透明代理（TProxy）下，缺 CAP_NET_ADMIN 无法给直连流量打 PanelMark 绕开
-// 自身规则（netcheck/sockmark.go 明确「失败不阻断拨号」），直连探测实际被
-// TPROXY 接管——直连/代理结果趋同且无提示。标注提醒用户当前直连结果可能
-// 并非真实直连。仅明确无权限时标注，未知（CapNetAdminFn 为 nil）不标。
-const transparentNoteText = "直连可能被透明代理接管（无 CAP_NET_ADMIN）"
+// 以透明代理开启状态为总开关（原有仅看 CapNetAdminFn 的判据漏掉 TUN：
+// TUN 下 mihomo 自管路由、无 PanelMark 豁免，且 TUN 环境通常持有
+// CAP_NET_ADMIN，原判据不触发）。规则：
+//   - TransparentStatusFn 为 nil（未注入）或未开启（enabled=false）→ 空串；
+//   - 开启且 tun → TUN 必接管（transparentNoteTUN）；
+//   - 开启且 tproxy：无 CAP_NET_ADMIN（fn 非 nil 且 false）→ 可能接管
+//     （transparentNoteTProxyNoCap）；有 CAP_NET_ADMIN → fwmark 已绕开
+//     （transparentNoteTProxyOK，提示而非风险）；
+//   - 开启且 mode 为其它值 → 兜底（transparentNoteGeneric）。
+func (s *Service) transparentNote() string {
+	if s.transparentStatusFn == nil {
+		return ""
+	}
+	enabled, mode := s.transparentStatusFn()
+	if !enabled {
+		return ""
+	}
+	switch netcheck.Mode(mode) {
+	case netcheck.ModeTUN:
+		return transparentNoteTUN
+	case netcheck.ModeTProxy:
+		if s.capNetAdminFn != nil && !s.capNetAdminFn() {
+			return transparentNoteTProxyNoCap
+		}
+		return transparentNoteTProxyOK
+	default:
+		return transparentNoteGeneric
+	}
+}
 
 // withTransparentNote 把透明代理接管标注并入 Detail：复制探测器回填的 map
 // 再加键（Detail 为 nil 或非 map 时新建），返回新 map，不修改原 map——
 // 进度事件与并发 Snapshot 读到的都是完整、不可变的数据。
-func withTransparentNote(detail any) any {
+func withTransparentNote(detail any, note string) any {
 	m, ok := detail.(map[string]interface{})
 	if !ok || m == nil {
 		m = map[string]interface{}{}
@@ -402,6 +460,6 @@ func withTransparentNote(detail any) any {
 		}
 		m = cp
 	}
-	m["transparentNote"] = transparentNoteText
+	m["transparentNote"] = note
 	return m
 }
