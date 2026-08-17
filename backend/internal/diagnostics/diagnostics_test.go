@@ -533,7 +533,7 @@ func TestServiceTransparentNote(t *testing.T) {
 		var eventMu sync.Mutex
 		events := []DiagnosticEvent{}
 		svc := New(Config{
-			MaxConcurrent:      3,
+			MaxConcurrent:       3,
 			TransparentStatusFn: statusFn,
 			CapNetAdminFn:       capFn,
 			Publish: func(eventType string, data interface{}) {
