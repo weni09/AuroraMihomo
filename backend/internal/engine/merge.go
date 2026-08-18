@@ -17,6 +17,29 @@ type MergeEngine struct {
 	policy domain.MergePolicy
 }
 
+// matchRuleKinds 是 mihomo 中「终态兜底」类规则：
+// 匹配全部流量、只能位于规则列表末尾（其后任何规则都不可达）。
+// 与普通规则不同，MATCH 之间不存在「同 matcher 冲突」——
+// MATCH 只能有一条，合并时按「目标策略是否变化」单独比较，
+// 不能被整行去重或 target 差异逻辑误伤。sub-rule 是段落匹配，
+// 可出现在 MATCH 之前，不在该集合内。
+var matchRuleKinds = map[string]bool{"MATCH": true}
+
+// isMatchRule 按规则首段（如 MATCH / DOMAIN-SUFFIX / RULE-SET）判断
+// 是否属于终态兜底规则，大小写不敏感（Mihomo 规则名不区分大小写）。
+func isMatchRule(r string) bool {
+	first, _, _ := strings.Cut(r, ",")
+	return matchRuleKinds[strings.ToUpper(strings.TrimSpace(first))]
+}
+
+// matchConflictKey 为 MATCH 类规则生成稳定的冲突 ID：
+// 所有 MATCH 共用同一 key（"match"），因此目标从 DIRECT 换成 Proxy
+// 时产生的冲突记录不会被当成两条不同 matcher 分开存，持久层按 key
+// 去重后只会保留一条，避免冲突表里 MATCH 历史记录越积越多。
+func matchConflictKey() string {
+	return "match"
+}
+
 func NewMergeEngine() *MergeEngine {
 	return &MergeEngine{policy: domain.DefaultMergePolicy()}
 }
@@ -241,10 +264,22 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 	}
 
 	// rules: local first then remote, detect same matcher conflicts
+	// MATCH 规则具有终态兜底语义（且只能有一条真正生效）：
+	// 普通规则按 matcher 对齐合并（本地优先插入，远程独有规则追加），
+	// MATCH 规则单独提取并在全部普通规则之后作为最后一条沉底。
 	parseRule := parseRuleParts
 	localMatchers := map[string]ruleParts{}
 	seen := map[string]bool{}
+
+	var localMatchRule, remoteMatchRule string
+
 	for _, r := range base.Rules {
+		if isMatchRule(r) {
+			if localMatchRule == "" {
+				localMatchRule = r
+			}
+			continue
+		}
 		p := parseRule(r)
 		localMatchers[normalizeKey(p.matcher)] = p
 		if !seen[normalizeKey(r)] {
@@ -252,24 +287,26 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 			seen[normalizeKey(r)] = true
 		}
 	}
+
 	for _, r := range remote.Rules {
+		if isMatchRule(r) {
+			if remoteMatchRule == "" {
+				remoteMatchRule = r
+			}
+			continue
+		}
 		p := parseRule(r)
 		if lp, ok := localMatchers[normalizeKey(p.matcher)]; ok {
 			if lp.target != p.target {
 				conflicts = append(conflicts, domain.Conflict{
-					ID:     hashKey("rule", p.matcher),
-					Type:   "rule",
-					Path:   "rules." + p.matcher,
-					Local:  lp.raw,
-					Remote: p.raw,
-					// 规则有顺序语义，merge 自动合并不安全（applyResolvedOverrides
-					// 对 rule 的 merge 退化为保留本地），此处仍按策略标记，
-					// 持久层据此决定是否自动解决
+					ID:         hashKey("rule", p.matcher),
+					Type:       "rule",
+					Path:       "rules." + p.matcher,
+					Local:      lp.raw,
+					Remote:     p.raw,
 					Resolution: e.policy.RulePriority,
 				})
-				// default keep local already inserted
 				if e.policy.RulePriority == "remote" {
-					// replace local raw rule
 					for i, existing := range merged.Rules {
 						if normalizeKey(parseRule(existing).matcher) == normalizeKey(p.matcher) {
 							merged.Rules[i] = p.raw
@@ -286,6 +323,32 @@ func (e *MergeEngine) MergeDetailed(base, remote, previous *domain.Config, resol
 		}
 	}
 
+	// MATCH 规则冲突检测：目标不同即冲突
+	if localMatchRule != "" && remoteMatchRule != "" {
+		lp := parseRule(localMatchRule)
+		rp := parseRule(remoteMatchRule)
+		if lp.target != rp.target {
+			conflicts = append(conflicts, domain.Conflict{
+				ID:         matchConflictKey(),
+				Type:       "rule",
+				Path:       "rules.MATCH",
+				Local:      localMatchRule,
+				Remote:     remoteMatchRule,
+				Resolution: e.policy.RulePriority,
+			})
+		}
+	}
+
+	// MATCH 规则沉底：按合并策略确定采用哪一侧，并追加在末尾
+	chosenMatch := localMatchRule
+	if e.policy.RulePriority == "remote" && remoteMatchRule != "" {
+		chosenMatch = remoteMatchRule
+	} else if chosenMatch == "" {
+		chosenMatch = remoteMatchRule
+	}
+	if chosenMatch != "" {
+		merged.Rules = append(merged.Rules, chosenMatch)
+	}
 	// apply resolved overrides
 	applyResolvedOverrides(merged, resolved)
 
@@ -433,14 +496,13 @@ func replaceProxy(cfg *domain.Config, p domain.Proxy, allowInsert bool) {
 // replaceRule 同 replaceProxy：allowInsert 仅对 manual 开放，
 // 避免历史冲突把早已移除的规则重新塞回配置。
 func replaceRule(cfg *domain.Config, raw string, allowInsert bool) {
-	parts := strings.Split(raw, ",")
-	if len(parts) < 2 {
+	np := parseRuleParts(raw)
+	if np.target == "" && !isMatchRule(raw) {
 		return
 	}
-	matcher := strings.Join(parts[:len(parts)-1], ",")
 	for i, r := range cfg.Rules {
-		rp := strings.Split(r, ",")
-		if len(rp) >= 2 && normalizeKey(strings.Join(rp[:len(rp)-1], ",")) == normalizeKey(matcher) {
+		rp := parseRuleParts(r)
+		if normalizeKey(rp.matcher) == normalizeKey(np.matcher) {
 			cfg.Rules[i] = raw
 			return
 		}
@@ -450,16 +512,42 @@ func replaceRule(cfg *domain.Config, raw string, allowInsert bool) {
 	}
 }
 
-// ruleParts 拆出规则的匹配部分（matcher，即去掉最后一段 target 后的前缀）
+// ruleParts 拆出规则的匹配部分（matcher，即去掉 target 与可选修饰词后的前缀）
 // 与目标策略（target）。合并与 Diff 都按 matcher 判定"是否为同一条规则"。
 type ruleParts struct{ matcher, target, raw string }
 
 func parseRuleParts(r string) ruleParts {
 	parts := strings.Split(r, ",")
-	if len(parts) >= 2 {
-		matcher := strings.Join(parts[:len(parts)-1], ",")
-		return ruleParts{matcher: strings.TrimSpace(matcher), target: strings.TrimSpace(parts[len(parts)-1]), raw: r}
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
 	}
+	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
+		return ruleParts{matcher: r, target: "", raw: r}
+	}
+
+	firstUpper := strings.ToUpper(parts[0])
+
+	// MATCH 规则：MATCH,<target>[,no-resolve]
+	if firstUpper == "MATCH" {
+		if len(parts) >= 2 {
+			return ruleParts{matcher: "MATCH", target: parts[1], raw: r}
+		}
+		return ruleParts{matcher: "MATCH", target: "", raw: r}
+	}
+
+	// 普通规则：最后一段可能是修饰词（如 no-resolve）
+	if len(parts) >= 3 && strings.EqualFold(parts[len(parts)-1], "no-resolve") {
+		target := parts[len(parts)-2]
+		matcher := strings.Join(parts[:len(parts)-2], ",")
+		return ruleParts{matcher: matcher, target: target, raw: r}
+	}
+
+	if len(parts) >= 2 {
+		target := parts[len(parts)-1]
+		matcher := strings.Join(parts[:len(parts)-1], ",")
+		return ruleParts{matcher: matcher, target: target, raw: r}
+	}
+
 	return ruleParts{matcher: r, target: "", raw: r}
 }
 
@@ -803,17 +891,39 @@ func pruneDanglingRefs(cfg *domain.Config) []string {
 		}
 	}
 
-	// 规则 target 必须是内置策略、已存在的节点或策略组
+	// 规则 target 必须是内置策略、已存在的节点或策略组。
+	// no-resolve 是规则的可选第 4 段修饰词，不是 target：
+	// 解析时必须剥掉它再校验（否则 "MATCH,DIRECT,no-resolve" 会被当成
+	// 指向名为 no-resolve 的策略而误删）。MATCH 类规则同理——其 target
+	// 由第 2 段给出，不应让 no-resolve 抢占 target 位置。
 	finalGroups := make(map[string]bool, len(cfg.ProxyGroups))
 	for _, g := range cfg.ProxyGroups {
 		finalGroups[g.Name] = true
 	}
 	keptRules := make([]string, 0, len(cfg.Rules))
 	for _, r := range cfg.Rules {
+		if isMatchRule(r) {
+			// MATCH 是终态兜底：即使目标组缺失（订阅导入的组在合并时被
+			// prune 删掉），也绝不整行删除，否则最终配置连兜底都没有。
+			// 缺失的是该组的其它规则，这里只保留提示。
+			target := parseRuleParts(r).target
+			if target != "" {
+				if builtinProxyTargets[target] || finalGroups[target] || proxyNames[target] {
+					keptRules = append(keptRules, r)
+					continue
+				}
+				warnings = append(warnings,
+					fmt.Sprintf("规则 %q 指向的策略 %q 不存在，已保留该规则（缺少兜底出口可能导致流量无规则匹配）", r, target))
+				keptRules = append(keptRules, r)
+				continue
+			}
+			keptRules = append(keptRules, r)
+			continue
+		}
 		p := parseRuleParts(r)
 		target := p.target
 		if target == "" {
-			// 单段规则（如 MATCH 缺 target）本身非法，交给内核报错更清晰
+			// 单段规则（如缺 target）本身非法，交给内核报错更清晰
 			keptRules = append(keptRules, r)
 			continue
 		}
